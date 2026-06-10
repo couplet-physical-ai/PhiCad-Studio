@@ -86,10 +86,16 @@ import {
   type PcbInspectorSelection,
 } from "./PcbSelectionInspector";
 import { useMarqueeSelection } from "../../../../shared/frontend/canvas/selection";
-import { PcbScene, type PcbCameraControls } from "./PcbScene";
+import {
+  PcbScene,
+  type AutoroutePreviewTrace,
+  type PcbCameraControls,
+} from "./PcbScene";
 import type { ViewportState } from "../types";
 import { PcbTopToolbar } from "./PcbTopToolbar";
 import { PcbExportDialog } from "./PcbExportDialog";
+import { PcbAutorouteDialog } from "./PcbAutorouteDialog";
+import type { CloudHeadersProvider } from "../api";
 import { PcbBoardPanel } from "./PcbBoardPanel";
 import { PcbLayersPanel } from "./PcbLayersPanel";
 import { PcbActiveLayerPill } from "./PcbActiveLayerPill";
@@ -239,6 +245,10 @@ interface PcbCanvasProps {
   moduleId: string;
   designId: string | null;
   gridVisible?: boolean;
+  /** Login-only cloud auth headers (bearer) for the auto-router. */
+  cloudHeaders?: CloudHeadersProvider;
+  /** Logged in + cloud configured → show the Autoroute button. */
+  autorouteEnabled?: boolean;
   dispatchCommand: (
     command: DesignerCommand,
   ) => Promise<DesignerDispatchResult>;
@@ -449,6 +459,10 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   );
   const [cursorMm, setCursorMmState] = useState<PcbPointMm | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [autorouteDialogOpen, setAutorouteDialogOpen] = useState(false);
+  const [autoroutePreview, setAutoroutePreview] = useState<
+    AutoroutePreviewTrace[] | null
+  >(null);
   const cursorMmRef = useRef<PcbPointMm | null>(null);
   // Figma-style alignment guides shown while dragging placements. The index
   // + group bbox are captured once at drag-start; each move queries them.
@@ -2897,6 +2911,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             routeGuide={sceneRouteGuide}
             routeGuides={sceneRouteGuides}
             routePreview={sceneRoutePreview}
+            autoroutePreview={autoroutePreview}
             routeFocusActive={routeState.kind === "routing"}
             routeFocusLayer={
               routeState.kind === "routing"
@@ -3213,6 +3228,32 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             open={exportDialogOpen}
             onClose={() => setExportDialogOpen(false)}
           />
+          {props.autorouteEnabled ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setAutorouteDialogOpen(true)}
+                title="Auto-route unrouted nets via the cloud auto-router"
+                data-testid="pcb-autoroute-button"
+                className="absolute bottom-12 right-3 z-20 inline-flex items-center gap-1.5 rounded-md border border-violet-300 bg-white/95 px-2.5 py-1 text-xs font-medium text-violet-700 shadow-sm backdrop-blur hover:bg-violet-50 dark:border-violet-800 dark:bg-slate-900/90 dark:text-violet-300 dark:hover:bg-slate-800"
+              >
+                Autoroute…
+              </button>
+              <PcbAutorouteDialog
+                backendURL={props.backendURL}
+                moduleId={props.moduleId}
+                designId={props.designId}
+                cloudHeaders={props.cloudHeaders}
+                open={autorouteDialogOpen}
+                onClose={() => {
+                  setAutorouteDialogOpen(false);
+                  setAutoroutePreview(null);
+                }}
+                onApplied={() => void workspace.refresh()}
+                onPreviewChange={setAutoroutePreview}
+              />
+            </>
+          ) : null}
         </>
       ) : null}
 
