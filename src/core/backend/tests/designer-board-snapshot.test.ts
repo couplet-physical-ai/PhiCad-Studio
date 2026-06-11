@@ -215,6 +215,22 @@ describe("buildBoardSnapshot", () => {
     expect(snapshot.ratsnest[0]!.netClassId).toBe("default");
   });
 
+  test("defaults options.portfolio to the production default (4)", () => {
+    const { snapshot } = buildBoardSnapshot(
+      projection({ ratsnest: [rats("net_a")] }),
+    );
+    expect(snapshot.options?.portfolio).toBe(4);
+  });
+
+  test("a caller-supplied routeOption overrides the portfolio default", () => {
+    const { snapshot } = buildBoardSnapshot(
+      projection({ ratsnest: [rats("net_a")] }),
+      { routeOptions: { portfolio: 1, allowVias: false } },
+    );
+    expect(snapshot.options?.portfolio).toBe(1);
+    expect(snapshot.options?.allowVias).toBe(false);
+  });
+
   test("is a deterministic pure function (equal output on repeat)", () => {
     const make = () =>
       buildBoardSnapshot(

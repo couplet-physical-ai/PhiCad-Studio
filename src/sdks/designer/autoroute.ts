@@ -136,6 +136,13 @@ export interface RouteOptions {
   maxShoveDepthVias?: number;
   netOrder?: string[] | null;
   progressEveryNNets?: number;
+  /**
+   * [M7] Deterministic portfolio routing — number of net-ordering variants the
+   * service routes sequentially (best kept by its objective). 1 = off (single
+   * baseline pass); clamped 1..8 server-side. The desktop sends 4 (the
+   * recommended production accuracy/latency default).
+   */
+  portfolio?: number;
 }
 
 export interface BoardSnapshot {
@@ -211,6 +218,55 @@ export interface RouteMetrics {
   layerTransitions: number;
   traceCount: number;
   ripupPasses: number;
+  /** [M4] Total turn vertices over all emitted copper. */
+  bendCount: number;
+  /** [M-ML] Exact `A + B·√2` length aggregate (nm): `totalLengthA` = axis nm, */
+  totalLengthA: number;
+  /** `totalLengthB` = diagonal-segment nm (multiply by √2 for physical length). */
+  totalLengthB: number;
+}
+
+/**
+ * [M-ML] Per-net routing features + labels (training data for a future learned
+ * net-ordering model). Rides the payload; never affects apply. Integers only.
+ */
+export interface NetRouteStats {
+  netId: string;
+  // features (captured at the net's first routing attempt):
+  pinCount: number;
+  bboxWNm: number;
+  bboxHNm: number;
+  bboxOverlapCount: number;
+  congestionInBbox: number;
+  attemptOrder: number;
+  blockedEscapes: number;
+  // labels:
+  routed: boolean;
+  lengthA: number;
+  lengthB: number;
+  viaCount: number;
+  bendCount: number;
+  ripCount: number;
+  /** Pass index the net first completed, or -1 if never. */
+  passFirstRouted: number;
+  failureReason: string | null;
+}
+
+/**
+ * [M7] One portfolio variant's outcome summary (the winner flagged `selected`).
+ * Empty when `options.portfolio` <= 1.
+ */
+export interface VariantStats {
+  /** 0 = baseline ordering. */
+  index: number;
+  routedNets: number;
+  totalNets: number;
+  connectedTerminals: number;
+  totalLengthA: number;
+  totalLengthB: number;
+  viaCount: number;
+  bendCount: number;
+  selected: boolean;
 }
 
 export interface RouteDeterminism {
@@ -226,6 +282,10 @@ export interface RoutePayloadSummary {
   metrics: RouteMetrics;
   determinism: RouteDeterminism;
   diagnostics: string[];
+  /** [M-ML] Per-net features+labels, sorted by `netId`. */
+  netStats: NetRouteStats[];
+  /** [M7] Per-variant summaries; empty unless `options.portfolio` > 1. */
+  portfolio: VariantStats[];
 }
 
 export interface RouteResultEnvelope {
@@ -273,6 +333,9 @@ export type ProgressFrameType =
   | "route.net.routed"
   | "route.net.failed"
   | "route.warning"
+  // [M7] variant-scoped frames (only emitted when options.portfolio > 1).
+  | "route.variant.started"
+  | "route.variant.completed"
   | "route.completed"
   | "route.failed"
   | "route.cancelled";

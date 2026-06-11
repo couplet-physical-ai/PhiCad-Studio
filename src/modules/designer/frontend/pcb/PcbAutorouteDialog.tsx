@@ -51,7 +51,9 @@ type Phase =
   | "error";
 
 const POLL_INTERVAL_MS = 700;
-const MAX_POLLS = 180; // ~2 min ceiling
+// ~7 min ceiling: portfolio routing (default K=4) runs the variants sequentially
+// in-engine, so wall-time scales ~K× a single pass on large boards.
+const MAX_POLLS = 600;
 
 function mmFromNm(nm: number): string {
   return (nm / 1_000_000).toFixed(2);
@@ -226,6 +228,8 @@ export function PcbAutorouteDialog({
 
   const completion = result?.payload.completion;
   const metrics = result?.payload.metrics;
+  // [M7] When portfolio routing ran (K>1), surface which variant the service kept.
+  const portfolioWinner = result?.payload.portfolio?.find((v) => v.selected);
 
   return (
     <div
@@ -300,6 +304,18 @@ export function PcbAutorouteDialog({
                   Length{" "}
                   <strong>{mmFromNm(metrics?.totalLengthNm ?? 0)} mm</strong>
                 </span>
+                <span>
+                  Bends <strong>{metrics?.bendCount ?? 0}</strong>
+                </span>
+                {portfolioWinner ? (
+                  <span>
+                    Variant{" "}
+                    <strong>
+                      {portfolioWinner.index + 1}/
+                      {result.payload.portfolio.length}
+                    </strong>
+                  </span>
+                ) : null}
               </div>
 
               {result.payload.diagnostics.length > 0 ? (

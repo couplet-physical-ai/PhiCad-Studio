@@ -29,6 +29,10 @@ import { freePadOutlineWorldMm, padOutlineWorldMm } from "./pad-outline";
 
 const STACKUP_ORDER: PcbCopperLayerId[] = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"];
 const DEFAULT_BOARD_THICKNESS_MM = 1.6;
+// [M7] Recommended production default: route 4 net-ordering variants and keep the
+// best (the service runs them sequentially, picking the best by its objective —
+// never worse than the single-pass baseline). A caller may override via routeOptions.
+const DEFAULT_PORTFOLIO = 4;
 
 function copperLayersForCount(count: 2 | 4): PcbCopperLayerId[] {
   return count === 4 ? [...STACKUP_ORDER] : ["F.Cu", "B.Cu"];
@@ -209,7 +213,8 @@ export function buildBoardSnapshot(
     freeHoles,
     ratsnest,
     netNames: projection.netNames,
-    options: opts.routeOptions ?? {},
+    // Default to the portfolio production default; any caller-supplied option wins.
+    options: { portfolio: DEFAULT_PORTFOLIO, ...(opts.routeOptions ?? {}) },
   };
 
   return { snapshot, warnings };
