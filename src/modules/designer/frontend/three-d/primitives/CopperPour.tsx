@@ -85,12 +85,18 @@ export function CopperPour({
     // same-net merge below.
     const viewState = projection.board.viewState;
     const pourNetIds = viewState?.copperFillPourNetIds ?? {};
-    const padNetIds = buildPadNetIds(
-      projection.ratsnest,
-      projection.placements,
-      projection.traces,
-    );
+    const padConnection = viewState?.copperFillPadConnection ?? "solid";
+    // Prefer the authoritative schematic pad→net map (Phase 0); fall back to the
+    // ratsnest reconstruction only when it's absent (pre-DRC saves / no schematic).
+    const padNetIds = projection.padNets
+      ? new Map(Object.entries(projection.padNets))
+      : buildPadNetIds(
+          projection.ratsnest,
+          projection.placements,
+          projection.traces,
+        );
     const common = {
+      padConnection,
       outline: projection.board.outline,
       placements: projection.placements,
       traces: projection.traces,
@@ -112,6 +118,7 @@ export function CopperPour({
   }, [
     designRules,
     projection.board,
+    projection.padNets,
     projection.ratsnest,
     projection.placements,
     projection.traces,

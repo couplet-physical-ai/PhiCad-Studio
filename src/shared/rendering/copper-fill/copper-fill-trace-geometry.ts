@@ -154,3 +154,33 @@ export function isSameNetAsPour(
 ): boolean {
   return itemNetId !== null && pourNetId !== null && itemNetId === pourNetId;
 }
+
+/**
+ * `spokeCount` thermal-relief spoke bars radiating from `centerMm`, each a
+ * stadium of half-width `spokeWidthMm/2` reaching out to `outerRadiusMm` (chosen
+ * to clear the pad + relief gap so the bar bridges pad copper to the pour). The
+ * caller carves these out of the relief-gap knockout so the pour reconnects to
+ * the pad through narrow necks (IPC-2221 thermal relief — limits heat-sinking
+ * into a plane during soldering while keeping the electrical connection).
+ */
+export function buildThermalSpokes(
+  centerMm: PcbPointMm,
+  outerRadiusMm: number,
+  spokeWidthMm: number,
+  spokeCount: number,
+  angleDeg: number,
+): ClipperPolygon[] {
+  if (spokeWidthMm <= 0 || spokeCount <= 0 || outerRadiusMm <= 0) return [];
+  const half = spokeWidthMm / 2;
+  const spokes: ClipperPolygon[] = [];
+  for (let i = 0; i < spokeCount; i += 1) {
+    const a = ((angleDeg + (360 / spokeCount) * i) * Math.PI) / 180;
+    const tip: PcbPointMm = {
+      x: centerMm.x + Math.cos(a) * outerRadiusMm,
+      y: centerMm.y + Math.sin(a) * outerRadiusMm,
+    };
+    const ring = buildTraceSegmentStadium(centerMm, tip, half);
+    if (ring) spokes.push([ring]);
+  }
+  return spokes;
+}

@@ -351,6 +351,14 @@ function parsePerNetClassAssignments(
   return out;
 }
 
+function parsePadConnection(value: unknown): "solid" | "thermal" | undefined {
+  return value === "thermal"
+    ? "thermal"
+    : value === "solid"
+      ? "solid"
+      : undefined;
+}
+
 function parseViewState(value: unknown): PcbViewState {
   const record = asRecord(value);
   const defaults = createDefaultPcbViewState();
@@ -360,6 +368,7 @@ function parseViewState(value: unknown): PcbViewState {
     viewSide: parseViewSide(record.viewSide),
     copperFillLayers: parseCopperFillLayers(record.copperFillLayers),
     copperFillPourNetIds: parsePourNetIds(record.copperFillPourNetIds),
+    copperFillPadConnection: parsePadConnection(record.copperFillPadConnection),
     perLayerOpacity: parsePerLayerOpacity(record.perLayerOpacity),
     layerPreset: parseLayerPreset(record.layerPreset),
     ratsnestVisible:
@@ -386,6 +395,10 @@ function mergeViewState(
     copperFillPourNetIds: patch.copperFillPourNetIds
       ? { ...current.copperFillPourNetIds, ...patch.copperFillPourNetIds }
       : current.copperFillPourNetIds,
+    copperFillPadConnection:
+      patch.copperFillPadConnection !== undefined
+        ? parsePadConnection(patch.copperFillPadConnection)
+        : current.copperFillPadConnection,
     perLayerOpacity: patch.perLayerOpacity
       ? { ...current.perLayerOpacity, ...patch.perLayerOpacity }
       : current.perLayerOpacity,

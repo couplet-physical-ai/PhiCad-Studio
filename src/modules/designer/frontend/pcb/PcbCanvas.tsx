@@ -3360,7 +3360,10 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   ]);
                 }
                 workspace.toggleCopperFillLayer(layer);
+                // Copper fill is always GND + solid (forced in the projection,
+                // see `pcb-projection.ts`); no per-layer net/connection picker.
               }}
+              onCleanupPourTraces={() => void workspace.cleanupPourTraces()}
               viewSide={workspace.viewSide}
               onToggleViewSide={handleToggleViewSide}
               onSelectLayerPreset={(preset) => {

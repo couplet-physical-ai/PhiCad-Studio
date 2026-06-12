@@ -146,10 +146,15 @@ describe("designer PCB view-state persistence", () => {
     expect(viewState?.viewSide).toBe("bottom");
     expect(viewState?.displayMode).toBe("dim");
     expect(viewState?.copperFillLayers).toEqual(["F.Cu", "B.Cu"]);
+    // Copper fill is policy-forced to the GND net on every enabled layer
+    // (no per-layer net picker). This test design has no GND net, so the
+    // projection forces both enabled layers to `null` (no merge), overriding
+    // the persisted "net-a"/null patch.
     expect(viewState?.copperFillPourNetIds).toEqual({
-      "F.Cu": "net-a",
+      "F.Cu": null,
       "B.Cu": null,
     });
+    expect(viewState?.copperFillPadConnection).toBe("solid");
     expect(viewState?.layerPreset).toBe("top-side");
     expect(viewState?.ratsnestVisible).toBe(false);
   });

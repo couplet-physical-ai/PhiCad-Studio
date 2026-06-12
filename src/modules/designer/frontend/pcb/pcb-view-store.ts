@@ -113,6 +113,7 @@ interface PcbViewStoreActions {
   setCopperFillLayers(layers: ReadonlyArray<PcbCopperLayerId>): void;
   toggleCopperFillLayer(layer: PcbCopperLayerId): void;
   setCopperFillPourNet(layer: PcbCopperLayerId, netId: string | null): void;
+  setCopperFillPadConnection(connection: "solid" | "thermal"): void;
   setLayerOpacity(layer: PcbLayerId, opacity: number): void;
   setLayerPreset(preset: PcbLayerPreset): void;
   /**
@@ -323,6 +324,13 @@ export const usePcbViewStore = create<Store>((set, get) => ({
       viewState: { ...s.viewState, copperFillPourNetIds: nextMap },
     }));
     persistPatch({ copperFillPourNetIds: { [layer]: netId } });
+  },
+
+  setCopperFillPadConnection(connection) {
+    set((s) => ({
+      viewState: { ...s.viewState, copperFillPadConnection: connection },
+    }));
+    persistPatch({ copperFillPadConnection: connection });
   },
 
   setLayerOpacity(layer, opacity) {

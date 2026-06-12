@@ -8,6 +8,7 @@ import { checkBoard } from "./checks/board";
 import { checkClearance } from "./checks/clearance";
 import { checkConnectivity } from "./checks/connectivity";
 import { checkConstraints } from "./checks/constraints";
+import { checkCopperPour } from "./checks/copper-pour";
 import { checkManufacturability } from "./checks/manufacturability";
 import { checkStructural } from "./checks/structural";
 import { buildDrcContext } from "./drc-context";
@@ -33,6 +34,7 @@ export function runDrc(
     ...checkManufacturability(ctx),
     ...checkClearance(ctx),
     ...checkConnectivity(ctx),
+    ...checkCopperPour(ctx),
     ...checkBoard(ctx),
   ];
 

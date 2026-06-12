@@ -109,6 +109,12 @@ import {
   validatePath as validateTracePath,
   sanitizePath as sanitizeTracePath,
 } from "./pcb/pcb-trace-geometry";
+import { loadPcbProjection } from "./pcb/pcb-projection";
+import {
+  buildCopperFillPourPaths,
+  isTraceCoveredByPour,
+  resolveCopperFillClearanceMm,
+} from "../../../shared/rendering/copper-fill/copper-fill-geometry";
 import {
   validateTraceAgainstFab,
   validateViaAgainstFab,
@@ -686,6 +692,46 @@ export function executeDesignerCommand({
     if (reason) return invalidPcbTrace(reason);
     updatePcbTrace(tx, { ...existing, pointsNm: sanitized }, timestamp);
     return okResult(bumpRevision(tx, designId, revision, timestamp), null);
+  }
+
+  if (command.type === "pcb_cleanup_pour_traces") {
+    const proj = loadPcbProjection({ db: tx, designId, revision, timestamp });
+    const view = proj.board.viewState;
+    if (!view) return okResult(revision, null);
+    const dr = proj.board.designRules;
+    const padNetIds = new Map(Object.entries(proj.padNets ?? {}));
+    const toDelete = new Set<string>();
+    for (const layer of view.copperFillLayers) {
+      const pourNetId = view.copperFillPourNetIds[layer];
+      if (!pourNetId) continue;
+      const islands = buildCopperFillPourPaths({
+        layer,
+        outline: proj.board.outline,
+        placements: proj.placements,
+        traces: proj.traces,
+        vias: proj.vias,
+        pourNetId,
+        padNetIds,
+        clearanceMm: resolveCopperFillClearanceMm(dr.clearance),
+        copperToBoardEdgeMm: dr.clearance.copperToBoardEdgeMm,
+        cutouts: proj.board.cutouts,
+        freeHoles: proj.freeHoles,
+        freePads: proj.freePads,
+        minThicknessMm: dr.minimums.traceWidthMm,
+      });
+      if (islands.length === 0) continue;
+      for (const trace of proj.traces) {
+        if (trace.layer !== layer || trace.netId !== pourNetId) continue;
+        if (isTraceCoveredByPour(trace, islands)) toDelete.add(trace.id);
+      }
+    }
+    for (const id of toDelete) deletePcbTrace(tx, id);
+    return okResult(
+      toDelete.size > 0
+        ? bumpRevision(tx, designId, revision, timestamp)
+        : revision,
+      null,
+    );
   }
 
   if (command.type === "pcb_set_view_state") {

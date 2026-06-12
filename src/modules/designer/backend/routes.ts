@@ -1955,6 +1955,9 @@ function parseCommandEnvelope(body: unknown): DesignerCommandEnvelope {
     case "pcb_update_trace_geometry":
       command = parsePcbUpdateTraceGeometryCommand(commandRecord);
       break;
+    case "pcb_cleanup_pour_traces":
+      command = { type: "pcb_cleanup_pour_traces" };
+      break;
     case "pcb_set_view_state":
       command = parsePcbSetViewStateCommand(commandRecord);
       break;

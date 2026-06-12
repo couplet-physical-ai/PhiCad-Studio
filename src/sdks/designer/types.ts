@@ -366,6 +366,12 @@ export interface PcbViewState {
   viewSide: PcbViewSide;
   copperFillLayers: PcbCopperLayerId[];
   copperFillPourNetIds: Partial<Record<PcbCopperLayerId, string | null>>;
+  /**
+   * How same-net footprint pads connect to the copper pour. `"solid"` (default)
+   * floods over the pad; `"thermal"` leaves an IPC-2221 relief gap crossed by
+   * spokes for solderability. Additive; absent = `"solid"`.
+   */
+  copperFillPadConnection?: "solid" | "thermal";
   perLayerOpacity: Partial<Record<PcbLayerId, number>>;
   layerPreset: PcbLayerPreset;
   ratsnestVisible: boolean;
@@ -725,6 +731,17 @@ export interface PcbZone {
    * the same name-binding pass that handles `PcbTrace.netName`.
    */
   netName: string | null;
+  /**
+   * Resolved net id (schematic net the zone pours). Bound from `netName` at
+   * projection time; same-net pads/traces/vias merge into the zone fill.
+   * Additive — absent on pre-resolution saves.
+   */
+  netId?: string | null;
+  /**
+   * Same-net pad connection inside this zone: `"solid"` flood or `"thermal"`
+   * relief. Absent ⇒ inherit the board-level `copperFillPadConnection`.
+   */
+  connection?: "solid" | "thermal";
   layer: PcbCopperLayerId;
   /** Closed polyline (last point implicitly connects back to first). */
   polygonPointsMm: Array<{ x: number; y: number }>;
@@ -1231,6 +1248,16 @@ export interface DesignerPcbUpdateTraceGeometryCommand {
 }
 
 /**
+ * Delete traces made redundant by a copper pour: same-net, same-layer traces
+ * whose copper is already fully covered by the net's filled pour island. Used by
+ * the "Remove redundant ground traces" action after enabling a ground plane.
+ * Result data: `{ removed: number }`.
+ */
+export interface DesignerPcbCleanupPourTracesCommand {
+  type: "pcb_cleanup_pour_traces";
+}
+
+/**
  * Replace the per-design display state (viewSide / displayMode / preset / fill
  * toggles / opacities). Front-end debounces ~200ms so slider drags don't
  * spam undo history. The command persists straight into
@@ -1429,6 +1456,7 @@ export type DesignerCommand =
   | DesignerPcbDeleteTraceCommand
   | DesignerPcbDeleteViaCommand
   | DesignerPcbUpdateTraceGeometryCommand
+  | DesignerPcbCleanupPourTracesCommand
   | DesignerPcbSetViewStateCommand
   | DesignerPcbSetDesignRulesCommand
   | DesignerPcbDeletePlacementCommand
@@ -1688,7 +1716,8 @@ export type DrcRuleCode =
   | "VIA_LAYER_SPAN"
   | "VIA_ASPECT_RATIO"
   | "BOARD_OUTLINE_INVALID"
-  | "COPPER_OFF_BOARD";
+  | "COPPER_OFF_BOARD"
+  | "ISOLATED_COPPER_ISLAND";
 
 export interface DrcViolation {
   /**

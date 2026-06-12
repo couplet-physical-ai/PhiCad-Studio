@@ -45,6 +45,8 @@ interface PcbLayersPanelProps {
   onSetDisplayMode?: (mode: PcbDisplayMode) => void;
   copperFillLayers?: ReadonlyArray<PcbCopperLayerId>;
   onToggleCopperFillLayer?: (layer: PcbCopperLayerId) => void;
+  /** Delete same-net traces already fully covered by a pour (redundant routing). */
+  onCleanupPourTraces?: () => void;
   /** Side-mode toolbar state + handlers. When omitted the chip is hidden. */
   viewSide?: PcbViewSide;
   onToggleViewSide?: () => void;
@@ -101,6 +103,7 @@ export function PcbLayersPanel({
   onSetDisplayMode,
   copperFillLayers = [],
   onToggleCopperFillLayer,
+  onCleanupPourTraces,
   viewSide,
   onToggleViewSide,
   onSelectLayerPreset,
@@ -479,6 +482,18 @@ export function PcbLayersPanel({
           );
         })}
       </div>
+      {onCleanupPourTraces && copperFillLayers.length > 0 ? (
+        <div className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={onCleanupPourTraces}
+            title="Delete same-net traces already fully covered by a copper pour"
+            className="w-full rounded border border-slate-300 px-2 py-1 text-[11px] text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            Remove redundant pour traces
+          </button>
+        </div>
+      ) : null}
       {onSetDisplayMode ? (
         <div className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">

@@ -34,6 +34,7 @@ export const CODE_LABEL: Record<DrcRuleCode, string> = {
   VIA_ASPECT_RATIO: "Via aspect ratio too high",
   BOARD_OUTLINE_INVALID: "Invalid board outline",
   COPPER_OFF_BOARD: "Copper outside board",
+  ISOLATED_COPPER_ISLAND: "Isolated copper island",
 };
 
 /** Short human label for a violation anchor (uses the projection for ref/net names). */

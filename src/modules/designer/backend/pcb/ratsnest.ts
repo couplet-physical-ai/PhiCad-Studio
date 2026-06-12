@@ -2,14 +2,25 @@
 // Prim's algorithm, O(N^2) — fine for hundreds of pads per net; revisit if it bites.
 
 import type {
+  PcbBoardCutout,
+  PcbBoardOutline,
+  PcbCopperLayerId,
+  PcbDesignRules,
+  PcbFreeHole,
+  PcbFreePad,
   PcbNetClass,
+  PcbPlacedPart,
   PcbPointMm,
   PcbTrace,
   PcbVia,
   RatsnestSegment,
 } from "../../../../sdks/designer";
 import type { NetPadCorrelation, PadRef } from "./net-pad-correlation";
-import { resolveNetClassId } from "./net-class-resolver";
+import { GND_NAMES, resolveNetClassId } from "./net-class-resolver";
+import {
+  buildCopperFillPadGroups,
+  resolveCopperFillClearanceMm,
+} from "../../../../shared/rendering/copper-fill/copper-fill-geometry";
 
 function distSq(a: PcbPointMm, b: PcbPointMm): number {
   const dx = a.x - b.x;
@@ -65,12 +76,33 @@ export function groupPadsByConnectivity(
   pads: PadRef[],
   traces: PcbTrace[],
   vias: PcbVia[],
+  /** Pad-key groups (`${placementId}|${padNumber}`) joined by a same-net pour. */
+  pourGroups?: string[][],
 ): PadRef[][] {
   const uf = new UnionFind();
   for (const pad of pads) uf.add(padKey(pad));
 
   const netTraces = traces.filter((t) => t.netId === netId);
   const netVias = vias.filter((v) => v.netId === netId);
+
+  // Pour-aware: union all pads sharing a filled copper island. A ground/power
+  // plane connects its pads exactly as a routed trace would, so the MST below
+  // collapses them to one component and draws no airwire.
+  if (pourGroups && pourGroups.length > 0) {
+    const padById = new Map<string, PadRef>();
+    for (const pad of pads) {
+      padById.set(`${pad.placementId}|${pad.padNumber}`, pad);
+    }
+    for (const group of pourGroups) {
+      let anchor: PadRef | undefined;
+      for (const id of group) {
+        const pad = padById.get(id);
+        if (!pad) continue;
+        if (!anchor) anchor = pad;
+        else uf.union(padKey(anchor), padKey(pad));
+      }
+    }
+  }
 
   // Union pads ↔ trace endpoints
   for (const trace of netTraces) {
@@ -211,6 +243,32 @@ function mstForRepresentatives(
   return segments;
 }
 
+/**
+ * Inputs needed to compute filled copper-pour islands for pour-aware
+ * connectivity. When present, pads tied together by a same-net pour are treated
+ * as connected (no airwire), so a ground plane satisfies the net the same way a
+ * routed trace would. Absent ⇒ legacy trace/via-only connectivity.
+ */
+export interface RatsnestFillContext {
+  outline: PcbBoardOutline;
+  designRules: PcbDesignRules;
+  placements: ReadonlyArray<PcbPlacedPart>;
+  /** `${placementId}|${padNumber}` → netId (authoritative schematic map). */
+  padNetIds: ReadonlyMap<string, string>;
+  cutouts?: ReadonlyArray<PcbBoardCutout>;
+  freeHoles?: ReadonlyArray<PcbFreeHole>;
+  freePads?: ReadonlyArray<PcbFreePad>;
+  /**
+   * Enabled pours: board-wide (no `clipPolygonMm`) and explicit copper zones
+   * (clipped to their polygon). Each floods `netId` on `layer`.
+   */
+  pours: ReadonlyArray<{
+    layer: PcbCopperLayerId;
+    netId: string;
+    clipPolygonMm?: ReadonlyArray<PcbPointMm>;
+  }>;
+}
+
 export interface ComputeRatsnestContext {
   /** Schematic net id → human net name for net-class auto-assignment. */
   netNames: Map<string, string>;
@@ -222,6 +280,46 @@ export interface ComputeRatsnestContext {
   traces?: ReadonlyArray<PcbTrace>;
   /** Routed vias; chain trace segments across layers when computing connectivity. */
   vias?: ReadonlyArray<PcbVia>;
+  /** Copper-pour inputs; when present, same-net pours satisfy connectivity. */
+  fill?: RatsnestFillContext;
+}
+
+/**
+ * For each net, compute the groups of same-net footprint pads that a copper
+ * pour electrically joins (`${placementId}|${padNumber}` keys). Returns
+ * `netId → padKey[][]` (one inner array per filled island). Empty when no fill
+ * context is supplied. Built once per projection and reused across nets.
+ */
+function computePourPadGroups(
+  fill: RatsnestFillContext,
+  traces: ReadonlyArray<PcbTrace>,
+  vias: ReadonlyArray<PcbVia>,
+): Map<string, string[][]> {
+  const byNet = new Map<string, string[][]>();
+  const clearanceMm = resolveCopperFillClearanceMm(fill.designRules.clearance);
+  for (const pour of fill.pours) {
+    const groups = buildCopperFillPadGroups({
+      layer: pour.layer,
+      outline: fill.outline,
+      placements: fill.placements,
+      traces,
+      vias,
+      pourNetId: pour.netId,
+      padNetIds: fill.padNetIds,
+      clearanceMm,
+      copperToBoardEdgeMm: fill.designRules.clearance.copperToBoardEdgeMm,
+      cutouts: fill.cutouts ?? [],
+      freeHoles: fill.freeHoles ?? [],
+      freePads: fill.freePads ?? [],
+      minThicknessMm: fill.designRules.minimums.traceWidthMm,
+      ...(pour.clipPolygonMm ? { clipPolygonMm: pour.clipPolygonMm } : {}),
+    });
+    if (groups.length === 0) continue;
+    const existing = byNet.get(pour.netId);
+    if (existing) existing.push(...groups);
+    else byNet.set(pour.netId, groups);
+  }
+  return byNet;
 }
 
 export function computeRatsnest(
@@ -230,16 +328,32 @@ export function computeRatsnest(
 ): RatsnestSegment[] {
   const traces = (ctx.traces ?? []) as PcbTrace[];
   const vias = (ctx.vias ?? []) as PcbVia[];
+  const pourGroupsByNet =
+    ctx.fill && ctx.fill.pours.length > 0
+      ? computePourPadGroups(ctx.fill, traces, vias)
+      : undefined;
   const result: RatsnestSegment[] = [];
   for (const [netId, pads] of correlation.netPads) {
     const netName = ctx.netNames.get(netId) ?? "";
+    // Ground nets are connected by the copper pour (ground plane) by
+    // convention, so their airwires are intentionally suppressed — showing
+    // a ratsnest for GND clutters the board with connections the fill
+    // provides. A board-wide GND pour also collapses these geometrically, but
+    // suppressing by name hides them even before a fill layer is enabled.
+    if (GND_NAMES.test(netName.trim())) continue;
     const classId = resolveNetClassId(
       netName,
       ctx.netClasses,
       ctx.perNetClassAssignments,
       netId,
     );
-    const components = groupPadsByConnectivity(netId, pads, traces, vias);
+    const components = groupPadsByConnectivity(
+      netId,
+      pads,
+      traces,
+      vias,
+      pourGroupsByNet?.get(netId),
+    );
     result.push(...mstForRepresentatives(netId, classId, components));
   }
   return result;

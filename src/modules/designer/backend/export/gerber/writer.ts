@@ -320,16 +320,15 @@ function emitCopperPour(
   layer: PcbCopperLayerId,
 ): void {
   const view = ctx.proj.board.viewState;
-  if (!view || !view.copperFillLayers.includes(layer)) return;
+  if (!view) return;
   const dr = ctx.proj.board.designRules;
-  const pourNetId = view.copperFillPourNetIds[layer] ?? null;
-  const islands = buildCopperFillPourPaths({
+  const boardConnection = view.copperFillPadConnection ?? "solid";
+  const common = {
     layer,
     outline: ctx.proj.board.outline,
     placements: ctx.proj.placements,
     traces: ctx.proj.traces,
     vias: ctx.proj.vias,
-    pourNetId,
     padNetIds: ctx.padNetIds ?? new Map<string, string>(),
     clearanceMm: resolveCopperFillClearanceMm(dr.clearance),
     copperToBoardEdgeMm: dr.clearance.copperToBoardEdgeMm,
@@ -337,9 +336,56 @@ function emitCopperPour(
     freeHoles: ctx.proj.freeHoles,
     freePads: ctx.proj.freePads,
     minThicknessMm: dr.minimums.traceWidthMm,
-  });
-  if (islands.length === 0) return;
+  };
 
+  // Board-wide pour, if this layer has one configured.
+  if (view.copperFillLayers.includes(layer)) {
+    const pourNetId = view.copperFillPourNetIds[layer] ?? null;
+    emitPourIslands(
+      ctx,
+      out,
+      buildCopperFillPourPaths({
+        ...common,
+        pourNetId,
+        padConnection: boardConnection,
+      }),
+      pourNetId,
+    );
+  }
+
+  // Explicit copper zones on this layer (same kernel, clipped to the polygon).
+  for (const zone of ctx.proj.zones) {
+    if (
+      zone.layer !== layer ||
+      !zone.netId ||
+      zone.polygonPointsMm.length < 3
+    ) {
+      continue;
+    }
+    emitPourIslands(
+      ctx,
+      out,
+      buildCopperFillPourPaths({
+        ...common,
+        pourNetId: zone.netId,
+        padConnection: zone.connection ?? boardConnection,
+        clipPolygonMm: zone.polygonPointsMm,
+      }),
+      zone.netId,
+    );
+  }
+}
+
+/** Emit a pour's islands as `G36/G37` dark regions with `%LPC%` antipad holes. */
+function emitPourIslands(
+  ctx: BuildContext,
+  out: string[],
+  islands: ReadonlyArray<
+    ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>
+  >,
+  pourNetId: string | null,
+): void {
+  if (islands.length === 0) return;
   const netName = resolveNetName(ctx, pourNetId, null);
   for (const island of islands) {
     const outer = island[0];

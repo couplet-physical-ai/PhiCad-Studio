@@ -40,6 +40,10 @@ interface CopperFillLayerProps {
   cutouts?: ReadonlyArray<PcbBoardCutout>;
   freeHoles?: ReadonlyArray<PcbFreeHole>;
   freePads?: ReadonlyArray<PcbFreePad>;
+  /** Same-net pad connection: `"solid"` flood (default) or `"thermal"` relief. */
+  padConnection?: "solid" | "thermal";
+  /** Clip the pour to this zone polygon (mm). Omitted ⇒ board-wide pour. */
+  clipPolygonMm?: ReadonlyArray<{ x: number; y: number }>;
   opacity?: number;
   /** Side-flip indicator; reverses render order so bottom-view shows B over F. */
   viewSide?: PcbViewSide;
@@ -99,6 +103,8 @@ export function CopperFillLayer({
   cutouts,
   freeHoles,
   freePads,
+  padConnection = "solid",
+  clipPolygonMm,
   opacity = 0.95,
   viewSide = "top",
 }: CopperFillLayerProps): ReactElement | null {
@@ -119,6 +125,8 @@ export function CopperFillLayer({
         freeHoles,
         freePads,
         minThicknessMm: designRules.minimums.traceWidthMm,
+        padConnection,
+        ...(clipPolygonMm ? { clipPolygonMm } : {}),
       }),
     [
       layer,
@@ -132,6 +140,8 @@ export function CopperFillLayer({
       cutouts,
       freeHoles,
       freePads,
+      padConnection,
+      clipPolygonMm,
     ],
   );
 

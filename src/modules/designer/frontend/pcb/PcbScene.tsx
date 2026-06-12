@@ -1388,15 +1388,28 @@ export function PcbScene({
       routePreview?.layer,
     ],
   );
-  const padNetIds = useMemo(
-    () =>
-      buildPadNetIds(
-        projection.ratsnest,
-        projection.placements,
-        projection.traces,
-      ),
-    [projection.ratsnest, projection.placements, projection.traces],
-  );
+  // Pad → net map driving the copper-pour same-net merge and route-focus
+  // dimming. Prefer the authoritative schematic↔PCB correlation (`padNets`,
+  // computed once at projection time): it covers every correlated pad
+  // regardless of routing state, so a GND pad never loses its net and gets
+  // mis-bucketed as different-net (spurious moat). Fall back to the
+  // ratsnest/trace-endpoint reconstruction only when `padNets` is absent
+  // (pre-DRC saves, or boards with no schematic).
+  const padNetIds = useMemo<ReadonlyMap<string, string>>(() => {
+    if (projection.padNets) {
+      return new Map(Object.entries(projection.padNets));
+    }
+    return buildPadNetIds(
+      projection.ratsnest,
+      projection.placements,
+      projection.traces,
+    );
+  }, [
+    projection.padNets,
+    projection.ratsnest,
+    projection.placements,
+    projection.traces,
+  ]);
   // Per-layer opacity overrides from the panel's slider. Multiplied against
   // the layer's display-mode opacity so dim + per-layer attenuation compose.
   const perLayerOpacity = usePcbViewStore((s) => s.viewState.perLayerOpacity);
@@ -1413,6 +1426,9 @@ export function PcbScene({
   );
   const copperFillPourNetIds = usePcbViewStore(
     (s) => s.viewState.copperFillPourNetIds,
+  );
+  const copperFillPadConnection = usePcbViewStore(
+    (s) => s.viewState.copperFillPadConnection ?? "solid",
   );
   // Pre-bucket traces and vias by copper layer once per projection so each
   // <CopperFillLayer> receives an identity-stable array slice. Without this
@@ -1567,8 +1583,37 @@ export function PcbScene({
               cutouts={projection.board.cutouts}
               freeHoles={projection.freeHoles}
               freePads={projection.freePads}
+              padConnection={copperFillPadConnection}
               opacity={
                 layerOpacity(visualState, layer) * layerOpacityFor(layer)
+              }
+              viewSide={viewSide}
+            />
+          ) : null,
+        )}
+        {/* Explicit copper zones (imported / user-drawn) — each clipped to its
+            polygon, same kernel + same-net merge as the board-wide pour. */}
+        {projection.zones.map((zone) =>
+          isCopperLayerVisible(visibleLayers, zone.layer) &&
+          shouldRenderCopperLayer(visualState, zone.layer) ? (
+            <CopperFillLayer
+              key={`zone:${zone.id}`}
+              layer={zone.layer}
+              outline={projection.board.outline}
+              clipPolygonMm={zone.polygonPointsMm}
+              placements={projection.placements}
+              traces={tracesByLayer[zone.layer]}
+              vias={viasByLayer[zone.layer]}
+              pourNetId={zone.netId ?? null}
+              padNetIds={padNetIds}
+              designRules={projection.board.designRules}
+              cutouts={projection.board.cutouts}
+              freeHoles={projection.freeHoles}
+              freePads={projection.freePads}
+              padConnection={zone.connection ?? copperFillPadConnection}
+              opacity={
+                layerOpacity(visualState, zone.layer) *
+                layerOpacityFor(zone.layer)
               }
               viewSide={viewSide}
             />

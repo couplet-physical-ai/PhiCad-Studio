@@ -20,6 +20,7 @@ import type { FootprintRenderSourcePad } from "../index";
 import { collectDrills } from "../pcb/pcb-drills";
 import {
   buildDiscRing,
+  buildThermalSpokes,
   buildTraceMaskPolygons,
   isSameNetAsPour,
   viaCrossesLayer,
@@ -28,6 +29,7 @@ import {
 } from "./copper-fill-trace-geometry";
 import {
   ARC_TOLERANCE_MM,
+  area,
   type CopperIsland,
   difference,
   intersection,
@@ -90,6 +92,12 @@ const DEFAULT_MIN_COPPER_THICKNESS_MM = 0.2;
 // Aesthetic convex-corner fillet on the pour boundary (Flux look). Clearance
 // stays safe because the fillet is a remove-only (anti-extensive) open.
 const DEFAULT_POUR_CORNER_RADIUS_MM = 0.4;
+// Thermal-relief defaults (IPC-2221: 2–4 spokes, 0.2–0.5 mm). Applied only when
+// `padConnection: "thermal"`; the default `"solid"` floods same-net pads.
+const DEFAULT_THERMAL_SPOKE_WIDTH_MM = 0.4;
+const DEFAULT_THERMAL_RELIEF_GAP_MM = 0.4;
+const DEFAULT_THERMAL_SPOKE_COUNT = 4;
+const DEFAULT_THERMAL_SPOKE_ANGLE_DEG = 45;
 // Slight under-erosion so the chamfer-deflate/round-inflate min-width pass never
 // quite reaches the clearance boundary before the re-clip.
 const MIN_THICKNESS_EPS_MM = 0.001;
@@ -256,11 +264,107 @@ function applyPlacementTransform(
   });
 }
 
+/** Resolved thermal-relief geometry (mm). Null ⇒ solid same-net flood. */
+interface ThermalConfig {
+  spokeWidthMm: number;
+  gapMm: number;
+  spokeCount: number;
+  angleDeg: number;
+}
+
 interface BareCopper {
   /** Different-net / unknown-net bare copper on this layer (→ clearance gap). */
   diffNet: ClipperPolygon[];
   /** Same-net bare copper on this layer (pour anchors; merge into pour). */
   sameNet: ClipperPolygon[];
+  /**
+   * Same-net *footprint* pads, tagged with their `${placementId}|${padNumber}`
+   * key, for pour-aware ratsnest connectivity (`buildCopperFillPadGroups`).
+   * Pad rings only — traces/vias are already chained by the ratsnest itself.
+   */
+  sameNetPads: Array<{ key: string; poly: ClipperPolygon }>;
+  /**
+   * Thermal-relief knockouts (exact `PathsD`, no clearance halo): the relief gap
+   * ring around each same-net footprint pad with the spoke bridges carved out.
+   * Subtracted from the pour so it reconnects to the pad only through the spokes.
+   */
+  thermalKnockouts: PathsD[];
+}
+
+/** World centre of a footprint pad under its placement transform (mm). */
+function padWorldCenter(
+  pad: FootprintRenderSourcePad,
+  placement: PcbPlacedPart,
+): PcbPointMm {
+  const [p] = applyPlacementTransform(
+    [[pad.centerMm.x, pad.centerMm.y]],
+    placement,
+  );
+  return { x: p![0], y: p![1] };
+}
+
+/** Max distance from `center` to any vertex of `ring` (mm). */
+function ringRadius(ring: ClipperRing, center: PcbPointMm): number {
+  let r = 0;
+  for (const [x, y] of ring)
+    r = Math.max(r, Math.hypot(x - center.x, y - center.y));
+  return r;
+}
+
+/** Signed area of a ring (>0 ⇒ counter-clockwise). */
+function ringSignedArea(ring: ClipperRing): number {
+  let a = 0;
+  for (let i = 0; i < ring.length; i += 1) {
+    const p = ring[i]!;
+    const q = ring[(i + 1) % ring.length]!;
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+/** Normalize a ring to counter-clockwise (positive) winding. */
+function toCcw(ring: ClipperRing): ClipperRing {
+  return ringSignedArea(ring) < 0 ? [...ring].reverse() : ring;
+}
+
+/**
+ * Thermal-relief knockout for one same-net pad: the relief gap (pad inflated by
+ * `gap`) minus the pad copper and the spoke bridges, so subtracting it leaves a
+ * gap ring crossed by `spokeCount` necks. Returns [] on any boolean failure
+ * (graceful degrade → the pad floods solid, electrically safe).
+ *
+ * Winding MUST be normalized to CCW: `buildTraceSegmentStadium` (spokes) yields
+ * clockwise rings and a mirrored (B.Cu) pad ring flips sign — mixing windings
+ * under the kernel's NonZero union cancels the overlap into spurious holes, so
+ * the spokes would get subtracted instead of bridging the gap.
+ *
+ * NOTE: thermal relief is currently DISABLED in the UI (copper fill is always
+ * solid) — this path is unused. Before re-enabling, fix the spoke orientation:
+ * spokes are placed at a fixed world angle, so on rotated / non-square (rect,
+ * roundrect, oval) pads they point at corners and leave edge midpoints
+ * unbridged. They must be aligned to the pad's own axes (perpendicular to its
+ * edges, using the pad+placement rotation), not a fixed world angle.
+ */
+function buildThermalKnockout(
+  worldRing: ClipperRing,
+  center: PcbPointMm,
+  thermal: ThermalConfig,
+): PathsD {
+  const padCcw = toCcw(worldRing);
+  const padPaths = polyToPathsD([padCcw]);
+  const padInflated = offsetRound(padPaths, thermal.gapMm);
+  if (padInflated.length === 0) return [];
+  const outerRadius =
+    ringRadius(padCcw, center) + thermal.gapMm + thermal.spokeWidthMm;
+  const spokes = buildThermalSpokes(
+    center,
+    outerRadius,
+    thermal.spokeWidthMm,
+    thermal.spokeCount,
+    thermal.angleDeg,
+  ).map((poly): ClipperPolygon => poly.map(toCcw));
+  const carve = union(padPaths, multiPolyToPathsD(spokes));
+  return difference(padInflated, carve);
 }
 
 /** Bare copper of every pad/trace/via/free-pad touching `layer`, by net. */
@@ -272,9 +376,12 @@ function collectBareCopper(
   pourNetId: string | null,
   padNetIds: ReadonlyMap<string, string>,
   freePads: ReadonlyArray<PcbFreePad>,
+  thermal: ThermalConfig | null,
 ): BareCopper {
   const diffNet: ClipperPolygon[] = [];
   const sameNet: ClipperPolygon[] = [];
+  const sameNetPads: Array<{ key: string; poly: ClipperPolygon }> = [];
+  const thermalKnockouts: PathsD[] = [];
 
   for (const placement of placements) {
     const pads = placement.footprint.preview?.pads ?? [];
@@ -282,11 +389,26 @@ function collectBareCopper(
       if (!resolvePadCopperLayers(pad, placement).has(layer)) continue;
       const local = padLocalRing(pad);
       if (!local || !local[0]) continue;
-      const world: ClipperPolygon = [
-        applyPlacementTransform(local[0], placement),
-      ];
+      const ring = applyPlacementTransform(local[0], placement);
+      const world: ClipperPolygon = [ring];
       const net = padNetIds.get(`${placement.id}|${pad.number}`) ?? null;
-      (isSameNetAsPour(net, pourNetId) ? sameNet : diffNet).push(world);
+      if (isSameNetAsPour(net, pourNetId)) {
+        // Same-net pad is always an anchor (island keeping) and a connectivity
+        // node, whether solid or thermally relieved — the spokes still reach its
+        // copper. Thermal only adds a relief-gap knockout around it.
+        sameNet.push(world);
+        sameNetPads.push({ key: `${placement.id}|${pad.number}`, poly: world });
+        if (thermal) {
+          const knockout = buildThermalKnockout(
+            ring,
+            padWorldCenter(pad, placement),
+            thermal,
+          );
+          if (knockout.length > 0) thermalKnockouts.push(knockout);
+        }
+      } else {
+        diffNet.push(world);
+      }
     }
   }
 
@@ -312,7 +434,7 @@ function collectBareCopper(
     (isSameNetAsPour(pad.netId, pourNetId) ? sameNet : diffNet).push(ring);
   }
 
-  return { diffNet, sameNet };
+  return { diffNet, sameNet, sameNetPads, thermalKnockouts };
 }
 
 /** Drill apertures (real holes) as bare discs — subtracted from every layer. */
@@ -450,6 +572,25 @@ export interface CopperFillPourParams {
   minThicknessMm?: number;
   /** Aesthetic convex-corner fillet radius (mm). */
   cornerRadiusMm?: number;
+  /**
+   * How same-net footprint pads connect to the pour. `"solid"` (default) floods
+   * over the pad; `"thermal"` leaves a relief gap crossed by spokes (IPC-2221).
+   */
+  padConnection?: "solid" | "thermal";
+  /** Thermal spoke width (mm). Default 0.4. Only used when `padConnection` is `"thermal"`. */
+  thermalSpokeWidthMm?: number;
+  /** Thermal relief gap pad→pour (mm). Default 0.4. */
+  thermalReliefGapMm?: number;
+  /** Number of spokes per pad. Default 4. */
+  thermalSpokeCount?: number;
+  /** Spoke angle of the first spoke (deg). Default 45. */
+  thermalSpokeAngleDeg?: number;
+  /**
+   * Optional closed polygon (mm) the pour is clipped to — a user/KiCad copper
+   * ZONE outline. The fillable region becomes `boardInsetExtent ∩ clipPolygon`.
+   * Omitted ⇒ board-wide pour (the whole inset board).
+   */
+  clipPolygonMm?: ReadonlyArray<PcbPointMm>;
 }
 
 /**
@@ -463,6 +604,92 @@ export function buildCopperFillPourShapes(
 }
 
 /**
+ * Is a trace's copper already fully covered by the filled pour islands? Used by
+ * the redundant-trace cleanup: a same-net trace that lies entirely within the
+ * pour is electrically redundant (the plane already provides that copper) and
+ * can be deleted. Conservative — uses an area-coverage test (intersection ≥
+ * 99.9% of the trace mask) so a clipper failure yields "not covered" (no
+ * deletion), never a false positive.
+ */
+export function isTraceCoveredByPour(
+  trace: PcbTrace,
+  islands: ReadonlyArray<CopperIsland["paths"]>,
+): boolean {
+  const stadia = buildTraceMaskPolygons(trace, 0);
+  if (stadia.length === 0 || islands.length === 0) return false;
+  const traceMask = union(multiPolyToPathsD(stadia));
+  const maskArea = area(traceMask);
+  if (maskArea <= 0) return false;
+  const islandUnion = union(...islands.map((p) => p as PathsD));
+  if (islandUnion.length === 0) return false;
+  return area(intersection(traceMask, islandUnion)) >= maskArea * 0.999;
+}
+
+export interface CopperFillIslandInfo {
+  areaMm2: number;
+  /** Centroid of the island outer ring (mm) — DRC marker location. */
+  centerMm: PcbPointMm;
+  /** True if the island touches same-net copper (pad/trace/via anchor). */
+  anchored: boolean;
+}
+
+/**
+ * Per-island anchoring report for DRC. An `anchored: false` island is poured
+ * copper kept only by its area (≥ min island area) that touches no same-net
+ * pad/trace/via — i.e. floating/dead copper, which DRC flags.
+ */
+export function buildCopperFillIslandReport(
+  params: CopperFillPourParams,
+): CopperFillIslandInfo[] {
+  const { islands, bare } = computePourIslands(params);
+  const anchors = union(multiPolyToPathsD(bare.sameNet));
+  return islands.map((island) => {
+    const outer = island.paths[0] ?? [];
+    let cx = 0;
+    let cy = 0;
+    for (const p of outer) {
+      cx += p.x;
+      cy += p.y;
+    }
+    const n = Math.max(1, outer.length);
+    return {
+      areaMm2: island.areaMm2,
+      centerMm: { x: cx / n, y: cy / n },
+      anchored:
+        anchors.length > 0 && intersection(island.paths, anchors).length > 0,
+    };
+  });
+}
+
+/**
+ * Pour-aware connectivity: same-net footprint pads grouped by the filled island
+ * that electrically joins them. Two pad keys (`${placementId}|${padNumber}`) in
+ * the same returned group are connected through poured copper, so the ratsnest
+ * must treat them as a single node and draw no airwire between them. Pads split
+ * across separate islands land in separate groups (a clearance moat or board
+ * cutout broke the copper). A pad is "on" an island when its bare copper ring
+ * intersects the island — robust to the THT drill knockout at the pad centre,
+ * and to thermal-relief spokes (same-net copper that reaches the pad edge).
+ */
+export function buildCopperFillPadGroups(
+  params: CopperFillPourParams,
+): string[][] {
+  const { islands, bare } = computePourIslands(params);
+  if (bare.sameNetPads.length === 0) return [];
+  const groups: string[][] = [];
+  for (const island of islands) {
+    const keys: string[] = [];
+    for (const pad of bare.sameNetPads) {
+      if (intersection(island.paths, polyToPathsD(pad.poly)).length > 0) {
+        keys.push(pad.key);
+      }
+    }
+    if (keys.length > 0) groups.push(keys);
+  }
+  return groups;
+}
+
+/**
  * Pour islands as flat Clipper `PathsD` — `[outer, ...holes]` rings of `{x, y}`
  * mm — instead of `THREE.Shape`. The Gerber exporter consumes this to emit the
  * pour as positive `G36/G37` regions (outer) with clear (`%LPC%`) hole regions,
@@ -473,6 +700,13 @@ export function buildCopperFillPourPaths(
   params: CopperFillPourParams,
 ): CopperIsland["paths"][] {
   return buildCopperFillPourIslands(params).map((island) => island.paths);
+}
+
+/** Poured islands only (back-compat thin wrapper over `computePourIslands`). */
+function buildCopperFillPourIslands(
+  params: CopperFillPourParams,
+): CopperIsland[] {
+  return computePourIslands(params).islands;
 }
 
 /**
@@ -492,9 +726,10 @@ export function buildCopperFillPourPaths(
  *   5. islands  = split; keep if area ≥ min OR connected to a same-net anchor.
  * Same-net copper is never subtracted → the pour flows up to its edge.
  */
-function buildCopperFillPourIslands(
-  params: CopperFillPourParams,
-): CopperIsland[] {
+function computePourIslands(params: CopperFillPourParams): {
+  islands: CopperIsland[];
+  bare: BareCopper;
+} {
   const edge = Math.max(0, params.copperToBoardEdgeMm);
   const clearance = Math.max(0, params.clearanceMm);
   const cornerRadius = Math.max(
@@ -509,15 +744,31 @@ function buildCopperFillPourIslands(
     0,
     params.minIslandAreaMm2 ?? DEFAULT_MIN_POUR_ISLAND_AREA_MM2,
   );
+  const thermal: ThermalConfig | null =
+    params.padConnection === "thermal"
+      ? {
+          // Spokes must be ≥ the min-copper-width floor, else the min-width open
+          // below would erase them and electrically isolate the pad from the pour.
+          spokeWidthMm: Math.max(
+            minThickness,
+            params.thermalSpokeWidthMm ?? DEFAULT_THERMAL_SPOKE_WIDTH_MM,
+          ),
+          gapMm: Math.max(
+            0,
+            params.thermalReliefGapMm ?? DEFAULT_THERMAL_RELIEF_GAP_MM,
+          ),
+          spokeCount: Math.max(
+            1,
+            params.thermalSpokeCount ?? DEFAULT_THERMAL_SPOKE_COUNT,
+          ),
+          angleDeg:
+            params.thermalSpokeAngleDeg ?? DEFAULT_THERMAL_SPOKE_ANGLE_DEG,
+        }
+      : null;
 
-  const extent = buildExtent(
-    params.outline,
-    params.cutouts ?? [],
-    edge,
-    cornerRadius,
-  );
-  if (extent.length === 0) return [];
-
+  // Bare copper first so every early return can carry the same-net pad set
+  // (consumed by `buildCopperFillPadGroups` for pour-aware connectivity, which
+  // must still attribute pads even when the fill itself collapses to empty).
   const freePads = params.freePads ?? [];
   const bare = collectBareCopper(
     params.layer,
@@ -527,7 +778,26 @@ function buildCopperFillPourIslands(
     params.pourNetId,
     params.padNetIds,
     freePads,
+    thermal,
   );
+
+  let extent = buildExtent(
+    params.outline,
+    params.cutouts ?? [],
+    edge,
+    cornerRadius,
+  );
+  // Clip the pour to a zone polygon when one is given (custom/imported copper
+  // zone). The board-edge inset still applies via `buildExtent`, so the zone is
+  // additionally bounded by the board.
+  if (params.clipPolygonMm && params.clipPolygonMm.length >= 3) {
+    extent = intersection(
+      extent,
+      polyToPathsD([ringFromPoints(params.clipPolygonMm)]),
+    );
+  }
+  if (extent.length === 0) return { islands: [], bare };
+
   const freeHoles = params.freeHoles ?? [];
   const apertures = collectApertures(
     params.vias,
@@ -542,14 +812,16 @@ function buildCopperFillPourIslands(
   // WAS different-net copper but its union/offset vanished, bail to empty copper.
   const diffNetPaths = multiPolyToPathsD(bare.diffNet);
   const mergedDiffNet = union(diffNetPaths);
-  if (diffNetPaths.length > 0 && mergedDiffNet.length === 0) return [];
+  if (diffNetPaths.length > 0 && mergedDiffNet.length === 0)
+    return { islands: [], bare };
   // Over-clear by the polygonal-offset compensation so the discretized halo
   // never under-cuts the true `clearance` at edge midpoints.
   const diffNetHalo = offsetRound(
     mergedDiffNet,
     clearance > 0 ? clearance + CLEARANCE_SAFETY_EPS_MM : 0,
   );
-  if (mergedDiffNet.length > 0 && diffNetHalo.length === 0) return [];
+  if (mergedDiffNet.length > 0 && diffNetHalo.length === 0)
+    return { islands: [], bare };
 
   // Non-plated holes get a hole-to-copper ring (edge clearance + chord-error
   // compensation). The bare hole is still subtracted via `apertures`, so a
@@ -561,21 +833,30 @@ function buildCopperFillPourIslands(
   );
 
   const aperturePaths = multiPolyToPathsD(apertures);
-  const clearanceHoles = union(diffNetHalo, aperturePaths, npthHalo);
-  // Fail closed on a TOTAL obstacle collapse: if any obstacle existed but the
-  // whole clip set vanished (union threw), bail to empty copper rather than
-  // flood. (A partial NPTH-only collapse keeps `aperturePaths`, so it degrades
-  // gracefully per above — it does not reach this bail.)
+  // Thermal-relief gaps are exact (already include the spoke carve-outs) and
+  // same-net, so they carry NO short risk — excluded from the fail-closed bail
+  // below. A thermal union failure therefore degrades to a solid flood (safe),
+  // never an empty pour.
+  const clearanceHoles = union(
+    diffNetHalo,
+    aperturePaths,
+    npthHalo,
+    ...bare.thermalKnockouts,
+  );
+  // Fail closed on a TOTAL obstacle collapse: if any DIFFERENT-NET obstacle
+  // existed but the whole clip set vanished (union threw), bail to empty copper
+  // rather than flood. (A partial NPTH-only collapse keeps `aperturePaths`, so
+  // it degrades gracefully per above — it does not reach this bail.)
   if (
     (diffNetHalo.length > 0 ||
       aperturePaths.length > 0 ||
       npthHalo.length > 0) &&
     clearanceHoles.length === 0
   )
-    return [];
+    return { islands: [], bare };
 
   const raw = difference(extent, clearanceHoles);
-  if (raw.length === 0) return [];
+  if (raw.length === 0) return { islands: [], bare };
 
   let fill = raw;
   const r = Math.max(0, minThickness / 2 - MIN_THICKNESS_EPS_MM);
@@ -589,7 +870,7 @@ function buildCopperFillPourIslands(
       clearanceHoles,
     );
   }
-  if (fill.length === 0) return [];
+  if (fill.length === 0) return { islands: [], bare };
 
   const islands = splitIslands(fill);
   const anchors = union(multiPolyToPathsD(bare.sameNet));
@@ -598,5 +879,5 @@ function buildCopperFillPourIslands(
       island.areaMm2 >= minIslandArea ||
       (anchors.length > 0 && intersection(island.paths, anchors).length > 0),
   );
-  return kept;
+  return { islands: kept, bare };
 }

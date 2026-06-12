@@ -8,7 +8,10 @@ import type {
 } from "../../../../../sdks";
 import type { FootprintRenderSourcePad } from "../../../../../shared/rendering";
 import {
+  buildCopperFillPadGroups,
+  buildCopperFillPourPaths,
   buildCopperFillPourShapes,
+  isTraceCoveredByPour,
   resolveCopperFillClearanceMm,
   type CopperFillPourParams,
 } from "./copper-fill-geometry";
@@ -395,5 +398,155 @@ describe("copper fill geometry", () => {
     );
     expect(centroid.x).toBeCloseTo(c, 1);
     expect(centroid.y).toBeCloseTo(c, 1);
+  });
+});
+
+describe("copper fill thermal relief", () => {
+  const sameNetPlacement = placement([pad("1", { x: 0, y: 0 }, 2, 2)]);
+  const padNets = new Map([["U1-pcb|1", "gnd"]]);
+
+  test("solid connection floods over a same-net pad (no relief gap)", () => {
+    const shapes = buildPour({
+      placements: [sameNetPlacement],
+      pourNetId: "gnd",
+      padNetIds: padNets,
+      padConnection: "solid",
+    });
+    // Same-net solid pad merges into the pour → no knockout hole.
+    expect(holeCount(shapes)).toBe(0);
+  });
+
+  test("thermal connection carves a relief gap with spoke channels", () => {
+    const solid = buildPour({
+      placements: [sameNetPlacement],
+      pourNetId: "gnd",
+      padNetIds: padNets,
+      padConnection: "solid",
+    });
+    const thermal = buildPour({
+      placements: [sameNetPlacement],
+      pourNetId: "gnd",
+      padNetIds: padNets,
+      padConnection: "thermal",
+      thermalSpokeWidthMm: 0.4,
+      thermalReliefGapMm: 0.4,
+      thermalSpokeCount: 4,
+    });
+    // The relief gap removes copper the solid flood kept.
+    expect(pourArea(thermal)).toBeLessThan(pourArea(solid));
+    // A relief gap (with spoke carve-outs) shows up as ≥1 hole in the pour.
+    expect(holeCount(thermal)).toBeGreaterThan(0);
+  });
+});
+
+describe("copper fill connectivity (buildCopperFillPadGroups)", () => {
+  // Two same-net pads on one board-wide pour → one connected island group.
+  const twoPads = placement([
+    pad("1", { x: -6, y: 0 }, 2, 2),
+    pad("2", { x: 6, y: 0 }, 2, 2),
+  ]);
+  const padNets = new Map([
+    ["U1-pcb|1", "gnd"],
+    ["U1-pcb|2", "gnd"],
+  ]);
+  const base: CopperFillPourParams = {
+    layer: "F.Cu",
+    outline,
+    placements: [twoPads],
+    traces: noTraces,
+    vias: noVias,
+    pourNetId: "gnd",
+    padNetIds: padNets,
+    clearanceMm: 0.5,
+    copperToBoardEdgeMm: 0.5,
+    cornerRadiusMm: 0,
+    minThicknessMm: 0,
+  };
+
+  test("solid pour joins both same-net pads into one group", () => {
+    const groups = buildCopperFillPadGroups(base);
+    expect(groups).toHaveLength(1);
+    expect([...groups[0]!].sort()).toEqual(["U1-pcb|1", "U1-pcb|2"]);
+  });
+
+  test("thermal pour still joins both pads (spokes connect them)", () => {
+    const groups = buildCopperFillPadGroups({
+      ...base,
+      padConnection: "thermal",
+      thermalSpokeWidthMm: 0.4,
+      thermalReliefGapMm: 0.4,
+    });
+    expect(groups).toHaveLength(1);
+    expect([...groups[0]!].sort()).toEqual(["U1-pcb|1", "U1-pcb|2"]);
+  });
+
+  test("a foreign-net pad is not grouped with the pour net", () => {
+    const groups = buildCopperFillPadGroups({
+      ...base,
+      pourNetId: "vcc", // pour net differs from the pads' "gnd"
+    });
+    expect(groups).toHaveLength(0);
+  });
+});
+
+describe("copper fill redundant-trace coverage (isTraceCoveredByPour)", () => {
+  const base: CopperFillPourParams = {
+    layer: "F.Cu",
+    outline,
+    placements: [],
+    traces: noTraces,
+    vias: noVias,
+    pourNetId: "gnd",
+    padNetIds: emptyPadNets,
+    clearanceMm: 0.5,
+    copperToBoardEdgeMm: 0.5,
+    cornerRadiusMm: 0,
+    minThicknessMm: 0,
+  };
+  const trace = (netId: string): PcbTrace => ({
+    id: `t-${netId}`,
+    netId,
+    netClassId: "default",
+    layer: "F.Cu",
+    widthMm: 0.5,
+    pointsNm: [
+      { x: -5_000_000, y: 0 },
+      { x: 5_000_000, y: 0 },
+    ],
+    segmentMode: "manhattan-90",
+  });
+
+  test("a same-net trace inside the pour is fully covered", () => {
+    const gnd = trace("gnd");
+    const islands = buildCopperFillPourPaths({ ...base, traces: [gnd] });
+    expect(isTraceCoveredByPour(gnd, islands)).toBe(true);
+  });
+
+  test("a different-net trace (knocked out by its moat) is not covered", () => {
+    const vcc = trace("vcc");
+    const islands = buildCopperFillPourPaths({ ...base, traces: [vcc] });
+    expect(isTraceCoveredByPour(vcc, islands)).toBe(false);
+  });
+});
+
+describe("copper fill zone clip (clipPolygonMm)", () => {
+  // 20×10 board; clip to a 4×4 square centred at origin.
+  const clip = [
+    { x: -2, y: -2 },
+    { x: 2, y: -2 },
+    { x: 2, y: 2 },
+    { x: -2, y: 2 },
+  ];
+
+  test("clipping a pour to a zone polygon restricts its area", () => {
+    const full = buildPour({ pourNetId: null });
+    const zoned = buildPour({ pourNetId: null, clipPolygonMm: clip });
+    const fullArea = pourArea(full);
+    const zonedArea = pourArea(zoned);
+    expect(zonedArea).toBeGreaterThan(0);
+    expect(zonedArea).toBeLessThan(fullArea);
+    // ≈ the 4×4 = 16 mm² clip (well inside the board, no obstacles).
+    expect(zonedArea).toBeGreaterThan(10);
+    expect(zonedArea).toBeLessThan(16.5);
   });
 });

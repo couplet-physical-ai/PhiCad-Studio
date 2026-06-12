@@ -72,6 +72,12 @@ export function usePcbWorkspace(params: {
   const toggleCopperFillLayerStore = usePcbViewStore(
     (s) => s.toggleCopperFillLayer,
   );
+  const setCopperFillPourNetStore = usePcbViewStore(
+    (s) => s.setCopperFillPourNet,
+  );
+  const setCopperFillPadConnectionStore = usePcbViewStore(
+    (s) => s.setCopperFillPadConnection,
+  );
   const setRatsnestVisibleStore = usePcbViewStore((s) => s.setRatsnestVisible);
   const toggleRatsnestVisibleStore = usePcbViewStore(
     (s) => s.toggleRatsnestVisible,
@@ -418,15 +424,45 @@ export function usePcbWorkspace(params: {
     [cycleDisplayModeStore],
   );
 
+  // Copper-fill changes now drive BACKEND pour-aware ratsnest connectivity
+  // (a same-net plane satisfies the net), so after persisting the view-state
+  // patch we flush it immediately and reload the projection — otherwise the
+  // airwires / UNCONNECTED_NET DRC would lag until the next command.
+  const refreshFill = useCallback(() => {
+    void (async () => {
+      await flushView();
+      await refresh();
+    })();
+  }, [flushView, refresh]);
+
   const setCopperFillLayers = useCallback(
-    (layers: ReadonlyArray<PcbCopperLayerId>) =>
-      setCopperFillLayersStore(layers),
-    [setCopperFillLayersStore],
+    (layers: ReadonlyArray<PcbCopperLayerId>) => {
+      setCopperFillLayersStore(layers);
+      refreshFill();
+    },
+    [setCopperFillLayersStore, refreshFill],
   );
 
   const toggleCopperFillLayer = useCallback(
-    (layer: PcbCopperLayerId) => toggleCopperFillLayerStore(layer),
-    [toggleCopperFillLayerStore],
+    (layer: PcbCopperLayerId) => {
+      toggleCopperFillLayerStore(layer);
+      refreshFill();
+    },
+    [toggleCopperFillLayerStore, refreshFill],
+  );
+
+  const setCopperFillPourNet = useCallback(
+    (layer: PcbCopperLayerId, netId: string | null) => {
+      setCopperFillPourNetStore(layer, netId);
+      refreshFill();
+    },
+    [setCopperFillPourNetStore, refreshFill],
+  );
+
+  const setCopperFillPadConnection = useCallback(
+    (connection: "solid" | "thermal") =>
+      setCopperFillPadConnectionStore(connection),
+    [setCopperFillPadConnectionStore],
   );
 
   const addTrace = useCallback(
@@ -455,6 +491,19 @@ export function usePcbWorkspace(params: {
     },
     [dispatchCommand, refresh, refreshHistory],
   );
+
+  const cleanupPourTraces = useCallback(async () => {
+    setError(null);
+    try {
+      const result = await dispatchCommand({ type: "pcb_cleanup_pour_traces" });
+      if (!result.ok) throw new Error("Cleanup failed");
+      await refresh();
+      await refreshHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cleanup failed");
+      throw err instanceof Error ? err : new Error("Cleanup failed");
+    }
+  }, [dispatchCommand, refresh, refreshHistory]);
 
   const addVia = useCallback(
     async (input: {
@@ -797,6 +846,22 @@ export function usePcbWorkspace(params: {
     return api.getDrcResult(designId);
   }, [api, designId]);
 
+  // Nets available to pour into, sorted by name (GND/PWR first for convenience).
+  const pcbNets = useMemo<ReadonlyArray<{ id: string; name: string }>>(() => {
+    const entries = Object.entries(projection?.netNames ?? {}).map(
+      ([id, name]) => ({ id, name }),
+    );
+    const rank = (n: string): number =>
+      /^(gnd|ground|agnd|dgnd|earth|vss|vee)$/i.test(n)
+        ? 0
+        : /^(v|vcc|vdd|vbat|\+)/i.test(n)
+          ? 1
+          : 2;
+    return entries.sort(
+      (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
+    );
+  }, [projection?.netNames]);
+
   return {
     projection,
     loading,
@@ -823,6 +888,12 @@ export function usePcbWorkspace(params: {
     copperFillLayers: viewState.copperFillLayers,
     setCopperFillLayers,
     toggleCopperFillLayer,
+    copperFillPourNetIds: viewState.copperFillPourNetIds,
+    setCopperFillPourNet,
+    copperFillPadConnection: viewState.copperFillPadConnection ?? "solid",
+    setCopperFillPadConnection,
+    cleanupPourTraces,
+    nets: pcbNets,
     refresh,
     updateBoardSize,
     updateBoardOutline,

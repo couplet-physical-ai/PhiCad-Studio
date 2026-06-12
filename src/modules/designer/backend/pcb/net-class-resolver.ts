@@ -3,7 +3,17 @@
 
 import type { PcbNetClass } from "../../../../sdks/designer";
 
-const GND_NAMES = /^(GND|GROUND|AGND|DGND|EARTH|VSS|VEE)$/i;
+export const GND_NAMES = /^(GND|GROUND|AGND|DGND|EARTH|VSS|VEE)$/i;
+
+/** First net id whose name is a ground name, or null. Used to default pours. */
+export function findGroundNetId(
+  netNames: ReadonlyMap<string, string>,
+): string | null {
+  for (const [netId, name] of netNames) {
+    if (GND_NAMES.test(name.trim())) return netId;
+  }
+  return null;
+}
 const POWER_NAMES = /^(VCC|VDD|VBAT|VBUS|VIN|VOUT)$/i;
 // Matches +3V3, +5V, -12V, +1V8, +0.9V, -0V9, etc.
 const POWER_VOLTAGE = /^[+-]\d+(\.\d+)?V\d*$/i;
