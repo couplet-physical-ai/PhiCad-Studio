@@ -20,6 +20,10 @@ import type {
   LibraryComponent,
   LibraryComponentPlacementDetail,
   LibraryTagStat,
+  RouteOperation,
+  RouteOptions,
+  RouteStatusResponse,
+  SubmitRouteResponse,
 } from "../../../sdks";
 import { exportBundleName } from "../../../sdks";
 
@@ -639,6 +643,75 @@ export function createDesignerApi(params: {
       downloadBlob(
         await res.blob(),
         `${exportBundleName(designId)}-${kind}.${extension}`,
+      );
+    },
+
+    // ── Cloud auto-router ──────────────────────────────────────────────
+    /** Submit the board to the cloud auto-router. Returns the job id + warnings. */
+    async submitAutoroute(
+      designId: string,
+      request?: {
+        options?: RouteOptions;
+        routableNetClassIds?: string[];
+        excludedNetIds?: string[];
+      },
+    ): Promise<SubmitRouteResponse & { warnings: string[] }> {
+      return fetchData<SubmitRouteResponse & { warnings: string[] }>(
+        buildModuleUrl(
+          backendURL,
+          moduleId,
+          `/designs/${encodeURIComponent(designId)}/autoroute`,
+        ),
+        {
+          method: "POST",
+          headers: applyCloudHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify(request ?? {}),
+        },
+      );
+    },
+
+    /** Poll a routing job's status + (on completion) its RouteResultEnvelope. */
+    async getAutorouteStatus(
+      designId: string,
+      jobId: string,
+    ): Promise<RouteStatusResponse> {
+      return fetchData<RouteStatusResponse>(
+        buildModuleUrl(
+          backendURL,
+          moduleId,
+          `/designs/${encodeURIComponent(designId)}/autoroute/${encodeURIComponent(
+            jobId,
+          )}`,
+        ),
+        { headers: applyCloudHeaders(undefined) },
+      );
+    },
+
+    /** Apply the user's cherry-picked ops; returns the post-apply DRC report. */
+    async applyAutorouteOps(
+      designId: string,
+      operations: RouteOperation[],
+      sessionId: string,
+    ): Promise<{
+      appliedCount: number;
+      failures: Array<{ opId: string; code: string }>;
+      drc: DrcReport | null;
+    }> {
+      return fetchData<{
+        appliedCount: number;
+        failures: Array<{ opId: string; code: string }>;
+        drc: DrcReport | null;
+      }>(
+        buildModuleUrl(
+          backendURL,
+          moduleId,
+          `/designs/${encodeURIComponent(designId)}/autoroute/apply`,
+        ),
+        {
+          method: "POST",
+          headers: applyCloudHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify({ operations, sessionId }),
+        },
       );
     },
   };

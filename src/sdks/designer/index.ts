@@ -258,3 +258,6 @@ export interface DesignerSDK {
     request: KicadProjectCommitRequest,
   ): Promise<KicadProjectCommitResult>;
 }
+
+// Cloud auto-router wire contracts (BoardSnapshot / RouteResultEnvelope / ProgressFrame).
+export type * from "./autoroute";

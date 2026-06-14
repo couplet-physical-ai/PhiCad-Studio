@@ -20,6 +20,8 @@ import type {
 import type {
   DesignerAutoArrangeSchematicCommand,
   DesignerCommandEnvelope,
+  RouteOperation,
+  RouteOptions,
   DesignerCreateWireCommand,
   DesignerCreateWireJunctionCommand,
   DesignerDeleteEntityCommand,
@@ -89,6 +91,8 @@ import { createDesignerStore } from "./store";
 import { createCommentStore } from "./comments/comment-store";
 import { runDrc } from "./drc/drc-engine";
 import { runErc } from "./erc/erc-engine";
+import { buildBoardSnapshot } from "./pcb/board-snapshot";
+import { cancelRoute, getRouteStatus, submitRoute } from "./autoroute/client";
 import { asNumber, asRecord, asString } from "./value-guards";
 
 function success<T>(data: T, status = 200): Response {
@@ -415,6 +419,26 @@ function parseHistoryBody(body: unknown): { sessionId: string } {
     throw new ValidationError("sessionId must be a string");
   }
   return { sessionId };
+}
+
+// Cherry-picked auto-router ops to apply. Each op.payload is re-validated by
+// parseCommandEnvelope before dispatch, so this only checks the envelope shape.
+function parseAutorouteApplyBody(body: unknown): {
+  operations: RouteOperation[];
+  sessionId: string;
+} {
+  const record = asRecord(body);
+  if (!record) {
+    throw new ValidationError("Request body must be an object");
+  }
+  const sessionId = asString(record.sessionId);
+  if (!sessionId) {
+    throw new ValidationError("sessionId must be a string");
+  }
+  if (!Array.isArray(record.operations)) {
+    throw new ValidationError("operations must be an array");
+  }
+  return { operations: record.operations as RouteOperation[], sessionId };
 }
 
 function parsePlacePartCommand(
@@ -2362,6 +2386,97 @@ export function registerRoutes(
       apiUrl,
     });
     return success({ result });
+  });
+
+  // ── Cloud auto-router: submit snapshot → review ops → apply ─────────────
+  // Proxies the user's GoTrue bearer to the routing service; the desktop stays
+  // the authoritative DRC engine (re-validated on apply).
+  router.post("/designs/:designId/autoroute", async ({ params, req }) => {
+    const designId = params.getOrThrow("designId");
+    const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+    type AutorouteRequestBody = {
+      options?: RouteOptions;
+      routableNetClassIds?: unknown;
+      excludedNetIds?: unknown;
+    };
+    const body: AutorouteRequestBody =
+      await parseJsonBody<AutorouteRequestBody>(req).catch(() => ({}));
+    const projection = await store.getPcbProjection(designId);
+    if (!projection) {
+      throw new NotFoundError(`Design '${designId}' not found`);
+    }
+    const asStringArray = (v: unknown): string[] | undefined =>
+      Array.isArray(v)
+        ? v.filter((x): x is string => typeof x === "string")
+        : undefined;
+    const { snapshot, warnings } = buildBoardSnapshot(projection, {
+      routeOptions: body.options,
+      routableNetClassIds: asStringArray(body.routableNetClassIds),
+      excludedNetIds: asStringArray(body.excludedNetIds),
+    });
+    const submitted = await submitRoute(snapshot, bearer);
+    return success({ ...submitted, warnings });
+  });
+
+  router.get("/designs/:designId/autoroute/:jobId", async ({ params, req }) => {
+    params.getOrThrow("designId");
+    const jobId = params.getOrThrow("jobId");
+    const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+    const status = await getRouteStatus(jobId, bearer);
+    return success(status);
+  });
+
+  router.post(
+    "/designs/:designId/autoroute/:jobId/cancel",
+    async ({ params, req }) => {
+      params.getOrThrow("designId");
+      const jobId = params.getOrThrow("jobId");
+      const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+      await cancelRoute(jobId, bearer);
+      return success({ jobId, cancelRequested: true });
+    },
+  );
+
+  // Apply the user's cherry-picked subset. Each op runs through the normal
+  // command path (undo/redo + cloud mirror), then one final DRC pass. Partial
+  // apply is allowed; DRC findings are reported, not blocking.
+  router.post("/designs/:designId/autoroute/apply", async ({ params, req }) => {
+    const designId = params.getOrThrow("designId");
+    const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+    const apiUrl = req.headers.get("x-cloud-api-url") ?? undefined;
+    const { operations, sessionId } = parseAutorouteApplyBody(
+      await parseJsonBody<unknown>(req),
+    );
+    let appliedCount = 0;
+    const failures: Array<{ opId: string; code: string }> = [];
+    for (const op of operations) {
+      const envelope = parseCommandEnvelope({
+        commandId: crypto.randomUUID(),
+        sessionId,
+        aggregateId: designId,
+        issuedAt: Date.now(),
+        baseRevision: null,
+        command: op.payload,
+      });
+      const result = await store.dispatchCommand(designId, envelope, {
+        bearer,
+        apiUrl,
+      });
+      // dispatchCommand returns a discriminated result; a rejected command
+      // (e.g. an invalid trace path) is `ok:false`, not a throw — count only
+      // genuinely-applied ops so the UI never reports a false success.
+      if (result.ok) appliedCount += 1;
+      else failures.push({ opId: op.id, code: result.code });
+    }
+    const projection = await store.getPcbProjection(designId);
+    const view = projection?.board.viewState;
+    const drc = projection
+      ? runDrc(projection, {
+          ignoredRuleClasses: view?.drcIgnoredRuleClasses ?? [],
+          waivedIds: view?.drcWaivedViolationIds ?? [],
+        })
+      : null;
+    return success({ appliedCount, failures, drc });
   });
 
   router.post("/designs/:designId/cloud-link", async ({ params, req }) => {

@@ -1144,6 +1144,12 @@ function DynamicRatsnestGuide({
   return <DashedLineSegments geometry={geom} color={guide.color} opacity={1} />;
 }
 
+export interface AutoroutePreviewTrace {
+  pointsNm: Array<{ x: number; y: number }>;
+  layer: PcbCopperLayerId;
+  widthMm: number;
+}
+
 interface PcbSceneProps {
   projection: DesignerPcbProjection;
   selection?: PcbSelection;
@@ -1194,6 +1200,12 @@ interface PcbSceneProps {
     layer: PcbCopperLayerId;
     widthMm: number;
   } | null;
+  /**
+   * Auto-route result preview: ghost traces drawn before the user applies, so
+   * the cloud route is reviewable on the live board. Rendered with the same
+   * `TracePreviewLayer` as the in-progress route preview.
+   */
+  autoroutePreview?: AutoroutePreviewTrace[] | null;
   routeFocusActive?: boolean;
   routeFocusLayer?: PcbCopperLayerId;
   focusedLayer?: PcbCopperLayerId | null;
@@ -1247,6 +1259,7 @@ export function PcbScene({
   displayMode = "normal",
   routeGuide = null,
   routePreview = null,
+  autoroutePreview = null,
   routeFocusActive = false,
   routeFocusLayer,
   focusedLayer = null,
@@ -1524,6 +1537,15 @@ export function PcbScene({
           mirror={mirror}
         />
       ) : null}
+      {autoroutePreview?.map((t, i) => (
+        <TracePreviewLayer
+          key={`autoroute-preview-${i}`}
+          pointsNm={t.pointsNm}
+          layer={t.layer}
+          widthMm={t.widthMm}
+          mirror={mirror}
+        />
+      ))}
       <group scale={[sceneScaleX, 1, 1]}>
         <FitBoardOnMount
           outline={projection.board.outline}

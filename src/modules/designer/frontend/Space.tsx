@@ -309,6 +309,21 @@ function DesignerSpaceInner({
       };
     };
   }, [cloudEnabled, projectSyncEnabled, session?.access_token]);
+  // Auto-router only needs a valid login (the snapshot is self-contained; the
+  // service is stateless) — NOT project sync. Separate from `cloudHeaders` so a
+  // user with sync off can still autoroute.
+  const autorouteCloudHeaders = useMemo(() => {
+    if (!cloudEnabled || !session) return undefined;
+    return () => {
+      const token = session.access_token;
+      const apiUrl = readCloudConfig().apiUrl;
+      return {
+        ...(token ? { "x-cloud-bearer": token } : {}),
+        ...(apiUrl ? { "x-cloud-api-url": apiUrl } : {}),
+      };
+    };
+  }, [cloudEnabled, session]);
+  const autorouteEnabled = cloudEnabled && Boolean(session);
   const { state, actions } = useDesignerWorkspace({
     backendURL,
     moduleId,
@@ -1114,6 +1129,8 @@ function DesignerSpaceInner({
                   moduleId={moduleId}
                   designId={state.selectedDesignId}
                   gridVisible={gridVisible}
+                  cloudHeaders={autorouteCloudHeaders}
+                  autorouteEnabled={autorouteEnabled}
                   dispatchCommand={actions.dispatchCommand}
                   notifyExternalRevisionBump={
                     actions.notifyExternalRevisionBump
