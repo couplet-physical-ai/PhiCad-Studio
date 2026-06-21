@@ -2,6 +2,7 @@ import { useCallback, useState, type ReactElement } from "react";
 import { CloudDownload, CloudUpload } from "lucide-react";
 import { useAuth } from "@/cloud/AuthProvider";
 import { readCloudConfig } from "@/cloud/config";
+import { useFeatureFlag } from "@/feature-flags";
 
 interface Props {
   backendURL?: string | null;
@@ -32,6 +33,7 @@ export function CloudLibrarySyncButton({
   onChanged,
 }: Props): ReactElement | null {
   const { enabled, session } = useAuth();
+  const libraryCloudEnabled = useFeatureFlag("cloud.library");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -96,7 +98,7 @@ export function CloudLibrarySyncButton({
     }
   }, [call, onChanged]);
 
-  if (!enabled || !session) return null;
+  if (!enabled || !session || !libraryCloudEnabled) return null;
 
   return (
     <div className="inline-flex items-center">

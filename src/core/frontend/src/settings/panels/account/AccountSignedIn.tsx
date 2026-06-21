@@ -1,6 +1,7 @@
 import { CircleCheck } from "lucide-react";
 import { useAuth } from "@/cloud/AuthProvider";
 import { useCloudPrefs } from "@/cloud/cloud-prefs";
+import { useFeatureFlag } from "@/feature-flags";
 import { cn } from "@/lib/utils";
 import type { AccountSession } from "./useSession";
 
@@ -13,6 +14,7 @@ export function AccountSignedIn({ session }: { session: AccountSession }) {
   const { signOut } = useAuth();
   const projectSyncEnabled = useCloudPrefs((s) => s.projectSyncEnabled);
   const setProjectSyncEnabled = useCloudPrefs((s) => s.setProjectSyncEnabled);
+  const syncFeatureEnabled = useFeatureFlag("cloud.sync");
 
   const planLabel = session.tier === "pro" ? "Pro" : "Free";
 
@@ -51,39 +53,41 @@ export function AccountSignedIn({ session }: { session: AccountSession }) {
         </div>
       </div>
 
-      <section className="rounded-lg border border-slate-200 bg-white px-4 py-[14px] dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-              Sync projects to cloud
-            </p>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              When on, your designs sync to your OpenPCB Cloud workspace. Turn
-              off to keep all project data on this machine.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={projectSyncEnabled}
-            aria-label="Sync projects to cloud"
-            onClick={() => setProjectSyncEnabled(!projectSyncEnabled)}
-            className={cn(
-              "relative mt-0.5 h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors",
-              projectSyncEnabled
-                ? "bg-violet-600"
-                : "bg-slate-300 dark:bg-slate-700",
-            )}
-          >
-            <span
+      {syncFeatureEnabled && (
+        <section className="rounded-lg border border-slate-200 bg-white px-4 py-[14px] dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                Sync projects to cloud
+              </p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                When on, your designs sync to your OpenPCB Cloud workspace. Turn
+                off to keep all project data on this machine.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={projectSyncEnabled}
+              aria-label="Sync projects to cloud"
+              onClick={() => setProjectSyncEnabled(!projectSyncEnabled)}
               className={cn(
-                "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-                projectSyncEnabled ? "translate-x-[22px]" : "translate-x-0.5",
+                "relative mt-0.5 h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors",
+                projectSyncEnabled
+                  ? "bg-violet-600"
+                  : "bg-slate-300 dark:bg-slate-700",
               )}
-            />
-          </button>
-        </div>
-      </section>
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
+                  projectSyncEnabled ? "translate-x-[22px]" : "translate-x-0.5",
+                )}
+              />
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

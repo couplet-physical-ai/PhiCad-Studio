@@ -9,6 +9,7 @@ import type {
 } from "../../../core/contracts/modules/backend-module";
 import { eq, or, sql } from "drizzle-orm";
 import { NotFoundError, ValidationError } from "../../../core/contracts/errors";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import {
   getDb,
   getComponentDetail,
@@ -1242,23 +1243,27 @@ export function registerRoutes(
     return { bearer, apiUrl };
   }
 
-  router.get("/cloud/sync", async () => {
-    return success({ state: getLibrarySyncState(getDb(ctx)) });
-  });
+  // Library cloud push/pull — gated dev-only via the `cloud.library` feature
+  // flag; these routes 404 in release builds.
+  if (isFeatureEnabled("cloud.library")) {
+    router.get("/cloud/sync", async () => {
+      return success({ state: getLibrarySyncState(getDb(ctx)) });
+    });
 
-  router.post("/cloud/sync", async (routeCtx) => {
-    const result = await syncCustomLibrary(
-      getDb(ctx),
-      ctx.logger,
-      cloudCreds(routeCtx.req),
-    );
-    return success({ result });
-  });
+    router.post("/cloud/sync", async (routeCtx) => {
+      const result = await syncCustomLibrary(
+        getDb(ctx),
+        ctx.logger,
+        cloudCreds(routeCtx.req),
+      );
+      return success({ result });
+    });
 
-  router.post("/cloud/pull", async (routeCtx) => {
-    const result = await pullCustomLibrary(ctx, cloudCreds(routeCtx.req));
-    return success({ result });
-  });
+    router.post("/cloud/pull", async (routeCtx) => {
+      const result = await pullCustomLibrary(ctx, cloudCreds(routeCtx.req));
+      return success({ result });
+    });
+  }
 
   router.get("/components", async (routeCtx) => {
     const query = routeCtx.query.get("q") ?? undefined;

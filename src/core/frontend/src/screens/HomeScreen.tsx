@@ -18,6 +18,7 @@ import { useBootstrap } from "../providers/BootstrapProvider";
 import { useNavigationStore } from "../stores/navigation-store";
 import { useAuth } from "@/cloud/AuthProvider";
 import { useCloudPrefs } from "@/cloud/cloud-prefs";
+import { useFeatureFlag } from "@/feature-flags";
 import { Button } from "@shared/frontend/ui/button";
 import { Chip } from "@shared/frontend/ui/chip";
 import { Pill } from "@shared/frontend/ui/pill";
@@ -108,7 +109,8 @@ function CloudSyncPill() {
   const { enabled, session } = useAuth();
   const syncOn = useCloudPrefs((s) => s.projectSyncEnabled);
   const openSettings = useNavigationStore((s) => s.openSettings);
-  if (!enabled) return null; // cloud not configured → no badge
+  const syncFeatureEnabled = useFeatureFlag("cloud.sync");
+  if (!enabled || !syncFeatureEnabled) return null; // cloud off / gated → no badge
   const open = () => openSettings("account");
   if (!session) {
     return (

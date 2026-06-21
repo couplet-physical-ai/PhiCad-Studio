@@ -1,0 +1,83 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  evaluateFeatureFlag,
+  featureFlagEnvSuffix,
+  parseOverride,
+  type FeatureFlagDef,
+} from "../../contracts/feature-flags/registry";
+import { isFeatureEnabled } from "../feature-flags";
+
+const DEV_FLAG: FeatureFlagDef = { availability: "dev", description: "x" };
+const ALL_FLAG: FeatureFlagDef = { availability: "all", description: "x" };
+
+describe("evaluateFeatureFlag", () => {
+  test("dev flag follows isDev", () => {
+    expect(evaluateFeatureFlag(DEV_FLAG, { isDev: true })).toBe(true);
+    expect(evaluateFeatureFlag(DEV_FLAG, { isDev: false })).toBe(false);
+  });
+
+  test("all flag is always on", () => {
+    expect(evaluateFeatureFlag(ALL_FLAG, { isDev: false })).toBe(true);
+  });
+
+  test("override wins over availability", () => {
+    expect(
+      evaluateFeatureFlag(DEV_FLAG, { isDev: false, override: true }),
+    ).toBe(true);
+    expect(
+      evaluateFeatureFlag(ALL_FLAG, { isDev: true, override: false }),
+    ).toBe(false);
+  });
+});
+
+describe("featureFlagEnvSuffix", () => {
+  test("uppercases and replaces separators", () => {
+    expect(featureFlagEnvSuffix("cloud.autoroute")).toBe("CLOUD_AUTOROUTE");
+  });
+});
+
+describe("parseOverride", () => {
+  test("truthy / falsy / unset", () => {
+    expect(parseOverride("1")).toBe(true);
+    expect(parseOverride("true")).toBe(true);
+    expect(parseOverride("on")).toBe(true);
+    expect(parseOverride("0")).toBe(false);
+    expect(parseOverride("off")).toBe(false);
+    expect(parseOverride(undefined)).toBeUndefined();
+    expect(parseOverride("")).toBeUndefined();
+    expect(parseOverride("garbage")).toBeUndefined();
+  });
+});
+
+describe("backend isFeatureEnabled", () => {
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevOverride = process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+
+  afterEach(() => {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevOverride === undefined)
+      delete process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+    else process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE = prevOverride;
+  });
+
+  test("cloud flag enabled in dev, disabled in production", () => {
+    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+    process.env.NODE_ENV = "development";
+    expect(isFeatureEnabled("cloud.autoroute")).toBe(true);
+    process.env.NODE_ENV = "production";
+    expect(isFeatureEnabled("cloud.autoroute")).toBe(false);
+  });
+
+  test("non-production NODE_ENV (e.g. test) keeps cloud flags on", () => {
+    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+    process.env.NODE_ENV = "test";
+    expect(isFeatureEnabled("cloud.autoroute")).toBe(true);
+  });
+
+  test("env override force-enables in production", () => {
+    process.env.NODE_ENV = "production";
+    process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE = "1";
+    expect(isFeatureEnabled("cloud.autoroute")).toBe(true);
+  });
+});

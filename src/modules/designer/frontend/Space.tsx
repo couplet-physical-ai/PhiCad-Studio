@@ -13,6 +13,7 @@ import { Bot, PanelRightOpen } from "lucide-react";
 import { useNavigationStore } from "@/stores/navigation-store";
 import { useAuth } from "@/cloud/AuthProvider";
 import { useCloudPrefs } from "@/cloud/cloud-prefs";
+import { useFeatureFlag } from "@/feature-flags";
 import { readCloudConfig } from "@/cloud/config";
 import { getSupabase } from "@/cloud/supabase";
 import { DesignerFloatingToolbar } from "./components/DesignerFloatingToolbar";
@@ -296,10 +297,17 @@ function DesignerSpaceInner({
   const { addToast } = useToast();
   const { session, user, enabled: cloudEnabled } = useAuth();
   const projectSyncEnabled = useCloudPrefs((s) => s.projectSyncEnabled);
+  // Per-feature cloud gates (dev-only by default — see @/feature-flags).
+  const syncFeatureEnabled = useFeatureFlag("cloud.sync");
+  const autorouteFeatureEnabled = useFeatureFlag("cloud.autoroute");
+  const presenceFeatureEnabled = useFeatureFlag("cloud.presence");
+  const commentsFeatureEnabled = useFeatureFlag("cloud.comments");
+  const designBrowserFeatureEnabled = useFeatureFlag("cloud.designBrowser");
   // No cloud headers (→ no command mirroring, no linking) unless cloud is
   // configured AND the user has project sync turned on.
   const cloudHeaders = useMemo(() => {
-    if (!cloudEnabled || !projectSyncEnabled) return undefined;
+    if (!cloudEnabled || !projectSyncEnabled || !syncFeatureEnabled)
+      return undefined;
     return () => {
       const token = session?.access_token;
       const apiUrl = readCloudConfig().apiUrl;
@@ -308,7 +316,12 @@ function DesignerSpaceInner({
         ...(apiUrl ? { "x-cloud-api-url": apiUrl } : {}),
       };
     };
-  }, [cloudEnabled, projectSyncEnabled, session?.access_token]);
+  }, [
+    cloudEnabled,
+    projectSyncEnabled,
+    syncFeatureEnabled,
+    session?.access_token,
+  ]);
   // Auto-router only needs a valid login (the snapshot is self-contained; the
   // service is stateless) — NOT project sync. Separate from `cloudHeaders` so a
   // user with sync off can still autoroute.
@@ -323,7 +336,8 @@ function DesignerSpaceInner({
       };
     };
   }, [cloudEnabled, session]);
-  const autorouteEnabled = cloudEnabled && Boolean(session);
+  const autorouteEnabled =
+    cloudEnabled && Boolean(session) && autorouteFeatureEnabled;
   const { state, actions } = useDesignerWorkspace({
     backendURL,
     moduleId,
@@ -332,13 +346,18 @@ function DesignerSpaceInner({
     onNotify: addToast,
   });
   const commentSurface = state.activeView === "pcb" ? "pcb" : "schematic";
+  // Comment cloud sync rides the project-sync headers but is independently
+  // gated; when off, comments still persist locally (they just don't sync).
+  const commentsCloudHeaders = commentsFeatureEnabled
+    ? cloudHeaders
+    : undefined;
   const comments = useDesignerComments({
     backendURL,
     moduleId,
     designId: state.selectedDesignId,
     surface: commentSurface,
     currentUserEmail: user?.email ?? null,
-    cloudHeaders,
+    cloudHeaders: commentsCloudHeaders,
   });
   const [kicadImportOpen, setKicadImportOpen] = useState(false);
 
@@ -349,7 +368,13 @@ function DesignerSpaceInner({
   const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false);
 
   useEffect(() => {
-    if (!state.selectedDesignId || !cloudEnabled || !session) return;
+    if (
+      !state.selectedDesignId ||
+      !cloudEnabled ||
+      !session ||
+      !commentsFeatureEnabled
+    )
+      return;
     let cancelled = false;
     let channel: RealtimeChannel | null = null;
     void cloudBadgeApi
@@ -374,7 +399,14 @@ function DesignerSpaceInner({
         if (sb) void sb.removeChannel(channel);
       }
     };
-  }, [cloudBadgeApi, cloudEnabled, comments, session, state.selectedDesignId]);
+  }, [
+    cloudBadgeApi,
+    cloudEnabled,
+    commentsFeatureEnabled,
+    comments,
+    session,
+    state.selectedDesignId,
+  ]);
 
   const { openDesignIds, activeDesignId } = useDesignerTabsStore(
     useShallow((s) => ({
@@ -1028,7 +1060,7 @@ function DesignerSpaceInner({
         onCreateDesign={() => void handleCreateDesign()}
         trailing={
           <>
-            {cloudEnabled && session && (
+            {cloudEnabled && session && designBrowserFeatureEnabled && (
               <button
                 type="button"
                 onClick={() => setCloudBrowserOpen(true)}
@@ -1038,15 +1070,19 @@ function DesignerSpaceInner({
                 Open from Cloud
               </button>
             )}
-            <CloudSyncBadge
-              designId={activeDesignId}
-              api={cloudBadgeApi}
-              onNotify={addToast}
-            />
-            <CloudPresenceIndicator
-              designId={activeDesignId}
-              api={cloudBadgeApi}
-            />
+            {syncFeatureEnabled && (
+              <CloudSyncBadge
+                designId={activeDesignId}
+                api={cloudBadgeApi}
+                onNotify={addToast}
+              />
+            )}
+            {presenceFeatureEnabled && (
+              <CloudPresenceIndicator
+                designId={activeDesignId}
+                api={cloudBadgeApi}
+              />
+            )}
             <button
               type="button"
               aria-pressed={chatOpen}
@@ -1065,12 +1101,14 @@ function DesignerSpaceInner({
         }
       />
 
-      <CloudDesignBrowser
-        open={cloudBrowserOpen}
-        onClose={() => setCloudBrowserOpen(false)}
-        api={cloudBadgeApi}
-        onNotify={addToast}
-      />
+      {designBrowserFeatureEnabled && (
+        <CloudDesignBrowser
+          open={cloudBrowserOpen}
+          onClose={() => setCloudBrowserOpen(false)}
+          api={cloudBadgeApi}
+          onNotify={addToast}
+        />
+      )}
 
       {state.error ? (
         <div className="border-b border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">

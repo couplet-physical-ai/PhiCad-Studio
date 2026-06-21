@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ArrowLeft, Search } from "lucide-react";
 import { useNavigationStore } from "../stores/navigation-store";
 import { useBootstrap } from "../providers/BootstrapProvider";
+import { isFeatureEnabled } from "../feature-flags";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SettingsSidebar } from "../settings/SettingsSidebar";
 import {
@@ -34,7 +35,9 @@ export function SettingsScreen({ tab }: { tab: SettingsTab }) {
     const loaded = moduleRegistry?.loadedModules ?? [];
     return SETTINGS_NAV.flatMap((group) => group.items)
       .filter(
-        (item) => !item.requiresModule || loaded.includes(item.requiresModule),
+        (item) =>
+          (!item.requiresModule || loaded.includes(item.requiresModule)) &&
+          (!item.requiresFlag || isFeatureEnabled(item.requiresFlag)),
       )
       .map((item) => item.id);
   }, [moduleRegistry?.loadedModules]);

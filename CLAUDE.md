@@ -203,6 +203,15 @@ Files: `command-executor.ts`, `commands/`, `history-*.ts`, `projection-*.ts`, `s
 | `OPENPCB_DEBUG_DIAGNOSTICS` | false                           | Enable `/api/diagnostics/debug/modules` endpoint          |
 | `NODE_ENV`                  | —                               | `development` for dev; suppresses request logging in test |
 
+## Feature flags
+
+General per-feature build-target gate, separate from the whole-module `availability` gate. The registry is the single source of truth:
+
+- **Registry (edit here):** `src/core/contracts/feature-flags/registry.ts` — each flag is `{ availability: "all" | "dev" }` (reuses the module-manifest vocabulary). `"dev"` = enabled in dev, hidden from release builds. Graduate a feature to prod by flipping to `"all"`.
+- **Adapters:** frontend `src/core/frontend/src/feature-flags` (`isFeatureEnabled` / `useFeatureFlag`, uses `import.meta.env.DEV`); backend `src/core/contracts/feature-flags/backend` (`isFeatureEnabled`, uses `process.env.NODE_ENV`; module backends import this — `core/backend/feature-flags` re-exports it). Non-prod `NODE_ENV`/`import.meta.env.DEV` (incl. tests) ⇒ flags on.
+- **Override (any build, e.g. QA):** `VITE_FEATURE_<FLAG>` (frontend) / `OPENPCB_FEATURE_<FLAG>` (backend), value `1/true/on` or `0/false/off`. `<FLAG>` = name upper-cased, `.`→`_` (`cloud.autoroute` → `CLOUD_AUTOROUTE`).
+- **Current flags:** all cloud features (`cloud.auth` foundation + `cloud.{sync,designBrowser,presence,comments,autoroute,library,componentSearch,assistantProviders}`), all `dev`-only. `cloud.auth` is wired at the `readCloudConfig().enabled` chokepoint; per-feature flags gate their own UI surfaces + backend routes.
+
 ## TypeScript
 
 - Composite build via `tsconfig.json` referencing `src/core/backend/tsconfig.json`, `src/core/frontend/tsconfig.json`, `src/core/frontend/tsconfig.node.json`, `tsconfig.modules.json`.

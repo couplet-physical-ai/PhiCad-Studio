@@ -1,5 +1,10 @@
 // Cloud SaaS endpoints — set via Vite env vars at build time.
 // Leaving these blank in dev disables cloud features (offline desktop mode).
+// The `cloud.auth` feature flag additionally gates the whole cloud stack off in
+// release builds (see ../feature-flags), so cloud stays dark even if the env
+// vars leak into a production build.
+
+import { isFeatureEnabled } from "../feature-flags";
 
 export interface CloudConfig {
   enabled: boolean;
@@ -19,7 +24,9 @@ export function readCloudConfig(): CloudConfig {
   const apiUrl = (import.meta.env.VITE_CLOUD_API_URL as string) ?? "";
   const webUrl = (import.meta.env.VITE_CLOUD_WEB_URL as string) ?? "";
   return {
-    enabled: Boolean(supabaseUrl && supabaseAnonKey && apiUrl),
+    enabled:
+      isFeatureEnabled("cloud.auth") &&
+      Boolean(supabaseUrl && supabaseAnonKey && apiUrl),
     supabaseUrl,
     supabaseAnonKey,
     apiUrl,

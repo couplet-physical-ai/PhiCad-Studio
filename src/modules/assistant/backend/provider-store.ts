@@ -1,4 +1,5 @@
 import { ValidationError } from "../../../core/contracts/errors";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import type { CoreBackendModuleContext } from "../../../core/contracts/modules/backend-module";
 import type {
   AssistantProviderConfig,
@@ -107,6 +108,10 @@ export class ProviderStore {
       )[0];
       if (existing) continue;
       const env = CLOUD_ENV[preset.kind];
+      // Cloud provider presets (OpenAI / OpenRouter) are gated dev-only; local
+      // providers (LM Studio / oMLX / Ollama) always seed. Skip only the
+      // cloud-backed presets when the flag is off.
+      if (env && !isFeatureEnabled("cloud.assistantProviders")) continue;
       const apiKey = env ? (process.env[env.key] ?? null) : null;
       const baseUrl = env
         ? (process.env[env.base] ?? preset.defaultBaseUrl)

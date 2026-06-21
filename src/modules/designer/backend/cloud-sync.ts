@@ -14,6 +14,7 @@ import type {
   DesignerCommandEnvelope,
   LibraryComponentPlacementDetail,
 } from "../../../sdks";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { cloudLink } from "./schema";
 import { loadSchematicProjection } from "./projection-read";
 
@@ -155,6 +156,9 @@ export async function mirrorCommand(
   },
   opts: MirrorOptions,
 ): Promise<void> {
+  // Belt-and-suspenders: the frontend already withholds cloud headers when
+  // `cloud.sync` is off, but never mirror in a build where the flag is gated.
+  if (!isFeatureEnabled("cloud.sync")) return;
   const link = readLink(db, opts.designId);
   if (!link) return; // not linked → nothing to mirror
 
