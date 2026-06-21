@@ -1,3 +1,90 @@
+# Release 1.0 — Production Hardening (active 2026-06-21)
+
+> Goal: ship a **signed, notarized, auto-updating `1.0.0`** (macOS signed now / Windows method
+> chosen pre-launch), AI assistant **visible** (local providers; cloud presets dev-gated),
+> **4-layer in scope**, **Sentry on-by-default + first-run consent**, full hardening.
+> Plan: `~/.claude/plans/act-as-senior-software-snug-piglet.md`. Basis: 17-area code audit +
+> adversarial verification (2026-06-21). Branch landed: `feat/release-1.0-hardening`.
+
+## Phase 0 — Release prerequisites (owner)
+
+- [ ] Apple Developer Program + **Developer ID Application** cert (.p12) + App Store Connect API key (notarytool)
+- [ ] GH secrets: `CSC_LINK`/`CSC_KEY_PASSWORD`, `APPLE_API_KEY`/`_ID`/`_ISSUER`, `APPLE_TEAM_ID`, `SENTRY_*`
+- [ ] Windows signing method chosen before launch (recommend **Azure Trusted Signing**; EV token ≠ CI)
+- [ ] `LICENSE-COMMERCIAL.md` + working `licensing@openpcb.app` inbox (dual-license kept)
+
+## Phase 1 — Correctness & data-integrity (no certs)
+
+- [x] **1.1** Atomic `deleteDesign` + 8 missing tables (`store.ts`) + regression test `designer-delete-design.test.ts`
+- [x] **1.4** Schematic initial-view invalidate (`SchematicCanvas` `requestRender()` on fit/frame/initial-viewport)
+- [x] **1.5** Wire self-loop backend reject (`create-wire.ts` `sourcePinId === targetPinId`)
+- [ ] **1.2** Graceful shutdown — SIGTERM/SIGINT close server+sqlite; electron backend-manager awaits exit before `app.quit()`
+- [ ] **1.3** Global error handling — React error boundary + `window` error/unhandledrejection + main `uncaughtException`/`unhandledRejection` → Sentry + crash/recover UI; sweep release-critical silent `catch {}`
+- [ ] **1.6** Global toast (lift designer toast → `core/frontend`) + surface `DesignerDrcView` + `model-conversion.ts` silent catches; translate `problem+json` (extend `commandErrorMessage`)
+- [ ] **1.7** DRC trust — remove/disable broken thermal-relief; fix free-pad false `UNCONNECTED_NET`; re-run `drc-parity-harness`
+- [ ] **1.8** KiCad ZIP import aggregate size cap (`routes.ts:1444`; mirror opclib 256 MB)
+- [ ] **1.9** Symbol-only import 0-pad component warn/block (`commit-kicad.ts:137`, `placeholder-footprint.ts:89`)
+- [ ] **1.10** Show all import warnings (`Space.tsx` expandable list, not just first)
+
+## Phase 2 — Signing / updater / Sentry / version / docs (needs Phase 0)
+
+- [ ] macOS Dev ID + `hardenedRuntime:true` + `entitlements.plist` + notarize; `afterSign.cjs` guard (ad-hoc only when no identity)
+- [ ] Windows signing wired once method chosen (pre-launch; interim builds unsigned)
+- [ ] `release.yml`: mac `CSC_IDENTITY_AUTO_DISCOVERY` flip + notarize step; `releaseType` prerelease→release; drop `--prerelease`
+- [ ] Auto-update: gate `allowPrerelease` behind `!app.isPackaged`; verify feeds; test update from prior build
+- [ ] Sentry ON + first-run consent + Settings toggle; sourcemap upload in `release.yml`; verify DSN/project live
+- [ ] Version → `1.0.0` (root + `electron/package.json` — release.yml asserts match)
+- [ ] Docs: fix README "signed/notarized" claim; add `LICENSE-COMMERCIAL.md`; fix stale doc links; correct assistant "dev-only" wording; update `ROADMAP.md`
+
+## Phase 3 — Security hardening
+
+- [ ] Path-traversal fix in Electron static serving (`path.resolve` both + separator boundary)
+- [ ] Evaluate `sandbox:true`; confirm `contextIsolation`/`nodeIntegration:false`/CSP/`127.0.0.1`
+- [ ] GLB `sha256` validation after fetch + `ModelCacheProvider` partition by `backendURL`
+- [ ] `/security-review` clean on cumulative diff
+
+## Phase 4 — AI Assistant polish (visible, local providers)
+
+- [ ] **BLOCKER** default-provider fallback when cloud flag off (`settings-store.ts:71`, `Space.tsx:152/393-407`, `DesignerChatDock.tsx:142/219-223`)
+- [ ] Pre-send config validation (baseUrl + API key); `empty_response` UI banner/retry
+- [ ] Keep `manifest.json availability:"all"`; correct README/CLAUDE.md "dev-only" wording
+- [ ] Document plaintext key storage (safeStorage → 1.1); write/apply failed-apply regression test
+- [ ] Assistant tests: `run-service` mock-provider integration + Playwright chat smoke
+
+## Phase 4b — 4-layer board support (in 1.0)
+
+- [ ] Layer-count / fabricator picker UI in `PcbBoardPanel.tsx` (replace hardcoded "2-layer")
+- [ ] Validate inner-layer Gerber (In1/In2.Cu), drill spans, via annuli, `.gbrjob` stack-up
+- [ ] Per-design board thickness (`job-file.ts:24` hardcodes 1.6 mm)
+- [ ] 4-layer export-validation fixture
+
+## Phase 5 — Test, QA & accessibility
+
+- [ ] Flagship E2E: schematic capture, PCB route, export→ZIP validate, DRC/ERC UI, undo/redo, settings persist, library drag-drop
+- [ ] Import integration tests (malformed / missing-model / oversized / sig-fail); export validation harness
+- [ ] Frontend Vitest uplift (from ~4 files)
+- [ ] Fix/quarantine `library-opclib-importer-idempotent-reimport.test.ts` flake
+- [ ] Accessibility baseline (aria labels, keyboard canvas nav, screen-reader pass)
+- [ ] Project export/import (backup/portability) — ZIP schematic+pcb JSON + embedded models
+- [ ] Wire new suites into `.github/workflows/ci.yml`
+
+## Phase 6 — Cross-platform smoke & launch
+
+- [ ] `release.yml` rc tag; per-OS clean-machine smoke (install/launch/deep-link/design/export/3D)
+- [ ] Verify Gatekeeper (mac) + SmartScreen (win, once signed) + auto-update from prior build
+- [ ] **Windows signing in place before promoting rc → 1.0.0**
+- [ ] Rollback/yank runbook (extend `.github/RELEASE_DRY_RUN.md`)
+- [ ] Cut `v1.0.0-rc.1` → promote `v1.0.0`; update `web/` download page
+
+## Release 1.0 — open questions (do not block Phase 1/4/4b)
+
+1. Windows signing vendor (Azure Trusted Signing recommended)
+2. Live Sentry DSN/project provisioned?
+3. `licensing@openpcb.app` monitored?
+4. Unsigned Windows acceptable for `rc.1` smoke only?
+
+---
+
 # OpenPCB Rewrite Tracking
 
 ## Decisions (locked)
@@ -37,7 +124,7 @@ designs must become cloud-authoritative in the editor; personal/unshared stay lo
       `CloudProjection` (`core/frontend/src/cloud/queries.ts`); shared-open via
       `existingCloudDesignId` (skip `/seed`); "Shared with me" list.
 - [ ] **P1.11** read-only/offline gating (`editable = cloud authority && role editor+ &&
-    connected`), offline banner + never-synced-offline empty state, role via
+  connected`), offline banner + never-synced-offline empty state, role via
       `GET /v1/designs/:id/access`, role-gated toolbar/palette, `commandErrorMessage` for
       `FORBIDDEN_ROLE`/`OFFLINE_READONLY`/`PCB_NOT_SHARED`.
 - [ ] **P2 (later)** backend WS client (`cloud-ws-client.ts`, ref-counted) + SSE→renderer
