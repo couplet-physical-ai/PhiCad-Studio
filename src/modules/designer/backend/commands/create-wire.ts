@@ -60,6 +60,14 @@ export function buildCreateWirePayload(
   targetPin: DesignerPin,
   pointsNm: Array<{ x: number; y: number }> | undefined,
 ): { payload: PersistedWirePayload | null; invalidReason: string | null } {
+  // Reject self-loops at the backend, not just in the canvas UI: import/sync
+  // callers reach this path too, and a pin wired to itself is an invalid net.
+  if (sourcePin.id === targetPin.id) {
+    return {
+      payload: null,
+      invalidReason: "source and target pins must be different",
+    };
+  }
   const source = sourcePin.worldPositionNm;
   const target = targetPin.worldPositionNm;
   if (source.x === target.x && source.y === target.y) {

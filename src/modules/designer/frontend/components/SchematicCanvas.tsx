@@ -810,18 +810,31 @@ export const SchematicCanvas = forwardRef<
   const wrapperRef = useRef<HTMLElement | null>(null);
   const projection2d = useCanvasProjection(wrapperRef, initialViewport);
   const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null);
-  const recenterOnNm = useCallback((anchorNm: { x: number; y: number }) => {
+  // Schedule a re-render in demand mode. CameraRefBridge publishes R3F's
+  // invalidate fn onto camera.userData on Canvas mount (in the same effect that
+  // flips cameraReady true), so it is set before any camera mutation below runs.
+  // Camera mutations are imperative (no React re-render), so this MUST be called
+  // or the new view never paints until the next user interaction.
+  const requestRender = useCallback(() => {
     const camera = cameraRef.current;
-    if (!camera) return;
-    camera.position.set(
-      Units.nmToMm(anchorNm.x),
-      Units.nmToMm(anchorNm.y),
-      camera.position.z,
-    );
-    camera.zoom = Math.min(Math.max(camera.zoom, 40), 200);
-    camera.updateProjectionMatrix();
-    (camera.userData.invalidate as (() => void) | undefined)?.();
+    (camera?.userData.invalidate as (() => void) | undefined)?.();
   }, []);
+
+  const recenterOnNm = useCallback(
+    (anchorNm: { x: number; y: number }) => {
+      const camera = cameraRef.current;
+      if (!camera) return;
+      camera.position.set(
+        Units.nmToMm(anchorNm.x),
+        Units.nmToMm(anchorNm.y),
+        camera.position.z,
+      );
+      camera.zoom = Math.min(Math.max(camera.zoom, 40), 200);
+      camera.updateProjectionMatrix();
+      requestRender();
+    },
+    [requestRender],
+  );
 
   useEffect(() => {
     actions.setSelectedPartId(firstSelectedId(selection.partIds));
@@ -916,6 +929,7 @@ export const SchematicCanvas = forwardRef<
       camera.zoom = 10;
       camera.updateProjectionMatrix();
       onZoomChange?.(camera.zoom * 2);
+      requestRender();
       return;
     }
 
@@ -941,7 +955,8 @@ export const SchematicCanvas = forwardRef<
     camera.zoom = Math.max(5, Math.min(zoom, 500));
     camera.updateProjectionMatrix();
     onZoomChange?.(camera.zoom * 2);
-  }, [projection, onZoomChange]);
+    requestRender();
+  }, [projection, onZoomChange, requestRender]);
 
   // Auto-fit when the canvas first becomes ready and on every projection
   // designId change. Runs on mount (project open, tab switch back, module
@@ -967,6 +982,7 @@ export const SchematicCanvas = forwardRef<
       camera.zoom = initialViewport.zoom;
       camera.updateProjectionMatrix();
       onZoomChange?.(camera.zoom * 2);
+      requestRender();
     } else {
       fitCamera();
     }
@@ -976,6 +992,7 @@ export const SchematicCanvas = forwardRef<
     initialViewport,
     fitCamera,
     onZoomChange,
+    requestRender,
   ]);
 
   useImperativeHandle(ref, () => ({
@@ -1055,6 +1072,7 @@ export const SchematicCanvas = forwardRef<
       camera.zoom = targetZoom;
       camera.updateProjectionMatrix();
       onZoomChange?.(camera.zoom * 2);
+      requestRender();
     },
   }));
 

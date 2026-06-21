@@ -54,8 +54,15 @@ import {
   schematicParts,
   schematicPins,
   schematicWires,
+  schematicPrimitives,
   pcbEntities,
   sessionHistories as sessionHistoryRows,
+  cloudLink,
+  commentThreads,
+  commentMessages,
+  commentAttachments,
+  commentReactions,
+  commentOutbox,
 } from "./schema";
 import {
   ensurePcbBoardSettings,
@@ -424,25 +431,53 @@ export function createDesignerStore(
     },
 
     async deleteDesign(designId) {
-      db.delete(schematicPins)
-        .where(eq(schematicPins.designId, designId))
-        .run();
-      db.delete(schematicWires)
-        .where(eq(schematicWires.designId, designId))
-        .run();
-      db.delete(schematicLabels)
-        .where(eq(schematicLabels.designId, designId))
-        .run();
-      db.delete(schematicParts)
-        .where(eq(schematicParts.designId, designId))
-        .run();
-      db.delete(commandLog).where(eq(commandLog.designId, designId)).run();
-      db.delete(pcbEntities).where(eq(pcbEntities.designId, designId)).run();
-      db.delete(sessionHistoryRows)
-        .where(eq(sessionHistoryRows.designId, designId))
-        .run();
-      db.delete(bomOverrides).where(eq(bomOverrides.designId, designId)).run();
-      db.delete(designHeads).where(eq(designHeads.id, designId)).run();
+      // Delete every per-design row in ONE transaction so a mid-delete failure
+      // rolls back cleanly and no orphan rows survive (children before parents,
+      // head last). Covers all designer tables keyed by designId.
+      ctx.db.transaction((txRaw) => {
+        const tx = txRaw as DbClient;
+        tx.delete(commentReactions)
+          .where(eq(commentReactions.designId, designId))
+          .run();
+        tx.delete(commentAttachments)
+          .where(eq(commentAttachments.designId, designId))
+          .run();
+        tx.delete(commentMessages)
+          .where(eq(commentMessages.designId, designId))
+          .run();
+        tx.delete(commentOutbox)
+          .where(eq(commentOutbox.designId, designId))
+          .run();
+        tx.delete(commentThreads)
+          .where(eq(commentThreads.designId, designId))
+          .run();
+        tx.delete(schematicPins)
+          .where(eq(schematicPins.designId, designId))
+          .run();
+        tx.delete(schematicWires)
+          .where(eq(schematicWires.designId, designId))
+          .run();
+        tx.delete(schematicLabels)
+          .where(eq(schematicLabels.designId, designId))
+          .run();
+        tx.delete(schematicPrimitives)
+          .where(eq(schematicPrimitives.designId, designId))
+          .run();
+        tx.delete(schematicParts)
+          .where(eq(schematicParts.designId, designId))
+          .run();
+        tx.delete(pcbEntities).where(eq(pcbEntities.designId, designId)).run();
+        tx.delete(drcResults).where(eq(drcResults.designId, designId)).run();
+        tx.delete(bomOverrides)
+          .where(eq(bomOverrides.designId, designId))
+          .run();
+        tx.delete(commandLog).where(eq(commandLog.designId, designId)).run();
+        tx.delete(sessionHistoryRows)
+          .where(eq(sessionHistoryRows.designId, designId))
+          .run();
+        tx.delete(cloudLink).where(eq(cloudLink.designId, designId)).run();
+        tx.delete(designHeads).where(eq(designHeads.id, designId)).run();
+      });
     },
 
     async getSchematicProjection(designId) {
