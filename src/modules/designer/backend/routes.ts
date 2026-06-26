@@ -21,6 +21,8 @@ import type {
 import type {
   DesignerAutoArrangeSchematicCommand,
   DesignerCommandEnvelope,
+  PlaceOperation,
+  PlaceOptions,
   RouteOperation,
   RouteOptions,
   DesignerCreateWireCommand,
@@ -94,6 +96,7 @@ import { runDrc } from "./drc/drc-engine";
 import { runErc } from "./erc/erc-engine";
 import { buildBoardSnapshot } from "./pcb/board-snapshot";
 import { cancelRoute, getRouteStatus, submitRoute } from "./autoroute/client";
+import { cancelPlace, getPlaceStatus, submitPlace } from "./autoplace/client";
 import { asNumber, asRecord, asString } from "./value-guards";
 
 function success<T>(data: T, status = 200): Response {
@@ -440,6 +443,27 @@ function parseAutorouteApplyBody(body: unknown): {
     throw new ValidationError("operations must be an array");
   }
   return { operations: record.operations as RouteOperation[], sessionId };
+}
+
+// Cherry-picked auto-place ops to apply. Each op.payload (a move/rotate/flip placement
+// command) is re-validated by parseCommandEnvelope before dispatch, so this only checks
+// the envelope shape.
+function parseAutoplaceApplyBody(body: unknown): {
+  operations: PlaceOperation[];
+  sessionId: string;
+} {
+  const record = asRecord(body);
+  if (!record) {
+    throw new ValidationError("Request body must be an object");
+  }
+  const sessionId = asString(record.sessionId);
+  if (!sessionId) {
+    throw new ValidationError("sessionId must be a string");
+  }
+  if (!Array.isArray(record.operations)) {
+    throw new ValidationError("operations must be an array");
+  }
+  return { operations: record.operations as PlaceOperation[], sessionId };
 }
 
 function parsePlacePartCommand(
@@ -2488,6 +2512,123 @@ export function registerRoutes(
       },
     );
   } // end cloud.autoroute gate
+
+  // ── Cloud auto-place: submit snapshot → review move/rotate/flip ops → apply ──
+  // Same proxy shape as auto-router; the desktop stays the authoritative DRC engine
+  // (re-validated on apply). Runs BEFORE the autorouter. Gated dev-only via the
+  // `cloud.autoplace` feature flag — the routes 404 in release builds.
+  if (isFeatureEnabled("cloud.autoplace")) {
+    router.post("/designs/:designId/autoplace", async ({ params, req }) => {
+      const designId = params.getOrThrow("designId");
+      const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+      type AutoplaceRequestBody = {
+        placeOptions?: PlaceOptions;
+        routableNetClassIds?: unknown;
+        excludedNetIds?: unknown;
+      };
+      const body: AutoplaceRequestBody =
+        await parseJsonBody<AutoplaceRequestBody>(req).catch(() => ({}));
+      const projection = await store.getPcbProjection(designId);
+      if (!projection) {
+        throw new NotFoundError(`Design '${designId}' not found`);
+      }
+      const asStringArray = (v: unknown): string[] | undefined =>
+        Array.isArray(v)
+          ? v.filter((x): x is string => typeof x === "string")
+          : undefined;
+      // v1 engine defaults: connectors are fixed anchors; flip to the bottom side and
+      // cardinal rotation are allowed. Any caller-supplied placeOptions wins.
+      const placeOptions: PlaceOptions = {
+        moveConnectors: false,
+        allowFlip: true,
+        allowRotate: true,
+        ...(body.placeOptions ?? {}),
+      };
+      const { snapshot, warnings } = buildBoardSnapshot(projection, {
+        routableNetClassIds: asStringArray(body.routableNetClassIds),
+        excludedNetIds: asStringArray(body.excludedNetIds),
+        placeOptions,
+      });
+      const submitted = await submitPlace(snapshot, bearer);
+      return success({ ...submitted, warnings });
+    });
+
+    router.get(
+      "/designs/:designId/autoplace/:jobId",
+      async ({ params, req }) => {
+        params.getOrThrow("designId");
+        const jobId = params.getOrThrow("jobId");
+        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+        const status = await getPlaceStatus(jobId, bearer);
+        return success(status);
+      },
+    );
+
+    router.post(
+      "/designs/:designId/autoplace/:jobId/cancel",
+      async ({ params, req }) => {
+        params.getOrThrow("designId");
+        const jobId = params.getOrThrow("jobId");
+        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+        await cancelPlace(jobId, bearer);
+        return success({ jobId, cancelRequested: true });
+      },
+    );
+
+    // Apply the user's cherry-picked subset. Each op runs through the normal command
+    // path (the existing move/rotate/flip placement handlers), then one final DRC pass.
+    // Partial apply is allowed. NOTE: placement ops are coupled — applying a SUBSET of
+    // the proposal carries no overlap guarantee (the engine only proves the full set);
+    // the post-apply DRC is the backstop.
+    router.post(
+      "/designs/:designId/autoplace/apply",
+      async ({ params, req }) => {
+        const designId = params.getOrThrow("designId");
+        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
+        const apiUrl = req.headers.get("x-cloud-api-url") ?? undefined;
+        const { operations, sessionId } = parseAutoplaceApplyBody(
+          await parseJsonBody<unknown>(req),
+        );
+        let appliedCount = 0;
+        const failures: Array<{ opId: string; code: string }> = [];
+        for (const op of operations) {
+          // Parse each op's command in its OWN try/catch: a rejectable op (e.g. a
+          // non-cardinal rotationDeg the strict gate refuses) must be recorded as a
+          // failure, NOT thrown out of the loop — otherwise earlier ops are already
+          // committed and the whole batch reports a false total failure (the BLOCKER).
+          let envelope: DesignerCommandEnvelope;
+          try {
+            envelope = parseCommandEnvelope({
+              commandId: crypto.randomUUID(),
+              sessionId,
+              aggregateId: designId,
+              issuedAt: Date.now(),
+              baseRevision: null,
+              command: op.payload,
+            });
+          } catch {
+            failures.push({ opId: op.id, code: "invalid_command" });
+            continue;
+          }
+          const result = await store.dispatchCommand(designId, envelope, {
+            bearer,
+            apiUrl,
+          });
+          if (result.ok) appliedCount += 1;
+          else failures.push({ opId: op.id, code: result.code });
+        }
+        const projection = await store.getPcbProjection(designId);
+        const view = projection?.board.viewState;
+        const drc = projection
+          ? runDrc(projection, {
+              ignoredRuleClasses: view?.drcIgnoredRuleClasses ?? [],
+              waivedIds: view?.drcWaivedViolationIds ?? [],
+            })
+          : null;
+        return success({ appliedCount, failures, drc });
+      },
+    );
+  } // end cloud.autoplace gate
 
   // Project cloud sync: link / status-read / unlink. Gated dev-only via the
   // `cloud.sync` feature flag — these routes 404 in release builds.

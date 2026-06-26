@@ -69,6 +69,16 @@ export interface SnapshotPlacement {
   id: string;
   reference: string;
   layer: PcbCopperLayerId;
+  /**
+   * Current component transform — consumed by cloud-auto-place (the autorouter ignores
+   * these). The footprint ORIGIN (mm), absolute rotation (may be non-cardinal for KiCad
+   * imports), and the side-mirror flag, mirroring `PcbPlacedPart`. Auto-place needs them
+   * to seed from the real layout, emit minimal move diffs, and emit faithful absolute
+   * rotate / side-aware flip commands.
+   */
+  positionMm: PcbPointMm;
+  rotationDeg: number;
+  mirrored: boolean;
 }
 
 export interface PadOutline {
@@ -145,6 +155,36 @@ export interface RouteOptions {
   portfolio?: number;
 }
 
+/** Cost-term weights for cloud-auto-place (scale-normalized terms). */
+export interface PlaceWeights {
+  hpwl?: number;
+  spread?: number;
+  overlap?: number;
+  edge?: number;
+  connector?: number;
+  side?: number;
+}
+
+/** Options for cloud-auto-place (the autorouter ignores this block). */
+export interface PlaceOptions {
+  seed?: number;
+  restarts?: number | null;
+  maxMoves?: number | null;
+  /** v1 only re-optimizes all unlocked parts. */
+  mode?: "all";
+  /** placementIds the user pinned (always locked). */
+  lockReferences?: string[];
+  allowRotate?: boolean;
+  allowFlip?: boolean;
+  /** When false, connectors are fixed anchors rather than movable. */
+  moveConnectors?: boolean;
+  /** Lock any component with existing routed copper on a pad. */
+  respectExistingTraces?: boolean;
+  targetUtilization?: number;
+  gridSnapMm?: number;
+  weights?: PlaceWeights | null;
+}
+
 export interface BoardSnapshot {
   schemaVersion?: string;
   designId: string;
@@ -166,6 +206,8 @@ export interface BoardSnapshot {
   ratsnest: RatsnestTarget[];
   netNames?: Record<string, string>;
   options?: RouteOptions;
+  /** Consumed by cloud-auto-place; ignored by the autorouter. */
+  placeOptions?: PlaceOptions;
 }
 
 // ── RouteResultEnvelope (response) ───────────────────────────────────────

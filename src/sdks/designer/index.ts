@@ -261,3 +261,6 @@ export interface DesignerSDK {
 
 // Cloud auto-router wire contracts (BoardSnapshot / RouteResultEnvelope / ProgressFrame).
 export type * from "./autoroute";
+// Cloud auto-place wire contracts (PlacementResultEnvelope / PlaceOperation / PlaceProgressFrame).
+// Reuses BoardSnapshot / SnapshotPlacement / PlaceOptions / PlaceWeights from ./autoroute.
+export type * from "./autoplace";

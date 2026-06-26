@@ -300,6 +300,7 @@ function DesignerSpaceInner({
   // Per-feature cloud gates (dev-only by default — see @/feature-flags).
   const syncFeatureEnabled = useFeatureFlag("cloud.sync");
   const autorouteFeatureEnabled = useFeatureFlag("cloud.autoroute");
+  const autoplaceFeatureEnabled = useFeatureFlag("cloud.autoplace");
   const presenceFeatureEnabled = useFeatureFlag("cloud.presence");
   const commentsFeatureEnabled = useFeatureFlag("cloud.comments");
   const designBrowserFeatureEnabled = useFeatureFlag("cloud.designBrowser");
@@ -338,6 +339,10 @@ function DesignerSpaceInner({
   }, [cloudEnabled, session]);
   const autorouteEnabled =
     cloudEnabled && Boolean(session) && autorouteFeatureEnabled;
+  // Auto-place mirrors auto-router gating: a valid login is enough (self-contained
+  // snapshot, stateless service) — project sync is NOT required.
+  const autoplaceEnabled =
+    cloudEnabled && Boolean(session) && autoplaceFeatureEnabled;
   const { state, actions } = useDesignerWorkspace({
     backendURL,
     moduleId,
@@ -1169,6 +1174,7 @@ function DesignerSpaceInner({
                   gridVisible={gridVisible}
                   cloudHeaders={autorouteCloudHeaders}
                   autorouteEnabled={autorouteEnabled}
+                  autoplaceEnabled={autoplaceEnabled}
                   dispatchCommand={actions.dispatchCommand}
                   notifyExternalRevisionBump={
                     actions.notifyExternalRevisionBump

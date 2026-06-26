@@ -67,6 +67,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [sb]);
 
+  // DEV-ONLY: bypass the browser-handoff/deep-link login for local manual testing by
+  // signing in directly with email/password (VITE_DEV_CLOUD_EMAIL / VITE_DEV_CLOUD_PASSWORD).
+  // The devstack GoTrue has signups + MAILER_AUTOCONFIRM, so a missing user is created on
+  // the spot (signUp returns a session). No-op in prod builds or when the vars are unset.
+  useEffect(() => {
+    if (!import.meta.env.DEV || !sb) return;
+    const email = import.meta.env.VITE_DEV_CLOUD_EMAIL as string | undefined;
+    const password = import.meta.env.VITE_DEV_CLOUD_PASSWORD as
+      | string
+      | undefined;
+    if (!email || !password) return;
+    let cancelled = false;
+    void (async () => {
+      const { data } = await sb.auth.getSession();
+      if (cancelled || data.session) return;
+      const res = await sb.auth.signInWithPassword({ email, password });
+      if (!cancelled && res.error) {
+        // No such user yet → create it (autoconfirm installs a session immediately).
+        await sb.auth.signUp({ email, password });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sb]);
+
   // Bridge: Electron deep-link → invite-token handler.
   useEffect(() => {
     if (typeof window === "undefined") return;

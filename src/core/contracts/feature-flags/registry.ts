@@ -60,6 +60,11 @@ export const FEATURE_FLAGS = {
     availability: "dev",
     description: "Cloud auto-router (BoardSnapshot → trace/via proposals)",
   },
+  "cloud.autoplace": {
+    availability: "dev",
+    description:
+      "Cloud auto-place (BoardSnapshot → move/rotate/flip proposals)",
+  },
   "cloud.library": {
     availability: "dev",
     description: "Custom library cloud push/pull + core-lib update check",

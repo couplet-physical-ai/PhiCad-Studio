@@ -18,6 +18,7 @@ import type {
   FreeHole,
   PadOutline,
   PcbCopperLayerId,
+  PlaceOptions,
   RouteOptions,
   SnapshotPlacement,
   ViaObstacle,
@@ -49,6 +50,12 @@ export interface BuildSnapshotOptions {
   /** Net-class ids to route. Defaults to every class on the board. */
   routableNetClassIds?: string[];
   excludedNetIds?: string[];
+  /**
+   * Engine options for cloud-auto-place. When present, emitted into the snapshot as
+   * `placeOptions` (the autorouter ignores it). Omitted otherwise, so autoroute snapshots
+   * keep their exact byte-shape.
+   */
+  placeOptions?: PlaceOptions;
 }
 
 export interface BuildSnapshotResult {
@@ -169,6 +176,11 @@ export function buildBoardSnapshot(
     id: p.id,
     reference: p.reference,
     layer: copperLayerOf(p.layer) ?? "F.Cu",
+    // Pass through the current transform for cloud-auto-place (the autorouter ignores
+    // these). positionMm is the footprint origin; rotationDeg may be non-cardinal.
+    positionMm: p.positionMm,
+    rotationDeg: p.rotationDeg,
+    mirrored: p.mirrored,
   }));
 
   // ── pours: never sent in v1 (service rejects non-empty pours) ───────────
@@ -215,6 +227,9 @@ export function buildBoardSnapshot(
     netNames: projection.netNames,
     // Default to the portfolio production default; any caller-supplied option wins.
     options: { portfolio: DEFAULT_PORTFOLIO, ...(opts.routeOptions ?? {}) },
+    // Only emitted for auto-place requests; the autorouter ignores it and an absent
+    // field keeps the autoroute snapshot byte-shape unchanged.
+    ...(opts.placeOptions ? { placeOptions: opts.placeOptions } : {}),
   };
 
   return { snapshot, warnings };

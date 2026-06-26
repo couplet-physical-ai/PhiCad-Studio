@@ -17,7 +17,10 @@ import type {
   DesignerDispatchResult,
   PcbBoardOutline,
   PcbCopperLayerId,
+  PcbPlacedPart,
   PcbPointMm,
+  PlacePayloadSummary,
+  PlacementResultEnvelope,
 } from "../../../../sdks";
 import { nmToSceneMm } from "../../../../shared/frontend/canvas/coords";
 import { EdaCanvas } from "../../../../shared/frontend/canvas/interaction/EdaCanvas";
@@ -95,7 +98,16 @@ import type { ViewportState } from "../types";
 import { PcbTopToolbar } from "./PcbTopToolbar";
 import { PcbExportDialog } from "./PcbExportDialog";
 import { PcbAutorouteDialog } from "./PcbAutorouteDialog";
-import type { CloudHeadersProvider } from "../api";
+import { PcbAutoplaceDialog } from "./PcbAutoplaceDialog";
+import { PcbPlacePreviewBar } from "./PcbPlacePreviewBar";
+import {
+  applyTransformsToPlacements,
+  buildFromMarkers,
+  buildPositionOverride,
+  diffToOperations,
+  usePcbPlacePreview,
+} from "./usePcbPlacePreview";
+import { createDesignerApi, type CloudHeadersProvider } from "../api";
 import { PcbBoardPanel } from "./PcbBoardPanel";
 import { PcbLayersPanel } from "./PcbLayersPanel";
 import { pickRouteStartLayer } from "./route-start-layer";
@@ -249,6 +261,8 @@ interface PcbCanvasProps {
   cloudHeaders?: CloudHeadersProvider;
   /** Logged in + cloud configured → show the Autoroute button. */
   autorouteEnabled?: boolean;
+  /** Logged in + cloud configured → show the Auto-place button. */
+  autoplaceEnabled?: boolean;
   dispatchCommand: (
     command: DesignerCommand,
   ) => Promise<DesignerDispatchResult>;
@@ -463,6 +477,112 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   const [autoroutePreview, setAutoroutePreview] = useState<
     AutoroutePreviewTrace[] | null
   >(null);
+  const [autoplaceDialogOpen, setAutoplaceDialogOpen] = useState(false);
+  // Interactive, non-destructive auto-place preview: the result envelope's proposed poses
+  // are held locally and the user drags/rotates/flips to adjust before Accept (see hook).
+  const placePreview = usePcbPlacePreview();
+  const previewActive = placePreview.active;
+  const [placePreviewPayload, setPlacePreviewPayload] =
+    useState<PlacePayloadSummary | null>(null);
+  const [placeApplying, setPlaceApplying] = useState(false);
+  const [placeAppliedNote, setPlaceAppliedNote] = useState<{
+    text: string;
+    issues: boolean;
+  } | null>(null);
+  const placeApi = useMemo(
+    () =>
+      createDesignerApi({
+        backendURL: props.backendURL,
+        moduleId: props.moduleId,
+        cloudHeaders: props.cloudHeaders,
+      }),
+    [props.backendURL, props.moduleId, props.cloudHeaders],
+  );
+  // Stable hook methods (the hook object identity changes each render).
+  const {
+    begin: beginPlacePreview,
+    clear: clearPlacePreview,
+    setPositions: setPlacePreviewPositions,
+    rotate: rotatePlacePreview,
+    flip: flipPlacePreview,
+    flipMany: flipManyPlacePreview,
+  } = placePreview;
+  // Enter preview when the dialog's poll completes.
+  const handlePreviewResult = useCallback(
+    (envelope: PlacementResultEnvelope) => {
+      beginPlacePreview(
+        workspace.projection?.placements ?? [],
+        envelope.operations,
+      );
+      setPlacePreviewPayload(envelope.payload);
+      setPlaceAppliedNote(null);
+      setAutoplaceDialogOpen(false);
+    },
+    [beginPlacePreview, workspace.projection?.placements],
+  );
+  const rejectPreview = useCallback(() => {
+    setDragSession(null);
+    clearPlacePreview();
+    setPlacePreviewPayload(null);
+    setPlaceApplying(false);
+  }, [clearPlacePreview]);
+  // Diff the adjusted preview vs. the captured originals → reuse the existing apply
+  // endpoint (per-op commands + one DRC pass), then reload and clear the preview. Plain
+  // function so the click closure always reads the latest transforms/originals.
+  const acceptPreview = async (): Promise<void> => {
+    if (!props.designId) return;
+    const designId = props.designId;
+    const ops = diffToOperations(
+      placePreview.transforms,
+      placePreview.originals,
+    );
+    if (ops.length === 0) {
+      rejectPreview();
+      return;
+    }
+    setPlaceApplying(true);
+    try {
+      const { appliedCount, failures, drc } = await placeApi.applyAutoplaceOps(
+        designId,
+        ops,
+        crypto.randomUUID(),
+      );
+      await workspace.refresh();
+      const failed = failures?.length ?? 0;
+      const errors = drc?.summary.errors ?? 0;
+      setPlaceAppliedNote({
+        text:
+          `Applied ${appliedCount} change${appliedCount === 1 ? "" : "s"}` +
+          (failed > 0 ? ` (${failed} rejected)` : "") +
+          (errors > 0 ? ` — DRC reports ${errors} error(s).` : " — DRC clean."),
+        issues: failed > 0 || errors > 0,
+      });
+      clearPlacePreview();
+      setPlacePreviewPayload(null);
+    } catch (e) {
+      setPlaceAppliedNote({
+        text: e instanceof Error ? e.message : String(e),
+        issues: true,
+      });
+    } finally {
+      setPlaceApplying(false);
+    }
+  };
+  // Drop a stale preview if the design changes or the canvas unmounts.
+  useEffect(() => {
+    return () => {
+      setDragSession(null);
+      clearPlacePreview();
+      setPlacePreviewPayload(null);
+      setPlaceApplying(false);
+    };
+  }, [props.designId, clearPlacePreview]);
+  // Auto-dismiss the post-accept status note.
+  useEffect(() => {
+    if (!placeAppliedNote) return;
+    const id = window.setTimeout(() => setPlaceAppliedNote(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [placeAppliedNote]);
   const cursorMmRef = useRef<PcbPointMm | null>(null);
   // Figma-style alignment guides shown while dragging placements. The index
   // + group bbox are captured once at drag-start; each move queries them.
@@ -525,6 +645,38 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   } | null>(null);
   const placementsRef = useRef(workspace.projection?.placements ?? []);
   placementsRef.current = workspace.projection?.placements ?? [];
+  // Lookup of the live (DB) placements by id — the originals the preview diffs against and
+  // captures lazily when the user adjusts a component the engine left untouched.
+  const originalById = useMemo(
+    () =>
+      new Map((workspace.projection?.placements ?? []).map((p) => [p.id, p])),
+    [workspace.projection?.placements],
+  );
+  const originalByIdRef = useRef(originalById);
+  originalByIdRef.current = originalById;
+  // What the user SEES and grabs: proposed poses overlaid while previewing, else the live
+  // layout. Drives rendering, hit-testing and drag-seed so grabs land on the drawn pose.
+  const proposedEffective = useMemo(
+    () =>
+      previewActive
+        ? applyTransformsToPlacements(
+            workspace.projection?.placements ?? [],
+            placePreview.transforms,
+          )
+        : null,
+    [previewActive, workspace.projection?.placements, placePreview.transforms],
+  );
+  const placePreviewFromMarkers = useMemo(
+    () =>
+      previewActive
+        ? buildFromMarkers(placePreview.transforms, placePreview.originals)
+        : null,
+    [previewActive, placePreview.transforms, placePreview.originals],
+  );
+  const effectivePlacements =
+    proposedEffective ?? workspace.projection?.placements ?? [];
+  const effectivePlacementsRef = useRef(effectivePlacements);
+  effectivePlacementsRef.current = effectivePlacements;
   const tracesRef = useRef(workspace.projection?.traces ?? []);
   tracesRef.current = workspace.projection?.traces ?? [];
   const viasRef = useRef(workspace.projection?.vias ?? []);
@@ -619,10 +771,10 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
 
   const visiblePlacements = useMemo(
     () =>
-      (workspace.projection?.placements ?? []).filter((placement) =>
+      effectivePlacements.filter((placement) =>
         isPlacementVisible(visibleLayers, placement),
       ),
-    [workspace.projection?.placements, visibleLayers],
+    [effectivePlacements, visibleLayers],
   );
 
   const viasVisible = areViasVisible(visibleLayers);
@@ -1630,7 +1782,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             });
           }
           const initial = new Map<string, PcbPointMm>();
-          for (const p of placementsRef.current) {
+          for (const p of effectivePlacementsRef.current) {
             if (groupIds.has(p.id)) initial.set(p.id, { ...p.positionMm });
           }
           setDragSession({
@@ -1649,7 +1801,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           if (alignmentGuidesEnabledRef.current) {
             const bo = workspace.projection?.board.outline;
             alignmentIndexRef.current = buildAlignmentIndex({
-              placements: placementsRef.current,
+              placements: effectivePlacementsRef.current,
               excludeIds: groupIds,
               visibleLayers,
               boardBoundsMm: bo
@@ -1662,7 +1814,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 : null,
             });
             draggedInitialBBoxRef.current = unionBBox(
-              placementsRef.current.filter((p) => groupIds.has(p.id)),
+              effectivePlacementsRef.current.filter((p) => groupIds.has(p.id)),
             );
           } else {
             alignmentIndexRef.current = null;
@@ -1872,16 +2024,21 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             });
             optimistic.set(id, positionMm);
           }
-          setCommittedDragOverride(optimistic);
-          const clearOptimistic = () => setCommittedDragOverride(null);
-          if (updates.length === 1) {
-            void workspace
-              .movePlacement(updates[0]!.placementId, updates[0]!.positionMm)
-              .finally(clearOptimistic);
-          } else if (updates.length > 1) {
-            void workspace.movePlacements(updates).finally(clearOptimistic);
+          if (previewActive) {
+            // Non-destructive: fold the move into the preview map, not the DB.
+            setPlacePreviewPositions(updates, originalByIdRef.current);
           } else {
-            clearOptimistic();
+            setCommittedDragOverride(optimistic);
+            const clearOptimistic = () => setCommittedDragOverride(null);
+            if (updates.length === 1) {
+              void workspace
+                .movePlacement(updates[0]!.placementId, updates[0]!.positionMm)
+                .finally(clearOptimistic);
+            } else if (updates.length > 1) {
+              void workspace.movePlacements(updates).finally(clearOptimistic);
+            } else {
+              clearOptimistic();
+            }
           }
         }
         setDragSession(null);
@@ -2058,6 +2215,13 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   label: "Rotate 90°",
                   shortcut: "R",
                   onSelect: () => {
+                    if (previewActive) {
+                      rotatePlacePreview(
+                        placementHit.id,
+                        originalByIdRef.current,
+                      );
+                      return;
+                    }
                     void workspace.rotatePlacement(
                       placementHit.id,
                       (placementHit.rotationDeg + 90) as 0 | 90 | 180 | 270,
@@ -2070,6 +2234,13 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   label: "Flip side",
                   shortcut: "F",
                   onSelect: () => {
+                    if (previewActive) {
+                      flipPlacePreview(
+                        placementHit.id,
+                        originalByIdRef.current,
+                      );
+                      return;
+                    }
                     void workspace.flipPlacement(placementHit.id);
                   },
                 },
@@ -2247,6 +2418,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     eventToMm,
     marquee,
     padToNet,
+    previewActive,
     props.activeCommentThreadId,
     props.commentMode,
     props.commentThreads,
@@ -2254,6 +2426,9 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     props.onSelectCommentThread,
     resolveMeasureAnchor,
     resolveRouteAnchor,
+    rotatePlacePreview,
+    flipPlacePreview,
+    setPlacePreviewPositions,
     routeState,
     selection,
     setActiveCopperLayer,
@@ -2285,6 +2460,13 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     const onKey = (event: KeyboardEvent): void => {
       if (event.target instanceof HTMLInputElement) return;
 
+      // Esc rejects the active auto-place preview (cancelling any in-flight drag first).
+      if (event.key === "Escape" && previewActive) {
+        event.preventDefault();
+        rejectPreview();
+        return;
+      }
+
       // F flips the currently-selected placement(s) in Select mode (KiCad
       // parity). Each placement flips around its own origin: layer toggles
       // F.Cu↔B.Cu and `mirrored` flips. Rotation/position preserved.
@@ -2301,6 +2483,14 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       ) {
         event.preventDefault();
         const ids = [...selection.placementIds];
+        if (previewActive) {
+          if (ids.length === 1) {
+            flipPlacePreview(ids[0]!, originalByIdRef.current);
+          } else {
+            flipManyPlacePreview(ids, originalByIdRef.current);
+          }
+          return;
+        }
         if (ids.length === 1) {
           void workspace.flipPlacement(ids[0]!);
         } else {
@@ -2361,6 +2551,10 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             : null;
         if (toolMode === "select" && sole && !event.shiftKey) {
           event.preventDefault();
+          if (previewActive) {
+            rotatePlacePreview(sole, originalByIdRef.current);
+            return;
+          }
           const placement = placementsRef.current.find((p) => p.id === sole);
           if (placement) {
             const next = (((placement.rotationDeg + 90) % 360) + 360) % 360;
@@ -2681,6 +2875,11 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     cycleWidth,
     handleToggleViewSide,
     marquee,
+    previewActive,
+    rejectPreview,
+    rotatePlacePreview,
+    flipPlacePreview,
+    flipManyPlacePreview,
     routeState,
     selection,
     setActiveCopperLayer,
@@ -2714,16 +2913,28 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     );
   }, [workspace.projection, effectiveOutlineRect]);
 
+  // Standing proposed origin positions while previewing — keeps the ratsnest anchored at
+  // the proposed spots even when no drag is active (translate-only; exact recompute on Accept).
+  const previewPositionOverride = useMemo(
+    () =>
+      previewActive ? buildPositionOverride(placePreview.transforms) : null,
+    [previewActive, placePreview.transforms],
+  );
+
   const dragOverride = useMemo<ReadonlyMap<string, PcbPointMm> | null>(() => {
-    if (!dragSession || !dragSession.moved) return committedDragOverride;
+    if (!dragSession || !dragSession.moved) {
+      return previewPositionOverride ?? committedDragOverride;
+    }
     const dx = dragSession.currentPrimaryMm.x - dragSession.initialPrimaryMm.x;
     const dy = dragSession.currentPrimaryMm.y - dragSession.initialPrimaryMm.y;
-    const map = new Map<string, PcbPointMm>();
+    const map = new Map<string, PcbPointMm>(
+      previewPositionOverride ?? undefined,
+    );
     for (const [id, initial] of dragSession.initialPositionsByPlacementId) {
       map.set(id, { x: initial.x + dx, y: initial.y + dy });
     }
     return map;
-  }, [committedDragOverride, dragSession]);
+  }, [committedDragOverride, dragSession, previewPositionOverride]);
 
   const freePrimitiveDragOverrides = useMemo(() => {
     if (!freePrimitiveDragSession?.moved) return null;
@@ -2972,6 +3183,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             routeGuides={sceneRouteGuides}
             routePreview={sceneRoutePreview}
             autoroutePreview={autoroutePreview}
+            previewBasePlacements={proposedEffective}
+            previewFromMarkers={placePreviewFromMarkers}
             routeFocusActive={routeState.kind === "routing"}
             routeFocusLayer={
               routeState.kind === "routing"
@@ -3307,6 +3520,53 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 onApplied={() => void workspace.refresh()}
                 onPreviewChange={setAutoroutePreview}
               />
+            </>
+          ) : null}
+          {props.autoplaceEnabled ? (
+            <>
+              {!previewActive ? (
+                <button
+                  type="button"
+                  onClick={() => setAutoplaceDialogOpen(true)}
+                  title="Auto-place components via the cloud auto-placer (run before routing)"
+                  data-testid="pcb-autoplace-button"
+                  className="absolute bottom-20 right-3 z-20 inline-flex items-center gap-1.5 rounded-md border border-violet-300 bg-white/95 px-2.5 py-1 text-xs font-medium text-violet-700 shadow-sm backdrop-blur hover:bg-violet-50 dark:border-violet-800 dark:bg-slate-900/90 dark:text-violet-300 dark:hover:bg-slate-800"
+                >
+                  Auto-place…
+                </button>
+              ) : null}
+              <PcbAutoplaceDialog
+                backendURL={props.backendURL}
+                moduleId={props.moduleId}
+                designId={props.designId}
+                cloudHeaders={props.cloudHeaders}
+                open={autoplaceDialogOpen}
+                onClose={() => setAutoplaceDialogOpen(false)}
+                onPreviewResult={handlePreviewResult}
+              />
+              {previewActive ? (
+                <PcbPlacePreviewBar
+                  payload={placePreviewPayload}
+                  changedCount={placePreviewFromMarkers?.length ?? 0}
+                  applying={placeApplying}
+                  appliedNote={null}
+                  appliedHasIssues={false}
+                  onAccept={() => void acceptPreview()}
+                  onReject={rejectPreview}
+                />
+              ) : null}
+              {placeAppliedNote ? (
+                <div
+                  role="status"
+                  className={
+                    placeAppliedNote.issues
+                      ? "absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 shadow-lg dark:border-amber-800 dark:bg-amber-950/80 dark:text-amber-200"
+                      : "absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-800 shadow-lg dark:border-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-200"
+                  }
+                >
+                  {placeAppliedNote.text}
+                </div>
+              ) : null}
             </>
           ) : null}
         </>

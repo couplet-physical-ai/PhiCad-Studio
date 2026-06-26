@@ -20,9 +20,13 @@ import type {
   LibraryComponent,
   LibraryComponentPlacementDetail,
   LibraryTagStat,
+  PlaceOperation,
+  PlaceOptions,
+  PlaceStatusResponse,
   RouteOperation,
   RouteOptions,
   RouteStatusResponse,
+  SubmitPlaceResponse,
   SubmitRouteResponse,
 } from "../../../sdks";
 import { exportBundleName } from "../../../sdks";
@@ -706,6 +710,75 @@ export function createDesignerApi(params: {
           backendURL,
           moduleId,
           `/designs/${encodeURIComponent(designId)}/autoroute/apply`,
+        ),
+        {
+          method: "POST",
+          headers: applyCloudHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify({ operations, sessionId }),
+        },
+      );
+    },
+
+    // ── Cloud auto-place ───────────────────────────────────────────────
+    /** Submit the board to the cloud auto-place service. Returns the job id + warnings. */
+    async submitAutoplace(
+      designId: string,
+      request?: {
+        placeOptions?: PlaceOptions;
+        routableNetClassIds?: string[];
+        excludedNetIds?: string[];
+      },
+    ): Promise<SubmitPlaceResponse & { warnings: string[] }> {
+      return fetchData<SubmitPlaceResponse & { warnings: string[] }>(
+        buildModuleUrl(
+          backendURL,
+          moduleId,
+          `/designs/${encodeURIComponent(designId)}/autoplace`,
+        ),
+        {
+          method: "POST",
+          headers: applyCloudHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify(request ?? {}),
+        },
+      );
+    },
+
+    /** Poll a placement job's status + (on completion) its PlacementResultEnvelope. */
+    async getAutoplaceStatus(
+      designId: string,
+      jobId: string,
+    ): Promise<PlaceStatusResponse> {
+      return fetchData<PlaceStatusResponse>(
+        buildModuleUrl(
+          backendURL,
+          moduleId,
+          `/designs/${encodeURIComponent(designId)}/autoplace/${encodeURIComponent(
+            jobId,
+          )}`,
+        ),
+        { headers: applyCloudHeaders(undefined) },
+      );
+    },
+
+    /** Apply the user's cherry-picked placement ops; returns the post-apply DRC report. */
+    async applyAutoplaceOps(
+      designId: string,
+      operations: PlaceOperation[],
+      sessionId: string,
+    ): Promise<{
+      appliedCount: number;
+      failures: Array<{ opId: string; code: string }>;
+      drc: DrcReport | null;
+    }> {
+      return fetchData<{
+        appliedCount: number;
+        failures: Array<{ opId: string; code: string }>;
+        drc: DrcReport | null;
+      }>(
+        buildModuleUrl(
+          backendURL,
+          moduleId,
+          `/designs/${encodeURIComponent(designId)}/autoplace/apply`,
         ),
         {
           method: "POST",

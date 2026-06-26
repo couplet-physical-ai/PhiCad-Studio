@@ -1206,6 +1206,18 @@ interface PcbSceneProps {
    * `TracePreviewLayer` as the in-progress route preview.
    */
   autoroutePreview?: AutoroutePreviewTrace[] | null;
+  /**
+   * Interactive auto-place preview base layout: the full placement list with the PROPOSED
+   * (and user-adjusted) transforms already overlaid onto affected components. When set,
+   * it replaces `projection.placements` as the render base, so masks/drills/copper/
+   * selection all follow the proposal solid at full opacity. Null outside preview.
+   */
+  previewBasePlacements?: PcbPlacedPart[] | null;
+  /**
+   * Dim "from" markers: the ORIGINAL placements of components the proposal moved/rotated/
+   * flipped, rendered translucent so the user sees where each part came from.
+   */
+  previewFromMarkers?: PcbPlacedPart[] | null;
   routeFocusActive?: boolean;
   routeFocusLayer?: PcbCopperLayerId;
   focusedLayer?: PcbCopperLayerId | null;
@@ -1260,6 +1272,8 @@ export function PcbScene({
   routeGuide = null,
   routePreview = null,
   autoroutePreview = null,
+  previewBasePlacements = null,
+  previewFromMarkers = null,
   routeFocusActive = false,
   routeFocusLayer,
   focusedLayer = null,
@@ -1291,6 +1305,8 @@ export function PcbScene({
     displayMode,
     routeGuide,
     routePreview,
+    previewBasePlacements,
+    previewFromMarkers,
     routeFocusActive,
     focusedLayer,
     copperFillLayers,
@@ -1308,8 +1324,11 @@ export function PcbScene({
     [projection.board.visibleLayers],
   );
   const renderPlacements = useMemo<ReadonlyArray<PcbPlacedPart>>(() => {
-    if (!dragOverride || dragOverride.size === 0) return projection.placements;
-    return projection.placements.map((placement) => {
+    // In preview, affected components already carry their proposed pose in
+    // `previewBasePlacements`; `dragOverride` then layers the live-drag position on top.
+    const base = previewBasePlacements ?? projection.placements;
+    if (!dragOverride || dragOverride.size === 0) return base;
+    return base.map((placement) => {
       const override = dragOverride.get(placement.id);
       if (!override) return placement;
       return {
@@ -1317,7 +1336,7 @@ export function PcbScene({
         positionMm: override,
       };
     });
-  }, [dragOverride, projection.placements]);
+  }, [dragOverride, previewBasePlacements, projection.placements]);
   const selectedPlacements = useMemo(() => {
     if (!selectedPlacementIds || selectedPlacementIds.size === 0) return [];
     return renderPlacements.filter(
@@ -1651,6 +1670,20 @@ export function PcbScene({
             visualState={visualState}
             padNetIds={padNetIds}
             layerOpacity={layerOpacityFor}
+            viewSide={viewSide}
+          />
+        ))}
+        {/* Auto-place preview "from" markers: each affected component's ORIGINAL pose,
+            drawn faint so the user sees where the part moved from. The proposed pose is
+            already baked into `renderPlacements` above (solid). Cleared on accept/reject. */}
+        {previewFromMarkers?.map((placement) => (
+          <PlacementRender
+            key={`autoplace-from-${placement.id}`}
+            placement={placement}
+            visibleLayers={visibleLayers}
+            visualState={visualState}
+            padNetIds={padNetIds}
+            layerOpacity={() => 0.15}
             viewSide={viewSide}
           />
         ))}
