@@ -36,6 +36,8 @@ interface PcbLayersPanelProps {
   activeLayer: PcbLayerId | null;
   /** Layer that must stay visible for route/edit commands, even when no layer is focused. */
   lockedVisibleLayer?: PcbLayerId | null;
+  /** Copper layer of the in-progress route, if any — badged "Routing" on its row. */
+  routingLayer?: PcbLayerId | null;
   onSetActiveLayer: (layer: PcbLayerId) => void;
   visibleLayers: ReadonlyArray<PcbLayerId>;
   onSetVisibleLayers: (layers: ReadonlyArray<PcbLayerId>) => void;
@@ -95,6 +97,7 @@ function isCopperLayer(layer: PcbLayerId): layer is PcbCopperLayerId {
 export function PcbLayersPanel({
   activeLayer,
   lockedVisibleLayer = null,
+  routingLayer = null,
   onSetActiveLayer,
   visibleLayers,
   onSetVisibleLayers,
@@ -297,6 +300,7 @@ export function PcbLayersPanel({
           }
 
           const isActive = node.id === activeLayer;
+          const isRouting = routingLayer !== null && node.id === routingLayer;
           const isVisible = visibleSet.has(node.id);
           const color = PCB_LAYER_COLORS[node.id] ?? "#64748b";
           const isChild =
@@ -374,7 +378,11 @@ export function PcbLayersPanel({
                   >
                     {node.label}
                   </span>
-                  {isActive ? (
+                  {isRouting ? (
+                    <span className="ml-auto inline-flex items-center rounded bg-emerald-500 px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-emerald-950">
+                      Routing
+                    </span>
+                  ) : isActive ? (
                     <span
                       className="ml-auto rounded px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-slate-950 ring-1 ring-black/10 dark:text-white"
                       style={{ backgroundColor: `${color}55` }}

@@ -98,7 +98,7 @@ import { PcbAutorouteDialog } from "./PcbAutorouteDialog";
 import type { CloudHeadersProvider } from "../api";
 import { PcbBoardPanel } from "./PcbBoardPanel";
 import { PcbLayersPanel } from "./PcbLayersPanel";
-import { PcbActiveLayerPill } from "./PcbActiveLayerPill";
+import { pickRouteStartLayer } from "./route-start-layer";
 import { PcbSelectionFilter } from "./PcbSelectionFilter";
 import { findSnapTarget, type SnapTarget } from "./snap";
 import {
@@ -693,6 +693,14 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     return map;
   }, [workspace.projection?.traces]);
 
+  const traceToLayer = useMemo(() => {
+    const map = new Map<string, PcbCopperLayerId>();
+    for (const t of workspace.projection?.traces ?? []) {
+      map.set(t.id, t.layer);
+    }
+    return map;
+  }, [workspace.projection?.traces]);
+
   const viaToNet = useMemo(() => {
     const map = new Map<string, string | null>();
     for (const v of workspace.projection?.vias ?? []) {
@@ -853,12 +861,24 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       netId: string | null;
       onPad: boolean;
       padId?: string;
+      /**
+       * Copper layer implied by the snapped object, used to auto-pick the route
+       * layer in Auto mode. `null` = spans all copper (through-hole pad / via);
+       * `undefined` = free/dangling anchor with no layer hint.
+       */
+      layer?: PcbCopperLayerId | null;
     } => {
       const pad = hitPad(visiblePlacements, cursor);
       if (pad) {
         const padId = `${pad.placementId}|${pad.padNumber}`;
         const netId = padToNet.get(padId) ?? null;
-        return { pointMm: pad.worldMm, netId, onPad: true, padId };
+        return {
+          pointMm: pad.worldMm,
+          netId,
+          onPad: true,
+          padId,
+          layer: pad.layer,
+        };
       }
       if (snapTarget) {
         if (
@@ -867,16 +887,33 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         ) {
           const traceId = snapTarget.sourceId.split("|")[0]!;
           const netId = traceToNet.get(traceId) ?? null;
-          return { pointMm: snapTarget.pointMm, netId, onPad: false };
+          return {
+            pointMm: snapTarget.pointMm,
+            netId,
+            onPad: false,
+            layer: traceToLayer.get(traceId),
+          };
         }
         if (snapTarget.kind === "via-center") {
           const netId = viaToNet.get(snapTarget.sourceId) ?? null;
-          return { pointMm: snapTarget.pointMm, netId, onPad: false };
+          return {
+            pointMm: snapTarget.pointMm,
+            netId,
+            onPad: false,
+            layer: null,
+          };
         }
       }
       return { pointMm: snapPoint(cursor), netId: null, onPad: false };
     },
-    [padToNet, visiblePlacements, snapTarget, traceToNet, viaToNet],
+    [
+      padToNet,
+      visiblePlacements,
+      snapTarget,
+      traceToNet,
+      traceToLayer,
+      viaToNet,
+    ],
   );
 
   // Route-time anchor resolution = object snap (pad/endpoint/via, via
@@ -1300,11 +1337,20 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
               (assignedId &&
                 board?.netClasses.find((nc) => nc.id === assignedId)) ||
               defaultNetClass;
+            // Pick the route layer. When a layer is focused (locked) it always
+            // wins; otherwise (Auto) follow the clicked pad/object's layer,
+            // falling back to the viewed side for through-hole / dangling
+            // anchors.
+            const startLayer = pickRouteStartLayer({
+              focusedLayer,
+              anchorLayer: anchor.layer,
+              viewSide: workspace.viewSide,
+            });
             // Start a new route session at the resolved anchor.
             dispatchRoute({
               kind: "start",
               anchorNm: pointMmToNm(anchor.pointMm),
-              layer: activeCopperLayer,
+              layer: startLayer,
               segmentMode: "manhattan-45",
               netId: anchor.netId,
               netClassId: sessionClass.id,
@@ -1313,6 +1359,11 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 ? { startPadId: anchor.padId }
                 : {}),
             });
+            // In Auto mode keep the persisted active layer in sync with what we
+            // just routed on, without engaging focus (stays in Auto).
+            if (focusedLayer === null && startLayer !== activeCopperLayer) {
+              void workspace.setActiveLayer(startLayer);
+            }
             return;
           }
           // Routing — finishing on a pad commits and exits the session;
@@ -2439,7 +2490,16 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       // Layer-switch hotkeys (no view flip — that's Shift+F):
       //   T / 1 / PgUp → F.Cu, B / 2 / PgDn → B.Cu.
       // Fire globally so the user can switch active copper layer outside route
-      // mode too.
+      // mode too. While idle these also engage the routing lock (focus) so the
+      // chosen layer wins over Auto; pressing the locked layer's key again
+      // clears the lock back to Auto. While routing, the key drives the
+      // smart-via layer switch (via setActiveCopperLayer) and leaves focus be.
+      const lockLayer = (target: PcbCopperLayerId) => {
+        if (routeState.kind !== "routing") {
+          setFocusedLayer((prev) => (prev === target ? null : target));
+        }
+        void setActiveCopperLayer(target);
+      };
       if (
         !event.ctrlKey &&
         !event.metaKey &&
@@ -2451,7 +2511,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           event.key === "T")
       ) {
         event.preventDefault();
-        void setActiveCopperLayer("F.Cu");
+        lockLayer("F.Cu");
         return;
       }
       if (
@@ -2465,7 +2525,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           event.key === "B")
       ) {
         event.preventDefault();
-        void setActiveCopperLayer("B.Cu");
+        lockLayer("B.Cu");
         return;
       }
       // 3 / 4 → inner copper layers (only on 4-layer boards). Silently
@@ -2481,7 +2541,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         workspace.projection?.board.layerCount === 4
       ) {
         event.preventDefault();
-        void setActiveCopperLayer("In1.Cu");
+        lockLayer("In1.Cu");
         return;
       }
       if (
@@ -2493,7 +2553,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         workspace.projection?.board.layerCount === 4
       ) {
         event.preventDefault();
-        void setActiveCopperLayer("In2.Cu");
+        lockLayer("In2.Cu");
         return;
       }
       // Ratsnest toggle moved to Shift+B (B alone now selects Bottom Copper).
@@ -2973,11 +3033,6 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           }}
         />
       ) : null}
-      {workspace.projection ? (
-        <div className="pointer-events-none absolute left-3 bottom-3 z-20">
-          <PcbActiveLayerPill layer={displayedCopperLayer} />
-        </div>
-      ) : null}
       {workspace.projection && selectionFilterPanelOpen ? (
         <PcbSelectionFilter
           filter={selectionFilter}
@@ -3373,6 +3428,9 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             <PcbLayersPanel
               activeLayer={focusedLayer}
               lockedVisibleLayer={displayedCopperLayer}
+              routingLayer={
+                routeState.kind === "routing" ? routeState.session.layer : null
+              }
               onSetActiveLayer={(layer) => {
                 if (
                   layer === "F.Cu" ||

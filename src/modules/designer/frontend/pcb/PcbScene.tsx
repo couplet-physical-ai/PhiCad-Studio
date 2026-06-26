@@ -1519,9 +1519,11 @@ export function PcbScene({
             highlightedNetId={effectiveHighlightedNetId}
             selectedTraceIds={selection?.traceIds}
             inactiveOpacity={
-              (visualState.routeFocusActive && visualState.activeNetId
-                ? 1
-                : layerOpacity(visualState, layer)) * layerOpacityFor(layer)
+              // Base layer opacity (dims off-active-layer traces during
+              // route-focus too — e.g. top traces fade while routing bottom).
+              // Within the active layer, net scoping (highlightedNetId/dim
+              // buckets) handles same-net-bright vs other-net-dim.
+              layerOpacity(visualState, layer) * layerOpacityFor(layer)
             }
             dimOpacity={visualState.inactiveNetOpacity}
             mirror={mirror}

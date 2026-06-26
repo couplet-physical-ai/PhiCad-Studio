@@ -9,8 +9,40 @@ import type {
   PcbVia,
 } from "../../../../sdks";
 import { placementMirrorX } from "../../../../sdks/designer/pcb-helpers";
+import { flipLayerSide } from "../../../../shared/frontend/canvas/scene/layer-side";
 
 const PAD_HIT_PAD_MM = 0.4;
+
+const COPPER_LAYERS = new Set<PcbCopperLayerId>([
+  "F.Cu",
+  "In1.Cu",
+  "In2.Cu",
+  "B.Cu",
+]);
+
+function asCopperLayer(layer: string | undefined): PcbCopperLayerId | null {
+  return layer !== undefined && COPPER_LAYERS.has(layer as PcbCopperLayerId)
+    ? (layer as PcbCopperLayerId)
+    : null;
+}
+
+/**
+ * Physical copper layer of a footprint pad in board coordinates, or `null` when
+ * the pad spans every copper layer (through-hole). SMD pads carry a
+ * footprint-local layer (defaulting to the front side); a placement on `B.Cu`
+ * flips it F↔B, mirroring the renderer's `layerRemap` (PcbScene.tsx) so routing
+ * starts on the layer the user actually sees.
+ */
+export function padCopperLayer(
+  placement: PcbPlacedPart,
+  pad: { drillDiameterMm?: number; layer?: string },
+): PcbCopperLayerId | null {
+  if ((pad.drillDiameterMm ?? 0) > 0) return null;
+  const local = asCopperLayer(pad.layer) ?? "F.Cu";
+  return placement.layer === "B.Cu"
+    ? ((flipLayerSide(local) as PcbCopperLayerId) ?? local)
+    : local;
+}
 
 /** Local→world transform mirroring backend pad-geometry.transformPadCenterMm. */
 function transformLocal(
@@ -37,6 +69,8 @@ export interface PadHit {
   placementId: string;
   padNumber: string;
   worldMm: PcbPointMm;
+  /** Physical copper layer, or `null` for through-hole (spans all layers). */
+  layer: PcbCopperLayerId | null;
 }
 
 /** Hit-test pads across all placements; returns the first within `tolerance + halfDim`. */
@@ -64,6 +98,7 @@ export function hitPad(
           placementId: placement.id,
           padNumber: pad.number,
           worldMm: { x: cx, y: cy },
+          layer: padCopperLayer(placement, pad),
         };
       }
     }
@@ -287,6 +322,7 @@ export function hitAll(input: HitAllInput): PcbHitCandidate[] {
               placementId: placement.id,
               padNumber: pad.number,
               worldMm: { x: cx, y: cy },
+              layer: padCopperLayer(placement, pad),
             },
           });
         }

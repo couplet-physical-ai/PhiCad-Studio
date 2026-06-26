@@ -1,5 +1,12 @@
 import { describe, test, expect } from "vitest";
-import { hitAll, hitTrace, hitVia, hitPlacement, hitPad } from "./pcb-hit";
+import {
+  hitAll,
+  hitTrace,
+  hitVia,
+  hitPlacement,
+  hitPad,
+  padCopperLayer,
+} from "./pcb-hit";
 import type {
   PcbPlacedPart,
   PcbTrace,
@@ -469,6 +476,67 @@ describe("pcb-hit", () => {
       const result = hitPad(placements, cursorMm);
 
       expect(result).toBeNull();
+    });
+
+    test("reports the clicked pad's copper layer", () => {
+      const placements = [
+        makePlacement({
+          positionMm: { x: 10, y: 10 },
+          footprint: {
+            footprintId: "fp1",
+            name: "TEST",
+            mountType: null,
+            sourceHash: null,
+            preview: {
+              kind: "footprint",
+              units: "mm",
+              name: "TEST",
+              labels: [],
+              warnings: [],
+              pads: [
+                {
+                  id: "pad1",
+                  number: "1",
+                  rotationDeg: 0,
+                  centerMm: { x: 0, y: 0 },
+                  widthMm: 2,
+                  heightMm: 2,
+                  shape: "rect",
+                  layer: "F.Cu",
+                },
+              ],
+              graphics: [],
+              bounds: { minX: -5, maxX: 5, minY: -5, maxY: 5 },
+            },
+          },
+        }),
+      ];
+
+      expect(hitPad(placements, { x: 10, y: 10 })?.layer).toBe("F.Cu");
+    });
+  });
+
+  describe("padCopperLayer", () => {
+    const frontPlacement = makePlacement({ layer: "F.Cu" });
+    const backPlacement = makePlacement({ layer: "B.Cu" });
+
+    test("SMD pad on a front placement → F.Cu", () => {
+      expect(padCopperLayer(frontPlacement, { layer: "F.Cu" })).toBe("F.Cu");
+    });
+
+    test("SMD pad on a back placement flips F↔B → B.Cu", () => {
+      expect(padCopperLayer(backPlacement, { layer: "F.Cu" })).toBe("B.Cu");
+    });
+
+    test("SMD pad with no explicit layer defaults to the front side", () => {
+      expect(padCopperLayer(frontPlacement, {})).toBe("F.Cu");
+      expect(padCopperLayer(backPlacement, {})).toBe("B.Cu");
+    });
+
+    test("through-hole pad (has drill) spans all layers → null", () => {
+      expect(
+        padCopperLayer(frontPlacement, { layer: "F.Cu", drillDiameterMm: 0.8 }),
+      ).toBeNull();
     });
   });
 });
