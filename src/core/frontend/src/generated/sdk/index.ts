@@ -3,5 +3,6 @@
 
 export * as assistant from "./assistant";
 export * as designer from "./designer";
+export * as knowledge from "./knowledge";
 export * as library from "./library";
 export * as tasks from "./tasks";

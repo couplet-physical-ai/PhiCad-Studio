@@ -11,6 +11,7 @@
 
 import * as assistantBackend from "../../../modules/assistant/module.backend";
 import * as designerBackend from "../../../modules/designer/module.backend";
+import * as knowledgeBackend from "../../../modules/knowledge/module.backend";
 import * as libraryBackend from "../../../modules/library/module.backend";
 import * as tasksBackend from "../../../modules/tasks/module.backend";
 
@@ -22,6 +23,7 @@ export const STATIC_MODULES: ReadonlyMap<string, StaticModuleExports> = new Map<
 >([
   ["assistant", assistantBackend as unknown as StaticModuleExports],
   ["designer", designerBackend as unknown as StaticModuleExports],
+  ["knowledge", knowledgeBackend as unknown as StaticModuleExports],
   ["library", libraryBackend as unknown as StaticModuleExports],
   ["tasks", tasksBackend as unknown as StaticModuleExports],
 ]);

@@ -1,0 +1,20 @@
+{
+  "id": "knowledge",
+  "label": "Docs",
+  "version": "0.1.0",
+  "apiVersion": 2,
+  "namespace": "space.knowledge",
+  "kind": "space",
+  "sidebar": {
+    "label": "Docs",
+    "icon": "BookOpen",
+    "order": 25,
+    "group": "design"
+  },
+  "runtime": {
+    "backendEntry": "module.backend.ts",
+    "frontendEntry": "module.frontend.ts"
+  },
+  "dependsOn": [],
+  "defaultPinned": true
+}

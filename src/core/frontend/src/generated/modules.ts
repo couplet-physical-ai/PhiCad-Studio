@@ -120,6 +120,24 @@ export const ALL_MODULE_MANIFESTS: GeneratedModuleManifest[] = [
         defaultPinned: true,
         resolvedDependencies: [{"id":"library","minVersion":"0.1.0","optional":false,"version":"0.1.0","missing":false,"satisfied":true}],
         loadOrder: 3
+    },
+    {
+        id: "knowledge",
+        label: "Docs",
+        sidebarLabel: "Docs",
+        namespace: "space.knowledge",
+        version: "0.1.0",
+        moduleEntry: "src/modules/knowledge/module.frontend.ts",
+        kind: "space",
+        apiVersion: 2,
+        tags: [],
+        coreCapabilities: ["projects","contentEditor","toolRegistry"],
+        dependsOn: [],
+        exports: {"services":[],"widgets":[]},
+        registerAsSpaceInTopBar: true,
+        defaultPinned: true,
+        resolvedDependencies: [],
+        loadOrder: 4
     }
 ];
 
