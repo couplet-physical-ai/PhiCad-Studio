@@ -26,6 +26,7 @@ interface TreeActions {
   setExpanded: (id: string, expanded: boolean) => void;
   expandAncestors: (nodeId: string) => void;
   setFocused: (id: string | null) => void;
+  isExpanded: (id: string) => boolean;
   reset: () => void;
 }
 
@@ -167,7 +168,7 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
 
   setFocused: (id) => set({ focusedId: id }),
 
-  isExpanded: (id) => get().expandedIds.has(id),
+  isExpanded: (id: string) => get().expandedIds.has(id),
 
   reset: () => set(initialState),
 }));

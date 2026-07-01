@@ -49,6 +49,7 @@ import { ModelSelectorPill } from "./components/ModelSelectorPill";
 import { ChatComposer } from "./components/ChatComposer";
 import { useChatUserState } from "./components/useChatUserState";
 import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
+import type { MentionReference } from "./types/mention";
 import {
   contextBudgetKb,
   dateDividerLabel,
@@ -62,6 +63,27 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@shared/frontend/ui/dropdown-menu";
+
+function navigateFromMention(
+  mention: MentionReference,
+  navigateToModule: (
+    moduleId: string,
+    designId?: string,
+    params?: Record<string, string>,
+  ) => void,
+): void {
+  switch (mention.entityType) {
+    case "knowledge-page":
+      navigateToModule("knowledge", undefined, { pageId: mention.entityId });
+      break;
+    case "library-component":
+      navigateToModule("library", undefined, { componentId: mention.entityId });
+      break;
+    case "design":
+      navigateToModule("designer", mention.entityId);
+      break;
+  }
+}
 
 const QUICK_ACTIONS = [
   "Wire the schematic",
@@ -913,6 +935,43 @@ export function AssistantSpace({
     selectedProvider?.capabilities &&
     !selectedProvider.capabilities.toolCalling,
   );
+  const [toolFixBusy, setToolFixBusy] = useState(false);
+
+  // Recheck the provider's tool-calling capability (e.g. after enabling
+  // --enable-auto-tool-choice on a vLLM server), then reload provider state.
+  const reprobeTools = useCallback(async () => {
+    if (!base || !providerId) return;
+    setToolFixBusy(true);
+    try {
+      await api(`${base}/providers/${providerId}/capabilities/refresh`, {
+        method: "POST",
+        headers: headers(),
+      });
+      await refreshConfig();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setToolFixBusy(false);
+    }
+  }, [base, providerId, refreshConfig]);
+
+  // Force tool calling on regardless of the probe result.
+  const enableToolsAnyway = useCallback(async () => {
+    if (!base || !providerId) return;
+    setToolFixBusy(true);
+    try {
+      await api(`${base}/providers/${providerId}/tool-calling`, {
+        method: "PUT",
+        headers: headers(),
+        body: JSON.stringify({ mode: "on" }),
+      });
+      await refreshConfig();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setToolFixBusy(false);
+    }
+  }, [base, providerId, refreshConfig]);
 
   const beginRename = () => {
     if (!selectedChat) return;
@@ -1282,7 +1341,15 @@ export function AssistantSpace({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {toolCount !== null ? (
+            {chatOnly ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-control border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-500"
+                title="Tools are disabled for this provider — answers are not grounded"
+              >
+                <Wrench className="h-3 w-3 text-slate-400" />
+                <span>tools off</span>
+              </span>
+            ) : toolCount !== null ? (
               <span
                 className="inline-flex items-center gap-1 rounded-control border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
                 title={`${toolCount} grounded tools available`}
@@ -1377,8 +1444,33 @@ export function AssistantSpace({
             ) : null}
             {chatOnly ? (
               <div className="mx-4 mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-                This provider is running without grounded OpenPCB tools. Answers
-                will not use library or designer data.
+                <div>
+                  This provider is running without grounded OpenPCB tools.
+                  Answers will not use library or designer data.
+                </div>
+                {selectedProvider?.capabilities?.warning ? (
+                  <div className="mt-1 opacity-80">
+                    Probe: {selectedProvider.capabilities.warning}
+                  </div>
+                ) : null}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={reprobeTools}
+                    disabled={toolFixBusy}
+                    className="rounded-control border border-amber-400 px-2 py-1 font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                  >
+                    Re-probe capabilities
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enableToolsAnyway}
+                    disabled={toolFixBusy}
+                    className="rounded-control border border-amber-400 px-2 py-1 font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                  >
+                    Enable tools anyway
+                  </button>
+                </div>
               </div>
             ) : null}
             {error ? (
@@ -1464,6 +1556,9 @@ export function AssistantSpace({
                             ? undefined
                             : (prompt) => void submit(undefined, prompt)
                         }
+                        onMentionClick={(mention) =>
+                          navigateFromMention(mention, navigateToModule)
+                        }
                         loading={
                           loading &&
                           idx === lastAssistantIdx &&
@@ -1534,11 +1629,14 @@ export function AssistantSpace({
                       : undefined
                   }
                   busy={loading}
-                  toolCount={toolCount ?? undefined}
+                  toolCount={chatOnly ? undefined : (toolCount ?? undefined)}
                   contextBudgetKb={contextBudgetKb(
                     settings?.contextSizePreference,
                   )}
                   quickActions={QUICK_ACTIONS}
+                  backendURL={backendURL}
+                  workspaceId="default"
+                  chatId={selectedChatId ?? undefined}
                 />
               </div>
               <div className="mt-1.5 text-center text-[10px] text-slate-500">

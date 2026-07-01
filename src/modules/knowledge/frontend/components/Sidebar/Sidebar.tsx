@@ -4,7 +4,7 @@ import { Button } from "@shared/frontend/ui/button";
 import { PageTree } from "./PageTree";
 import { useKnowledgeApi } from "../../hooks";
 import { useTreeStore } from "../../stores/tree-store";
-import type { PageSearchResult } from "../../shared/types";
+import type { PageSearchResult } from "../../../shared/types";
 
 interface SidebarProps {
   onSelectPage: (id: string) => void;

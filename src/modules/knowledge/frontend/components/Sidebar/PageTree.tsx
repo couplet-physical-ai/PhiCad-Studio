@@ -1,6 +1,6 @@
 import { usePageTree } from "../../hooks";
 import { TreeItem } from "./TreeItem";
-import type { PageTreeNode } from "../../shared/types";
+import type { PageTreeNode } from "../../../shared/types";
 
 interface PageTreeProps {
   selectedPageId: string | null;

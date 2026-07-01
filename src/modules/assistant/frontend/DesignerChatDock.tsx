@@ -17,7 +17,9 @@ import {
 } from "lucide-react";
 import { ModelSelectorPill } from "./components/ModelSelectorPill";
 import { ChatComposer } from "./components/ChatComposer";
+import type { MentionReference } from "./types/mention";
 import { contextBudgetKb } from "./components/chat-format";
+import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
 
 const QUICK_ACTIONS = [
   "Wire the schematic",
@@ -62,6 +64,27 @@ interface DesignerChatDockProps {
 
 function headers(): HeadersInit {
   return { "content-type": "application/json" };
+}
+
+function navigateFromMention(
+  mention: MentionReference,
+  navigateToModule: (
+    moduleId: string,
+    designId?: string,
+    params?: Record<string, string>,
+  ) => void,
+): void {
+  switch (mention.entityType) {
+    case "knowledge-page":
+      navigateToModule("knowledge", undefined, { pageId: mention.entityId });
+      break;
+    case "library-component":
+      navigateToModule("library", undefined, { componentId: mention.entityId });
+      break;
+    case "design":
+      navigateToModule("designer", mention.entityId);
+      break;
+  }
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -121,6 +144,7 @@ export function DesignerChatDock({
   onOpenFull,
   onDesignChanged,
 }: DesignerChatDockProps): ReactElement {
+  const navigateToModule = useNavigationStore((s) => s.navigateToModule);
   const assistantBase = useMemo(
     () => (backendURL ? `${backendURL}/api/modules/assistant` : null),
     [backendURL],
@@ -828,6 +852,9 @@ export function DesignerChatDock({
                     ? undefined
                     : (prompt) => void submit(undefined, prompt)
                 }
+                onMentionClick={(mention) =>
+                  navigateFromMention(mention, navigateToModule)
+                }
                 loading={
                   loading &&
                   idx === lastAssistantIdx &&
@@ -857,6 +884,9 @@ export function DesignerChatDock({
           toolCount={toolCount ?? undefined}
           contextBudgetKb={contextBudgetKb(settings?.contextSizePreference)}
           quickActions={QUICK_ACTIONS}
+          backendURL={backendURL}
+          workspaceId="default"
+          chatId={selectedChatId ?? undefined}
           compact
         />
       </div>

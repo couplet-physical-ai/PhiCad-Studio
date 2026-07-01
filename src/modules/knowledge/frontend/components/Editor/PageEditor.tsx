@@ -6,7 +6,7 @@ import { useKnowledgeApi, useAutosave } from "../../hooks";
 import { TiptapEditor } from "./TiptapEditor";
 import { FixedToolbar } from "./FixedToolbar";
 import { LinkDialog } from "./LinkDialog";
-import type { EditorContent, Page } from "../../shared/types";
+import type { EditorContent, Page } from "../../../shared/types";
 
 interface PageEditorProps {
   pageId: string | null;

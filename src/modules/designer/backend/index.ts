@@ -1,7 +1,10 @@
 import type { ModuleDefinition } from "../../../core/contracts/modules/backend-module";
 import { MODULE_SDK_TOKENS } from "../../../sdks";
+import { MentionRegistry } from "../../../core/backend/mentions";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { registerRoutes } from "./routes";
 import { buildDesignerSdk } from "./sdk";
+import { DesignMentionProvider } from "./providers/mention-provider";
 
 export const definition: ModuleDefinition = {
   id: "designer",
@@ -10,6 +13,10 @@ export const definition: ModuleDefinition = {
     ctx.logger.info("designer activated", {
       tablePrefix: ctx.db.tablePrefix,
     });
+
+    const db = ctx.db.db as BetterSQLite3Database<Record<string, unknown>>;
+    const mentionProvider = new DesignMentionProvider(db);
+    MentionRegistry.get().register(mentionProvider);
   },
 
   async registerSdk(ctx) {

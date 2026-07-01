@@ -1,6 +1,10 @@
 import { NotFoundError, ValidationError } from "../../../core/contracts/errors";
 import type { CoreBackendModuleContext } from "../../../core/contracts/modules/backend-module";
 import {
+  MentionRegistry,
+  parseMentions,
+} from "../../../core/backend/mentions";
+import {
   MODULE_SDK_TOKENS,
   type AssistantChat,
   type AssistantContextBindingDto,
@@ -22,7 +26,11 @@ import {
   type DesignerSDK,
 } from "../../../sdks";
 import { ConversationStore } from "./conversation-store";
-import { ProviderStore, type InternalProviderConfig } from "./provider-store";
+import {
+  ProviderStore,
+  type InternalProviderConfig,
+  type ToolCallingMode,
+} from "./provider-store";
 import { SettingsStore } from "./settings-store";
 import { PromptService } from "./prompt-service";
 import { ContextResolver } from "./context-resolver";
@@ -170,6 +178,9 @@ export class AssistantService {
       role: "user",
       content: input.content,
     });
+
+    await this.processMentions(userMessage.id, input.content);
+
     const assistantMessage = this.conversation.createMessage({
       chatId,
       role: "assistant",
@@ -196,6 +207,63 @@ export class AssistantService {
         this.conversation.getMessage(assistantMessage.id) ?? assistantMessage,
       taskId: result.task.id,
     };
+  }
+
+  // ─── mentions ─────────────────────────────────────────────────────────
+  private async processMentions(
+    messageId: string,
+    content: string,
+  ): Promise<void> {
+    const mentions = parseMentions(content);
+    if (mentions.length === 0) return;
+
+    const registry = MentionRegistry.get();
+    const mentionRecords: Array<{
+      messageId: string;
+      entityType: string;
+      entityId: string;
+      displayText: string;
+      snapshotData: Record<string, unknown>;
+      snapshotCreatedAt: string;
+      entityVersion: string;
+      position: number;
+    }> = [];
+
+    for (const mention of mentions) {
+      try {
+        const snapshot = await registry.createSnapshot(
+          mention.entityType,
+          mention.entityId,
+        );
+
+        if (!snapshot) {
+          console.warn(
+            `[AssistantService] Entity not found for mention ${mention.entityType}:${mention.entityId}, skipping`,
+          );
+          continue;
+        }
+
+        mentionRecords.push({
+          messageId,
+          entityType: mention.entityType,
+          entityId: mention.entityId,
+          displayText: mention.displayText,
+          snapshotData: snapshot.data,
+          snapshotCreatedAt: snapshot.snapshotCreatedAt,
+          entityVersion: snapshot.entityVersion,
+          position: mention.position,
+        });
+      } catch (err) {
+        console.warn(
+          `[AssistantService] Failed to create snapshot for mention ${mention.entityType}:${mention.entityId}:`,
+          err,
+        );
+      }
+    }
+
+    if (mentionRecords.length > 0) {
+      await this.conversation.mentions.createMany(mentionRecords);
+    }
   }
 
   // ─── prompt presets ───────────────────────────────────────────────────
@@ -402,6 +470,18 @@ export class AssistantService {
   }
   getProviderCapabilities(id: string): AiProviderCapabilities | null {
     return this.providers.getCapabilities(id);
+  }
+  getToolCalling(id: string): { mode: ToolCallingMode; effective: boolean } {
+    const mode = this.providers.getToolCallingMode(id);
+    const provider = this.requireProvider(id);
+    return { mode, effective: provider.capabilities?.toolCalling !== false };
+  }
+  setToolCalling(
+    id: string,
+    mode: ToolCallingMode,
+  ): { mode: ToolCallingMode; effective: boolean } {
+    this.providers.setToolCallingMode(id, mode);
+    return this.getToolCalling(id);
   }
   async refreshProviderCapabilities(
     id: string,

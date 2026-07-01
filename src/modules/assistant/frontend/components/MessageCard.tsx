@@ -13,6 +13,8 @@ import type {
   AssistantToolEventDto,
   AssistantWriteProposalDto,
 } from "../../../../sdks/assistant";
+import { MessageTextWithMentions } from "./MessageTextWithMentions";
+import type { MentionReference } from "../types/mention";
 import { ToolCard } from "./ToolCard";
 import {
   PlacementProposalCard,
@@ -281,6 +283,7 @@ export function MessageCard({
   onStopRun,
   onRetryRun,
   onSendPrompt,
+  onMentionClick,
   compact = false,
 }: {
   message: AssistantMessage;
@@ -300,6 +303,8 @@ export function MessageCard({
   /** Send a follow-up prompt — result-block CTAs use this to make the model
    *  dispatch a Propose-level command (e.g. designer_place_components). */
   onSendPrompt?: (prompt: string) => void;
+  /** Called when a mention badge is clicked. */
+  onMentionClick?: (mention: MentionReference) => void;
   compact?: boolean;
 }): ReactElement {
   const { mode } = useTheme();
@@ -376,7 +381,12 @@ export function MessageCard({
         className={`flex min-w-0 justify-end ${compact ? "px-3 py-3" : "px-4 py-4"}`}
       >
         <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-[10px_10px_2px_10px] border border-violet-300/40 bg-accent-soft px-3.5 py-2.5 text-sm leading-relaxed text-slate-800 dark:border-violet-700/40 dark:text-slate-100">
-          {cleanedContent}
+          <MessageTextWithMentions
+            text={cleanedContent}
+            isStreaming={isStreaming}
+            onMentionClick={onMentionClick}
+            proseClassName={compact ? COMPACT_PROSE_CLASSES : PROSE_CLASSES}
+          />
         </div>
       </div>
     );
@@ -428,13 +438,14 @@ export function MessageCard({
         ) : null}
         {/* 3 · Message prose — the answer, streamed first, before any result. */}
         {hasContent ? (
-          <MarkdownContent
-            className={compact ? COMPACT_PROSE_CLASSES : PROSE_CLASSES}
-            streaming={isStreaming}
+          <MessageTextWithMentions
+            text={cleanedContent}
+            isStreaming={isStreaming}
+            onMentionClick={onMentionClick}
+            proseClassName={compact ? COMPACT_PROSE_CLASSES : PROSE_CLASSES}
+            markdown
             mermaidTheme={mode === "dark" ? "dark" : "light"}
-          >
-            {cleanedContent}
-          </MarkdownContent>
+          />
         ) : null}
         {/* Exactly one inline loading indicator — no border, no dots, Stop inline.
             Sits at the active block (body caret) as prose streams. */}

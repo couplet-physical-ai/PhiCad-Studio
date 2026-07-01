@@ -1,4 +1,5 @@
 import type { CoreBackendModuleContext } from "../../../core/contracts/modules/backend-module";
+import type { MentionRecord } from "../../../core/backend/mentions/types";
 import type {
   AssistantChat,
   AssistantContextBindingDto,
@@ -18,6 +19,7 @@ import type {
   AssistantWriteProposalKind,
   AssistantWriteProposalStatus,
 } from "../../../sdks/assistant";
+import { MentionRepository } from "./mention-repository";
 
 type AssistantWriteRiskLevel = "low" | "medium" | "high" | "destructive";
 
@@ -276,9 +278,11 @@ function messageCursor(row: Record<string, unknown>): string {
 
 export class ConversationStore {
   private readonly rawSql: RawSqlFn;
+  readonly mentions: MentionRepository;
 
   constructor(ctx: CoreBackendModuleContext) {
     this.rawSql = rawSqlFrom(ctx);
+    this.mentions = new MentionRepository(ctx);
   }
 
   // ---------- chats ----------

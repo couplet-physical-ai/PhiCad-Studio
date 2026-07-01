@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { DiagnosticsController } from "../controllers/diagnostics-controller";
 import { HealthController } from "../controllers/health-controller";
 import { ModuleRuntimeDiagnosticsController } from "../controllers/module-runtime-diagnostics-controller";
+import { MentionController } from "../mentions/mention-controller";
 import type { RequestContext, Middleware } from "./request-context";
 import { HttpRouter } from "../router/http-router";
 import { RouteParams } from "../router/route-params";
@@ -161,8 +162,15 @@ export function createHttpServer(config: HttpServerConfig): RuntimeServer {
     ? new ModuleRuntimeDiagnosticsController(config.moduleRuntime)
     : null;
 
+  const mentionController = new MentionController();
+
   router.get("/api/health", async () => HealthController.check());
   router.get("/api/diagnostics", async () => diagnosticsController.snapshot());
+  router.post("/api/mentions/search", (ctx) => mentionController.search(ctx), MentionController.schemas.search);
+  router.get("/api/mentions/resolve/:entityType/:entityId", (ctx) => mentionController.resolve(ctx), MentionController.schemas.resolve);
+  router.post("/api/mentions/staleness", (ctx) => mentionController.checkStaleness(ctx), MentionController.schemas.checkStaleness);
+  router.get("/api/mentions/types", (ctx) => mentionController.getTypes(ctx));
+  router.get("/api/mentions/navigate/:entityType/:entityId", (ctx) => mentionController.getNavigationPath(ctx), MentionController.schemas.getNavigationPath);
   router.get("/api/modules/registry", async () => {
     if (!config.moduleRuntime) {
       return Response.json({

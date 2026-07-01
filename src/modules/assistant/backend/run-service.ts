@@ -18,6 +18,11 @@ import {
   type DesignerSDK,
 } from "../../../sdks";
 import type { ConversationStore } from "./conversation-store";
+import { MentionContentResolver } from "./mention-content-resolver";
+import type {
+  ResolvedMentionContent,
+  MentionImage,
+} from "./mention-resolver-types";
 import type { ProviderStore } from "./provider-store";
 import type { SettingsStore } from "./settings-store";
 import type { PromptService } from "./prompt-service";
@@ -414,13 +419,31 @@ export class RunService {
       this.options.conversation.listMessages(payload.chatId, { limit: 200 })
         .items,
     );
+
+    const mentionContext = await this.resolveMentionContext(history);
+
     const messages: AiChatMessage[] = [
       { role: "system", content: systemPrompt },
     ];
-    for (const m of history) {
+
+    if (mentionContext.text) {
+      messages.push({ role: "system", content: mentionContext.text });
+    }
+
+    const lastUserMessageIndex = findLastUserMessageIndex(history, payload.assistantMessageId);
+
+    for (let i = 0; i < history.length; i++) {
+      const m = history[i];
+      if (!m) continue;
       if (m.id === payload.assistantMessageId) continue;
       if (m.role === "user") {
-        messages.push({ role: "user", content: m.content });
+        if (i === lastUserMessageIndex && mentionContext.images.length > 0) {
+          messages.push(
+            buildUserMessageWithImages(m.content, mentionContext.images),
+          );
+        } else {
+          messages.push({ role: "user", content: m.content });
+        }
       } else if (m.role === "assistant") {
         const tcRaw = m.toolCallsJson
           ? safeParseArray<AiToolCall>(m.toolCallsJson)
@@ -612,6 +635,57 @@ export class RunService {
       );
       throw err;
     }
+  }
+
+  private async resolveMentionContext(
+    messages: AssistantMessage[],
+  ): Promise<{ text: string | null; images: MentionImage[] }> {
+    const resolver = new MentionContentResolver();
+    const allResolved: ResolvedMentionContent[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        try {
+          const resolved = await resolver.resolveMessageMentions(
+            msg.content,
+            "default",
+          );
+          allResolved.push(...resolved);
+        } catch (err) {
+          console.warn(
+            `[RunService] Failed to resolve mentions in message ${msg.id}:`,
+            err,
+          );
+        }
+      }
+    }
+
+    if (allResolved.length === 0) {
+      return { text: null, images: [] };
+    }
+
+    const seen = new Set<string>();
+    const uniqueResolved = allResolved.filter((m) => {
+      const key = `${m.entityType}:${m.entityId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const images: MentionImage[] = [];
+    let imageByteBudget = 20 * 1024 * 1024;
+    for (const resolved of uniqueResolved) {
+      for (const img of resolved.images) {
+        if (images.length >= 20) break;
+        if (img.byteSize > imageByteBudget) continue;
+        images.push(img);
+        imageByteBudget -= img.byteSize;
+      }
+      if (images.length >= 20) break;
+    }
+
+    const text = resolver.formatAsContextSection(uniqueResolved);
+    return { text, images };
   }
 
   private async emitAiEvent(
@@ -869,6 +943,42 @@ function safeParseArray<T>(json: string): T[] | null {
   } catch {
     return null;
   }
+}
+
+interface ContentPart {
+  type: string;
+  text?: string;
+  image_url?: { url: string; detail?: string };
+}
+
+function findLastUserMessageIndex(
+  messages: AssistantMessage[],
+  assistantMessageId: string,
+): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === "user" && m.id !== assistantMessageId) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function buildUserMessageWithImages(
+  text: string,
+  images: MentionImage[],
+): AiChatMessage {
+  const content: ContentPart[] = [{ type: "text", text }];
+  for (const img of images) {
+    content.push({
+      type: "image_url",
+      image_url: { url: img.src, detail: "auto" },
+    });
+  }
+  return {
+    role: "user",
+    content: content as unknown as string,
+  } as AiChatMessage;
 }
 
 /**

@@ -10,7 +10,7 @@ import {
 import { Button } from "@shared/frontend/ui/button";
 import { useTreeStore, isDescendant } from "../../stores/tree-store";
 import { useKnowledgeApi } from "../../hooks";
-import type { PageTreeNode } from "../../shared/types";
+import type { PageTreeNode } from "../../../shared/types";
 import { findParentNode as findParentNodeInPageTree, getPreviousSibling } from "./PageTree";
 
 interface TreeItemProps {

@@ -4,6 +4,7 @@ import {
   ModuleRouterRegistry,
   ModuleRuntime,
 } from "./index";
+import { MentionRegistry } from "./mentions";
 import type { StartedRuntimeServer } from "./http/create-http-server";
 import type { ModuleRegistryResponse } from "../contracts/modules/registry";
 
@@ -28,6 +29,7 @@ export async function startBackendRuntime(
 
   const diagnosticsStore = new DiagnosticsStore(100);
   const moduleRegistry = new ModuleRouterRegistry();
+  MentionRegistry.init();
   const moduleRuntime = new ModuleRuntime({ moduleRegistry });
 
   await moduleRuntime.bootstrap();

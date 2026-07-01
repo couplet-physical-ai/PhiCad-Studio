@@ -1,9 +1,13 @@
 import type { ModuleDefinition } from "../../../core/contracts/modules/backend-module";
 import { MODULE_SDK_TOKENS } from "../../../sdks";
+import { MentionRegistry } from "../../../core/backend/mentions";
+import { getDb } from "./queries";
 import { rebuildPreviewModelsIfStale } from "./builtins/migrate-preview-models";
 import { buildSdk } from "./queries";
 import { registerRoutes } from "./routes";
 import { bootstrapCoreLibrary } from "./sync/bootstrap";
+import { startCoreLibraryDevWatcher } from "./sync/core-library-dev-watch";
+import { LibraryComponentMentionProvider } from "./providers/mention-provider";
 
 /**
  * `openpcb.core` is shipped as a `.opclib` package and imported on boot via
@@ -13,7 +17,16 @@ export const definition: ModuleDefinition = {
   id: "library",
 
   async onActivate(ctx) {
+    const db = getDb(ctx);
+    const mentionProvider = new LibraryComponentMentionProvider(db);
+    MentionRegistry.get().register(mentionProvider);
+
     const bootstrap = await bootstrapCoreLibrary(ctx);
+    void startCoreLibraryDevWatcher(ctx, bootstrap.bundledPath).catch((error) => {
+      ctx.logger.warn("core-library: dev watcher unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     const rebuildResult = rebuildPreviewModelsIfStale(ctx);
     ctx.logger.info("library activated", {
       tablePrefix: ctx.db.tablePrefix,
