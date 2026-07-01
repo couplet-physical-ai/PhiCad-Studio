@@ -54,6 +54,16 @@ export function PageEditor({
   const [isCreating, setIsCreating] = useState(false);
   const titleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const updatedAtRef = useRef(new Map<string, string>());
+  const pageIdRef = useRef(pageId);
+  const pageRef = useRef(page);
+
+  useEffect(() => {
+    pageIdRef.current = pageId;
+  }, [pageId]);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
 
   useEffect(() => {
     if (page) {
@@ -76,41 +86,43 @@ export function PageEditor({
 
   const handleSaveContent = useCallback(
     async (content: EditorContent) => {
-      if (!pageId || !page) return;
+      const currentPageId = pageIdRef.current;
+      const currentPage = pageRef.current;
+      if (!currentPageId || !currentPage) return;
       const requestId = crypto.randomUUID();
       onSaveRequestId?.(requestId);
       try {
-        const result = await api.updatePageContent(pageId, content, {
-          ifUnmodifiedSince: updatedAtRef.current.get(pageId) ?? undefined,
+        const result = await api.updatePageContent(currentPageId, content, {
+          ifUnmodifiedSince: updatedAtRef.current.get(currentPageId) ?? undefined,
           requestId,
         });
         if (result?.page) {
           const iso = toIsoTimestamp(result.page.updated_at);
           if (iso) updatedAtRef.current.set(result.page.id, iso);
-          onPageChange?.(result.page);
-          onRefreshTree?.();
         }
       } catch (err) {
         console.error("Failed to save page content:", err);
         throw err;
       }
     },
-    [pageId, page, api, onPageChange, onSaveRequestId, onRefreshTree],
+    [api, onSaveRequestId],
   );
 
   const { status: saveStatus, triggerSave, resetPending } = useAutosave({
     saveKey: pageId ?? "none",
+    debounceMs: 500,
     onSave: handleSaveContent,
   });
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTitle = e.target.value;
+    const currentPageId = pageId;
     setTitle(newTitle);
     if (titleTimerRef.current) clearTimeout(titleTimerRef.current);
     titleTimerRef.current = setTimeout(async () => {
-      if (!pageId) return;
+      if (!currentPageId) return;
       try {
-        const updated = await api.updatePageMeta(pageId, { title: newTitle });
+        const updated = await api.updatePageMeta(currentPageId, { title: newTitle });
         if (updated) {
           const iso = toIsoTimestamp(updated.updated_at);
           if (iso) updatedAtRef.current.set(updated.id, iso);
@@ -157,6 +169,10 @@ export function PageEditor({
 
   useEffect(() => {
     resetPending();
+    if (titleTimerRef.current) {
+      clearTimeout(titleTimerRef.current);
+      titleTimerRef.current = null;
+    }
   }, [pageId, resetPending]);
 
   if (!pageId) {
@@ -231,8 +247,8 @@ export function PageEditor({
         ) : page ? (
           <TiptapEditor
             initialContent={page.content_json}
-            onChange={(content) => triggerSave(content)}
-            onReady={(ed) => setEditor(ed)}
+            onChange={triggerSave}
+            onReady={setEditor}
             readOnly={false}
           />
         ) : null}

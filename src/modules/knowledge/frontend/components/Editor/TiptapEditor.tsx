@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -13,7 +13,6 @@ interface TiptapEditorProps {
   onChange?: (content: EditorContentType) => void;
   onReady?: (editor: Editor) => void;
   readOnly?: boolean;
-  debounceMs?: number;
 }
 
 function isEmptyContent(content?: EditorContentType): boolean {
@@ -36,21 +35,11 @@ export function TiptapEditor({
   onReady,
   readOnly = false,
 }: TiptapEditorProps) {
-  const debouncedSaveRef = {
-    current: null as ReturnType<typeof setTimeout> | null,
-  };
+  const onChangeRef = useRef(onChange);
 
-  const scheduleSave = useCallback(
-    (json: unknown) => {
-      if (debouncedSaveRef.current) {
-        clearTimeout(debouncedSaveRef.current);
-      }
-      debouncedSaveRef.current = setTimeout(() => {
-        onChange?.({ engine: "tiptap", version: 1, data: json });
-      }, 1000);
-    },
-    [onChange],
-  );
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   const editor = useEditor({
     extensions: [
@@ -77,7 +66,7 @@ export function TiptapEditor({
     immediatelyRender: false,
     shouldRerenderOnTransaction: false,
     onUpdate: ({ editor }) => {
-      scheduleSave(editor.getJSON());
+      onChangeRef.current?.({ engine: "tiptap", version: 1, data: editor.getJSON() });
     },
     onCreate: ({ editor }) => {
       onReady?.(editor);
@@ -117,9 +106,6 @@ export function TiptapEditor({
 
   useEffect(() => {
     return () => {
-      if (debouncedSaveRef.current) {
-        clearTimeout(debouncedSaveRef.current);
-      }
       editor?.destroy();
     };
   }, [editor]);
