@@ -1,0 +1,9 @@
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env*
+.DS_Store
+data/
+README.md
+node_modules/
+dist/

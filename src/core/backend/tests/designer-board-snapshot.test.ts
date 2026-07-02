@@ -4,14 +4,20 @@
 // rule, net-class filtering, and determinism.
 import { describe, expect, test } from "bun:test";
 import { buildBoardSnapshot } from "../../../modules/designer/backend/pcb/board-snapshot";
-import { createDefaultPcbBoardSettings } from "../../../modules/designer/backend/pcb/pcb-defaults";
+import {
+  createDefaultPcbBoardSettings,
+  createDefaultPcbViewState,
+} from "../../../modules/designer/backend/pcb/pcb-defaults";
 import type { FootprintRenderSourcePad } from "../../../shared/rendering/types";
 import type {
   DesignerPcbProjection,
   PcbBoardSettings,
+  PcbFreeHole,
+  PcbPointMm,
   PcbPlacedPart,
   PcbTrace,
   PcbZone,
+  PourIsland,
   RatsnestSegment,
 } from "../../../sdks/designer";
 
@@ -111,6 +117,70 @@ function rats(netId: string, netClassId = "default"): RatsnestSegment {
   };
 }
 
+function zone(overrides: Partial<PcbZone> = {}): PcbZone {
+  return {
+    id: "z1",
+    netName: "GND",
+    netId: "net_gnd",
+    layer: "F.Cu",
+    polygonPointsMm: [
+      { x: -10, y: -5 },
+      { x: 10, y: -5 },
+      { x: 10, y: 5 },
+      { x: -10, y: 5 },
+    ],
+    hatchEdgeMm: 0.5,
+    fillType: "solid",
+    ...overrides,
+  };
+}
+
+function filledBoard(overrides: Partial<PcbBoardSettings> = {}): PcbBoardSettings {
+  const base = board(overrides);
+  const viewState = base.viewState ?? createDefaultPcbViewState();
+  return {
+    ...base,
+    viewState: {
+      ...viewState,
+      copperFillLayers: ["F.Cu"],
+      copperFillPourNetIds: { "F.Cu": "net_gnd" },
+      copperFillPadConnection: "solid",
+    },
+  };
+}
+
+function freeHole(overrides: Partial<PcbFreeHole> = {}): PcbFreeHole {
+  return {
+    id: "h1",
+    centerMm: { x: 0, y: 0 },
+    drillMm: 1,
+    lockedAt: null,
+    ...overrides,
+  };
+}
+
+function ringArea(ring: readonly PcbPointMm[]): number {
+  let sum = 0;
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    if (!a || !b) continue;
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return sum / 2;
+}
+
+function maxDecimalPlaces(value: number): number {
+  const text = value.toString();
+  const dot = text.indexOf(".");
+  return dot === -1 ? 0 : text.length - dot - 1;
+}
+
+function definedPours(pours: PourIsland[] | undefined): PourIsland[] {
+  expect(pours).toBeDefined();
+  return pours ?? [];
+}
+
 describe("buildBoardSnapshot", () => {
   test("maps a simple 2-net board, pours always empty", () => {
     const proj = projection({
@@ -185,23 +255,87 @@ describe("buildBoardSnapshot", () => {
   });
 
   test("copper zones produce a warning but pours stay empty", () => {
-    const zone: PcbZone = {
-      id: "z1",
-      netName: "GND",
-      layer: "F.Cu",
-      polygonPointsMm: [
-        { x: 0, y: 0 },
-        { x: 10, y: 0 },
-        { x: 10, y: 10 },
-      ],
-      hatchEdgeMm: 0.5,
-      fillType: "solid",
-    };
     const { snapshot, warnings } = buildBoardSnapshot(
-      projection({ zones: [zone], ratsnest: [rats("net_a")] }),
+      projection({ zones: [zone()], ratsnest: [rats("net_a")] }),
     );
     expect(snapshot.pours).toEqual([]);
     expect(warnings.some((w) => w.includes("zone"))).toBe(true);
+  });
+
+  test("explicit zone emits pour island when serializePours is true", () => {
+    const { snapshot, warnings } = buildBoardSnapshot(
+      projection({
+        zones: [zone()],
+        netNames: { net_gnd: "GND" },
+        ratsnest: [rats("net_gnd")],
+      }),
+      { serializePours: true },
+    );
+    expect(warnings.some((w) => w.includes("zone"))).toBe(false);
+    const pours = definedPours(snapshot.pours);
+    expect(pours).toHaveLength(1);
+    const pour = pours.at(0);
+    expect(pour?.layer).toBe("F.Cu");
+    expect(pour?.pourNetId).toBe("net_gnd");
+    expect(pour?.islandId.startsWith("pour-")).toBe(true);
+    expect(pour?.rings.length).toBeGreaterThan(0);
+  });
+
+  test("board-wide fill emits pour island when serializePours is true", () => {
+    const { snapshot } = buildBoardSnapshot(
+      projection({
+        board: filledBoard(),
+        netNames: { net_gnd: "GND" },
+        ratsnest: [rats("net_gnd")],
+      }),
+      { serializePours: true },
+    );
+    const pours = definedPours(snapshot.pours);
+    expect(pours).toHaveLength(1);
+    expect(pours.at(0)?.layer).toBe("F.Cu");
+    expect(pours.at(0)?.pourNetId).toBe("net_gnd");
+  });
+
+  test("serialized pour islands are deterministic", () => {
+    const make = () =>
+      JSON.stringify(
+        buildBoardSnapshot(
+          projection({
+            board: filledBoard(),
+            freeHoles: [freeHole()],
+            netNames: { net_gnd: "GND" },
+            ratsnest: [rats("net_gnd")],
+          }),
+          { serializePours: true },
+        ).snapshot.pours,
+      );
+    expect(make()).toBe(make());
+  });
+
+  test("serialized pour rings are quantized and normalized", () => {
+    const { snapshot } = buildBoardSnapshot(
+      projection({
+        board: filledBoard(),
+        freeHoles: [freeHole()],
+        netNames: { net_gnd: "GND" },
+        ratsnest: [rats("net_gnd")],
+      }),
+      { serializePours: true },
+    );
+    const pour = definedPours(snapshot.pours).at(0);
+    expect(pour).toBeDefined();
+    const rings = pour?.rings ?? [];
+    const outer = rings.at(0) ?? [];
+    expect(ringArea(outer)).toBeGreaterThan(0);
+    for (const ring of rings) {
+      for (const point of ring) {
+        expect(maxDecimalPlaces(point.x)).toBeLessThanOrEqual(4);
+        expect(maxDecimalPlaces(point.y)).toBeLessThanOrEqual(4);
+      }
+    }
+    const holes = rings.slice(1);
+    expect(holes.length).toBeGreaterThan(0);
+    expect(holes.every((ring) => ringArea(ring) < 0)).toBe(true);
   });
 
   test("net-class filtering drops non-routable ratsnest targets", () => {

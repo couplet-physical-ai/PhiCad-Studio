@@ -1,4 +1,5 @@
-// Thin HTTP client for the cloud auto-place service (cloud-auto-place, :3004).
+// Thin HTTP client for the place endpoints of the cloud auto-layout service
+// (cloud-auto-layout, /v1/place, :3002 — formerly the standalone cloud-auto-place).
 // The desktop backend proxies to it: assemble a BoardSnapshot (with placeOptions),
 // submit, poll for the result, forward the user's GoTrue bearer. Mirrors
 // autoroute/client.ts. The service URL is a deployment constant (env), not per-request.
@@ -8,13 +9,7 @@ import type {
   PlaceStatusResponse,
   SubmitPlaceResponse,
 } from "../../../../sdks/designer";
-
-function baseUrl(): string {
-  return (process.env.AUTO_PLACE_URL ?? "http://localhost:3004").replace(
-    /\/+$/,
-    "",
-  );
-}
+import { autoLayoutBaseUrl as baseUrl } from "../autolayout/service-url";
 
 function authHeaders(bearer?: string): Record<string, string> {
   return bearer ? { authorization: `Bearer ${bearer}` } : {};

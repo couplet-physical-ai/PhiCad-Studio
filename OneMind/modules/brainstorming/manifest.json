@@ -1,0 +1,40 @@
+{
+  "id": "brainstorming",
+  "label": "Brainstorming",
+  "version": "1.0.0",
+  "apiVersion": 2,
+  "namespace": "space.brainstorming",
+  "kind": "space",
+  "tags": ["productivity", "brainstorming", "canvas", "ideas"],
+  "ui": {
+    "moduleEntry": "ts/module.ts",
+    "primarySpace": "react/Space.tsx",
+    "registerAsSpaceInTopBar": true
+  },
+  "db": {
+    "prefix": "brainstorm_",
+    "migrations": true
+  },
+  "dependsOn": [],
+  "exports": {
+    "services": [
+      {
+        "id": "brainstorming.nodes",
+        "kind": "http",
+        "description": "Node CRUD API"
+      },
+      {
+        "id": "brainstorming.edges",
+        "kind": "http",
+        "description": "Edge CRUD API"
+      },
+      {
+        "id": "brainstorming.boards",
+        "kind": "http",
+        "description": "Board management API"
+      }
+    ],
+    "widgets": []
+  },
+  "defaultPinned": true
+}

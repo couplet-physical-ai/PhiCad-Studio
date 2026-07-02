@@ -1,4 +1,5 @@
-// Thin HTTP client for the cloud auto-router service (cloud-auto-router, :3002).
+// Thin HTTP client for the route endpoints of the cloud auto-layout service
+// (cloud-auto-layout, /v1/route, :3002 — formerly the standalone cloud-auto-router).
 // The desktop backend proxies to it: assemble a BoardSnapshot, submit, poll for
 // the result, forward the user's GoTrue bearer. Mirrors the fetch style of
 // cloud-sync.ts. The service URL is a deployment constant (env), not per-request.
@@ -8,13 +9,7 @@ import type {
   RouteStatusResponse,
   SubmitRouteResponse,
 } from "../../../../sdks/designer";
-
-function baseUrl(): string {
-  return (process.env.AUTO_ROUTER_URL ?? "http://localhost:3002").replace(
-    /\/+$/,
-    "",
-  );
-}
+import { autoLayoutBaseUrl as baseUrl } from "../autolayout/service-url";
 
 function authHeaders(bearer?: string): Record<string, string> {
   return bearer ? { authorization: `Bearer ${bearer}` } : {};

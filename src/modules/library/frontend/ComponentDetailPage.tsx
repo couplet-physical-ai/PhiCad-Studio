@@ -58,6 +58,7 @@ export function ComponentDetailPage({
   onCloned,
   onUpdated,
   modelRefreshToken: externalModelRefreshToken = 0,
+  refreshToken = 0,
 }: {
   backendURL: string | null | undefined;
   moduleId: string;
@@ -66,6 +67,7 @@ export function ComponentDetailPage({
   onCloned?: (newComponentId: string) => void;
   onUpdated?: (component: LibraryComponent) => void;
   modelRefreshToken?: number;
+  refreshToken?: number;
 }): ReactElement {
   const { mode: themeMode } = useTheme();
   const [loading, setLoading] = useState(true);
@@ -92,7 +94,7 @@ export function ComponentDetailPage({
     backendURL,
     moduleId,
     excludeSystem: true,
-    refreshToken: tagsRefreshToken,
+    refreshToken: tagsRefreshToken + refreshToken,
   });
 
   useEffect(() => {
@@ -145,7 +147,7 @@ export function ComponentDetailPage({
 
     void run();
     return () => controller.abort();
-  }, [backendURL, componentId, moduleId]);
+  }, [backendURL, componentId, moduleId, refreshToken]);
 
   // Reset selection to the default footprint whenever the component changes.
   const defaultFootprintId = detail?.footprint.id ?? "";

@@ -1,0 +1,21 @@
+{
+  "name": "@onemind/backend",
+  "version": "0.3.0",
+  "description": "OneMind backend - landing page, feedback collection, analytics, admin dashboard",
+  "main": "src/server.ts",
+  "scripts": {
+    "start": "bun src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "migrate": "bun src/scripts/migrate-files-to-db.ts"
+  },
+  "dependencies": {
+    "kysely": "^0.27.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

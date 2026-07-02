@@ -60,6 +60,14 @@ function needsKey(provider: AssistantProviderConfig): boolean {
   return CLOUD_KINDS.includes(provider.kind) && !provider.hasApiKey;
 }
 
+// Local / self-hosted endpoints (vLLM, Ollama, LM Studio, oMLX, custom) don't
+// require an API key — the field is optional for any non-cloud provider kind.
+function keyOptional(kind: AiProviderKind): boolean {
+  return !CLOUD_KINDS.includes(kind);
+}
+
+type ToolCallingMode = "auto" | "on" | "off";
+
 function maskedKey(provider: AssistantProviderConfig): {
   dots: string;
   hint: string;
@@ -101,6 +109,8 @@ export function AssistantPanel() {
   const [includeCompletion, setIncludeCompletion] = useState(false);
   const [replacingKey, setReplacingKey] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [toolCallingMode, setToolCallingMode] =
+    useState<ToolCallingMode>("auto");
   const [lastTest, setLastTest] = useState<{
     providerId: string;
     ok: boolean;
@@ -148,7 +158,46 @@ export function AssistantPanel() {
     )
       .then(setModels)
       .catch(() => setModels([]));
+    void readJson<{ mode: ToolCallingMode }>(
+      `${base}/providers/${expanded.id}/tool-calling`,
+    )
+      .then((res) => setToolCallingMode(res.mode))
+      .catch(() => setToolCallingMode("auto"));
   }, [base, expanded?.id, expanded?.updatedAt]);
+
+  const removeProviderKey = async () => {
+    if (!base || !expanded) return;
+    setError(null);
+    const updated = await readJson<AssistantProviderConfig>(
+      `${base}/providers/${expanded.id}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clearApiKey: true }),
+      },
+    );
+    setProviders((current) =>
+      current.map((provider) =>
+        provider.id === updated.id ? updated : provider,
+      ),
+    );
+    setReplacingKey(true);
+    setDraft((current) => ({ ...current, apiKey: "" }));
+    setMessage("API key removed.");
+  };
+
+  const updateToolCalling = async (mode: ToolCallingMode) => {
+    if (!base || !expanded) return;
+    setError(null);
+    await readJson(`${base}/providers/${expanded.id}/tool-calling`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    setToolCallingMode(mode);
+    // Reload so capabilities (and the chat's grounded/ungrounded state) reflect it.
+    await load();
+  };
 
   const reportError = (err: unknown) =>
     setError(err instanceof Error ? err.message : String(err));
@@ -494,6 +543,13 @@ export function AssistantPanel() {
                   setShowKey={setShowKey}
                   includeCompletion={includeCompletion}
                   setIncludeCompletion={setIncludeCompletion}
+                  toolCallingMode={toolCallingMode}
+                  onSetToolCalling={(mode) =>
+                    void updateToolCalling(mode).catch(reportError)
+                  }
+                  onRemoveKey={() =>
+                    void removeProviderKey().catch(reportError)
+                  }
                   onSave={() => void saveProvider().catch(reportError)}
                   onRefreshModels={() =>
                     void refreshModels().catch(reportError)
@@ -601,6 +657,9 @@ function ProviderForm({
   setShowKey,
   includeCompletion,
   setIncludeCompletion,
+  toolCallingMode,
+  onSetToolCalling,
+  onRemoveKey,
   onSave,
   onRefreshModels,
 }: {
@@ -615,10 +674,14 @@ function ProviderForm({
   setShowKey: (v: boolean) => void;
   includeCompletion: boolean;
   setIncludeCompletion: (v: boolean) => void;
+  toolCallingMode: ToolCallingMode;
+  onSetToolCalling: (mode: ToolCallingMode) => void;
+  onRemoveKey: () => void;
   onSave: () => void;
   onRefreshModels: () => void;
 }) {
   const mask = maskedKey(provider);
+  const optionalKey = keyOptional(provider.kind);
   const showMasked = provider.hasApiKey && !replacingKey;
   return (
     <>
@@ -656,7 +719,7 @@ function ProviderForm({
       <div className="mb-3">
         <div className="mb-1 flex items-center justify-between">
           <label className="text-[11px] text-slate-500 dark:text-slate-400">
-            API key
+            API key{optionalKey ? " (optional)" : ""}
           </label>
           {provider.hasApiKey ? (
             <span className="inline-flex items-center gap-1 text-[10px] text-status-success">
@@ -693,15 +756,35 @@ function ProviderForm({
             >
               <Pencil className="h-3 w-3" /> Replace
             </button>
+            <button
+              type="button"
+              onClick={onRemoveKey}
+              title="Remove the saved API key"
+              className="inline-flex items-center gap-1 px-1 text-xs text-slate-400 hover:text-red-500"
+            >
+              <Trash2 className="h-3 w-3" /> Remove
+            </button>
           </div>
         ) : (
           <TextInput
             type="password"
-            placeholder={provider.hasApiKey ? "Enter new key" : "Paste API key"}
+            placeholder={
+              provider.hasApiKey
+                ? "Enter new key"
+                : optionalKey
+                  ? "Leave empty — no key required"
+                  : "Paste API key"
+            }
             value={draft.apiKey}
             onChange={(v) => setDraft({ ...draft, apiKey: v })}
           />
         )}
+        {optionalKey && !showMasked ? (
+          <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+            Optional for local / self-hosted servers (vLLM, Ollama, LM Studio).
+            Leave empty if your server needs no key.
+          </p>
+        ) : null}
       </div>
 
       <div className="mb-3">
@@ -741,6 +824,35 @@ function ProviderForm({
             onChange={(v) => setDraft({ ...draft, defaultModel: v })}
           />
         )}
+      </div>
+
+      <div className="mb-3">
+        <div className="mb-1 flex items-center justify-between">
+          <label className="text-[11px] text-slate-500 dark:text-slate-400">
+            Tool calling
+          </label>
+        </div>
+        <div className="inline-flex overflow-hidden rounded-control border border-slate-200 dark:border-slate-700">
+          {(["auto", "on", "off"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onSetToolCalling(mode)}
+              className={cn(
+                "px-3 py-1 text-xs capitalize",
+                toolCallingMode === mode
+                  ? "bg-violet-600 text-white"
+                  : "bg-white text-slate-500 hover:bg-slate-50 dark:bg-slate-950 dark:text-slate-400 dark:hover:bg-slate-900",
+              )}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+          Auto follows the capability probe. Use On to force tools for a server
+          that supports them but failed probing; Off disables grounded tools.
+        </p>
       </div>
 
       <div className="flex items-center justify-between gap-4">

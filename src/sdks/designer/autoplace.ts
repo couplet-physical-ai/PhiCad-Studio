@@ -1,4 +1,5 @@
-// Wire contracts for the cloud auto-place service (cloud-auto-place, port 3004).
+// Wire contracts for the place side of the cloud auto-layout service
+// (cloud-auto-layout, /v1/place, port 3002 — formerly the standalone cloud-auto-place).
 //
 // Hand-mirrored from the service's Python-canonical Pydantic models
 // (`app/contracts/place_result.py` + `progress_frame.py`), which are also emitted to
@@ -26,9 +27,7 @@ export type AutoplaceRiskLevel = "low" | "medium" | "high" | "destructive";
 // ── PlacementResultEnvelope (response) ───────────────────────────────────
 
 export type PlaceOperationKind =
-  | "pcb_move_placement"
-  | "pcb_rotate_placement"
-  | "pcb_flip_placement";
+  "pcb_move_placement" | "pcb_rotate_placement" | "pcb_flip_placement";
 
 /** The op body — already a valid desktop designer command (carries `type`). */
 export type PlaceOperationPayload =
@@ -135,11 +134,7 @@ export interface SubmitPlaceResponse {
 
 /** Job-record status from `GET /v1/place/{id}` (distinct from a progress-frame type). */
 export type PlaceJobStatus =
-  | "queued"
-  | "running"
-  | "done"
-  | "failed"
-  | "cancelled";
+  "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface PlaceStatusResponse {
   jobId: string;

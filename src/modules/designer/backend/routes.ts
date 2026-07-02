@@ -2425,6 +2425,7 @@ export function registerRoutes(
         options?: RouteOptions;
         routableNetClassIds?: unknown;
         excludedNetIds?: unknown;
+        serializePours?: unknown;
       };
       const body: AutorouteRequestBody =
         await parseJsonBody<AutorouteRequestBody>(req).catch(() => ({}));
@@ -2440,6 +2441,7 @@ export function registerRoutes(
         routeOptions: body.options,
         routableNetClassIds: asStringArray(body.routableNetClassIds),
         excludedNetIds: asStringArray(body.excludedNetIds),
+        serializePours: body.serializePours === true,
       });
       const submitted = await submitRoute(snapshot, bearer);
       return success({ ...submitted, warnings });

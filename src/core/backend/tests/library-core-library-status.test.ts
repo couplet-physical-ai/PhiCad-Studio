@@ -175,6 +175,36 @@ describe("CoreLibrary status", () => {
     expect(status.state).toBe("bundled_update_available");
   });
 
+  test("service reports bundled update for changed lower dev package", async () => {
+    isolate("corelib-status-dev-sha");
+    prevBundleEnv = process.env.OPENPCB_BUNDLED_LIBRARY_PATH;
+    const staleRoot = await mkdtemp(path.join(os.tmpdir(), "corelib-stale-dev-"));
+    const liveRoot = await mkdtemp(path.join(os.tmpdir(), "corelib-live-dev-"));
+    tempRoots.push(staleRoot, liveRoot);
+    process.env.OPENPCB_BUNDLED_LIBRARY_PATH = await writePackage(
+      staleRoot,
+      "999.9.9-dev",
+    );
+
+    const runtime = await bootRuntime();
+    delete process.env.OPENPCB_BUNDLED_LIBRARY_PATH;
+    await writePackage(liveRoot, "999.0.0-dev");
+
+    const ctx = (runtime as unknown as { loaded: Map<string, { context: unknown }> })
+      .loaded.get("library")!.context as Parameters<typeof getCoreLibraryStatus>[0];
+    const status = await getCoreLibraryStatus(ctx, {
+      repoRoot: liveRoot,
+      nodeEnv: "development",
+    });
+
+    expect(status.installed?.version).toBe("999.9.9-dev");
+    expect(status.bundled?.version).toBe("999.0.0-dev");
+    expect(status.installed?.packageSha256).not.toBe(
+      status.bundled?.packageSha256,
+    );
+    expect(status.state).toBe("bundled_update_available");
+  });
+
   test("check reports newer stable GitHub release and ignores prereleases", async () => {
     isolate("corelib-check-remote-newer");
     prevBundleEnv = process.env.OPENPCB_BUNDLED_LIBRARY_PATH;

@@ -16,6 +16,7 @@ interface UseLibraryFacetsOptions {
   query: string;
   /** Pre-sorted comma-joined active filter list (caller memoises). */
   tagsKey: string;
+  refreshToken?: number;
 }
 
 interface UseLibraryFacetsResult {
@@ -34,6 +35,7 @@ export function useLibraryFacets({
   moduleId,
   query,
   tagsKey,
+  refreshToken = 0,
 }: UseLibraryFacetsOptions): UseLibraryFacetsResult {
   const [facets, setFacets] = useState<LibraryFacets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
@@ -73,7 +75,7 @@ export function useLibraryFacets({
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [backendURL, moduleId, query, tagsKey]);
+  }, [backendURL, moduleId, query, tagsKey, refreshToken]);
 
   return { facets, loading, error };
 }

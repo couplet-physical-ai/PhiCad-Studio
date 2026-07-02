@@ -36,7 +36,8 @@ function requireChat(id: string): void {
 }
 
 function normalizeChatTitle(title: unknown): string {
-  if (typeof title !== "string") throw new ValidationError("Chat title is required");
+  if (typeof title !== "string")
+    throw new ValidationError("Chat title is required");
   const normalized = title.trim();
   if (!normalized) throw new ValidationError("Chat title is required");
   if (normalized.length > 160)
@@ -45,13 +46,15 @@ function normalizeChatTitle(title: unknown): string {
 }
 
 function normalizeChatIds(chatIds: unknown): string[] {
-  if (!Array.isArray(chatIds)) throw new ValidationError("Chat ids are required");
+  if (!Array.isArray(chatIds))
+    throw new ValidationError("Chat ids are required");
   const ids = chatIds
     .filter((id): id is string => typeof id === "string")
     .map((id) => id.trim())
     .filter((id) => id.length > 0 && id !== "undefined" && id !== "null");
   const unique = [...new Set(ids)];
-  if (unique.length === 0) throw new ValidationError("At least one chat id is required");
+  if (unique.length === 0)
+    throw new ValidationError("At least one chat id is required");
   if (unique.length > 100)
     throw new ValidationError("Cannot delete more than 100 chats at once");
   return unique;
@@ -164,11 +167,7 @@ export function registerRoutes(
     return json(
       getAssistantService().listToolEvents(
         id,
-        messageIds?.length
-          ? { messageIds }
-          : messageId
-            ? { messageId }
-            : {},
+        messageIds?.length ? { messageIds } : messageId ? { messageId } : {},
       ),
     );
   });
@@ -309,6 +308,18 @@ export function registerRoutes(
       ),
     ),
   );
+  router.get("/providers/:id/tool-calling", (ctx) =>
+    json(getAssistantService().getToolCalling(ctx.params.getOrThrow("id"))),
+  );
+  router.put("/providers/:id/tool-calling", async (ctx) => {
+    const { mode } = await body<{ mode?: string }>(ctx.req);
+    if (mode !== "auto" && mode !== "on" && mode !== "off") {
+      throw new ValidationError("mode must be one of: auto, on, off");
+    }
+    return json(
+      getAssistantService().setToolCalling(ctx.params.getOrThrow("id"), mode),
+    );
+  });
 
   // Tools (read-only list for UI)
   router.get("/tools", () => {

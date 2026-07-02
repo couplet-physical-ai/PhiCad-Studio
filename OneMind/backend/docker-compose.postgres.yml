@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: onemind-db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: onemind
+      POSTGRES_USER: onemind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-onemind}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U onemind"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgres://onemind:${POSTGRES_PASSWORD:-onemind}@db:5432/onemind
+
+volumes:
+  pgdata:

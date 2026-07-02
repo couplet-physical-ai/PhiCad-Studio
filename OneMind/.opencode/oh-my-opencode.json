@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-opencode/master/assets/oh-my-opencode.schema.json",
+
+  "agents": {
+    "sisyphus": {
+      "prompt_append": "Follow CLAUDE.md anti-patterns strictly. Use DDD patterns for src-ts/."
+    },
+    "oracle": {
+      "prompt_append": "Extended thinking for task system, queue architecture, streaming edge cases."
+    },
+    "momus": {
+      "prompt_append": "Focus: type safety, CLAUDE.md anti-patterns, error handling, security (API keys, injection)."
+    }
+  },
+
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "default": "ask",
+      "commands": {
+        "npm run *": "allow",
+        "bun *": "allow",
+        "cargo check *": "allow",
+        "cargo clippy *": "allow",
+        "curl http://127.0.0.1:*": "allow",
+        "ls *": "allow"
+      }
+    },
+    "external_directory": "deny"
+  },
+
+  "skills": {
+    "sources": [],
+    "enable": ["git-master"]
+  },
+
+  "hooks": {
+    "post_edit": {
+      "gen_check": {
+        "pattern": ["**/src-react/src/generated/**", "**/src-ts/src/tauri-bindings.ts", "**/scripts/.dist/**"],
+        "command": "npm run gen:check",
+        "on_failure": "block"
+      },
+      "typecheck": {
+        "command": "npm run typecheck 2>&1 | head -30",
+        "on_failure": "notify"
+      }
+    }
+  }
+}

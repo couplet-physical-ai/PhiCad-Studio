@@ -6,7 +6,7 @@ import type { DrcAnchor, DrcRuleCode } from "../../../../sdks/designer";
  * Without this, distinct anchor sets could alias to the same hash input — e.g.
  * pad `("x","1:2")` vs `("x:1","2")`, or a net id that literally contains `|`.
  */
-function esc(s: string): string {
+export function escapeStructuralIdSegment(s: string): string {
   return s
     .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\p")
@@ -17,21 +17,23 @@ function esc(s: string): string {
 function anchorKey(a: DrcAnchor): string {
   switch (a.kind) {
     case "trace":
-      return `t:${esc(a.traceId)}`;
+      return `t:${escapeStructuralIdSegment(a.traceId)}`;
     case "segment":
-      return `s:${esc(a.traceId)}:${a.index}`;
+      return `s:${escapeStructuralIdSegment(a.traceId)}:${a.index}`;
     case "via":
-      return `v:${esc(a.viaId)}`;
+      return `v:${escapeStructuralIdSegment(a.viaId)}`;
     case "pad":
-      return `p:${esc(a.placementId)}:${esc(a.padNumber)}`;
+      return `p:${escapeStructuralIdSegment(a.placementId)}:${escapeStructuralIdSegment(
+        a.padNumber,
+      )}`;
     case "freePad":
-      return `fp:${esc(a.freePadId)}`;
+      return `fp:${escapeStructuralIdSegment(a.freePadId)}`;
     case "freeHole":
-      return `fh:${esc(a.freeHoleId)}`;
+      return `fh:${escapeStructuralIdSegment(a.freeHoleId)}`;
     case "placement":
-      return `pl:${esc(a.placementId)}`;
+      return `pl:${escapeStructuralIdSegment(a.placementId)}`;
     case "net":
-      return `n:${esc(a.netId)}`;
+      return `n:${escapeStructuralIdSegment(a.netId)}`;
     case "boardEdge":
       return "be";
   }
@@ -41,7 +43,7 @@ function anchorKey(a: DrcAnchor): string {
  * 64-bit FNV-1a (canonical basis/prime), emitted as 16 hex chars. Wider than
  * the prior 32-bit lane so dense boards keep negligible id-collision odds.
  */
-function fnv1a64(s: string): string {
+export function fnv1a64(s: string): string {
   const PRIME = 0x100000001b3n;
   const MASK = (1n << 64n) - 1n;
   let h = 0xcbf29ce484222325n;

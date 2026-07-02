@@ -46,6 +46,22 @@ interface LibraryNotice {
   variant: "success" | "warning" | "error";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readInstalledCorePackageSha(payload: unknown): string | null {
+  if (!isRecord(payload)) return null;
+  const data = payload["data"];
+  if (!isRecord(data)) return null;
+  const status = data["status"];
+  if (!isRecord(status)) return null;
+  const installed = status["installed"];
+  if (!isRecord(installed)) return null;
+  const packageSha256 = installed["packageSha256"];
+  return typeof packageSha256 === "string" ? packageSha256 : null;
+}
+
 function useDebouncedValue(value: string, delayMs: number): string {
   const [debounced, setDebounced] = useState(value);
 
@@ -215,6 +231,7 @@ export function LibrarySpace({
   const [notice, setNotice] = useState<LibraryNotice | null>(null);
   const [sortKey, setSortKey] = useState<LibrarySortKey>("name");
   const zipInputRef = useRef<HTMLInputElement | null>(null);
+  const installedCoreShaRef = useRef<string | null>(null);
 
   const selectionMode = selectedIds.size > 0;
 
@@ -410,7 +427,48 @@ export function LibrarySpace({
     moduleId,
     query: debouncedQuery,
     tagsKey,
+    refreshToken: refreshTick,
   });
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !backendURL) return;
+
+    let stopped = false;
+    let controller: AbortController | null = null;
+
+    const pollStatus = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        const response = await fetch(
+          `${backendURL}/api/modules/${moduleId}/core-library/status`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) return;
+        const packageSha256 = readInstalledCorePackageSha(await response.json());
+        if (!packageSha256 || stopped) return;
+        if (
+          installedCoreShaRef.current !== null &&
+          installedCoreShaRef.current !== packageSha256
+        ) {
+          setRefreshTick((value) => value + 1);
+          setDetailModelRefreshToken((value) => value + 1);
+        }
+        installedCoreShaRef.current = packageSha256;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (error instanceof Error) return;
+      }
+    };
+
+    void pollStatus();
+    const interval = window.setInterval(() => void pollStatus(), 2_000);
+    return () => {
+      stopped = true;
+      controller?.abort();
+      window.clearInterval(interval);
+    };
+  }, [backendURL, moduleId]);
 
   const toggleTag = useCallback((tag: string) => {
     setActiveTags((prev) => {
@@ -486,6 +544,7 @@ export function LibrarySpace({
           moduleId={moduleId}
           componentId={detailComponentId}
           modelRefreshToken={detailModelRefreshToken}
+          refreshToken={refreshTick}
           onBack={() => setDetailComponentId(null)}
           onCloned={(newId) => {
             setRefreshTick((value) => value + 1);

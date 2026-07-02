@@ -12,6 +12,31 @@ import { AI_PROVIDER_PRESETS, getPresetByKind } from "@openpcb/ai-core";
 
 export interface InternalProviderConfig extends AssistantProviderConfig {
   apiKey: string | null;
+  /** Manual tool-calling override: null = auto (probe), true = on, false = off. */
+  toolCallingOverride: boolean | null;
+}
+
+export type ToolCallingMode = "auto" | "on" | "off";
+
+function overrideToMode(override: boolean | null): ToolCallingMode {
+  return override === null ? "auto" : override ? "on" : "off";
+}
+function modeToOverride(mode: ToolCallingMode): boolean | null {
+  return mode === "auto" ? null : mode === "on";
+}
+
+/**
+ * Apply a manual override on top of probed capabilities. In auto mode the probe
+ * result is used verbatim. When forced on/off the `toolCalling` flag is overridden,
+ * synthesizing a minimal capabilities object when the provider was never probed.
+ */
+function applyToolCallingOverride(
+  caps: AiProviderCapabilities | null,
+  override: boolean | null,
+): AiProviderCapabilities | null {
+  if (override === null) return caps;
+  if (caps) return { ...caps, toolCalling: override };
+  return { streaming: true, toolCalling: override, modelList: true };
 }
 
 type RawSqlFn = (q: string, p?: unknown[]) => Record<string, unknown>[];
@@ -270,6 +295,28 @@ export class ProviderStore {
     return rowToCapabilities(row);
   }
 
+  /** Current manual tool-calling override mode for a provider. */
+  getToolCallingMode(providerId: string): ToolCallingMode {
+    const provider = this.getProviderInternal(providerId);
+    if (!provider)
+      throw new ValidationError(`Provider not found: ${providerId}`);
+    return overrideToMode(provider.toolCallingOverride);
+  }
+
+  /** Set the manual tool-calling override. "auto" clears the override. */
+  setToolCallingMode(providerId: string, mode: ToolCallingMode): void {
+    const exists = this.rawSql(
+      "SELECT id FROM assistant_provider_config WHERE id=?",
+      [providerId],
+    )[0];
+    if (!exists) throw new ValidationError(`Provider not found: ${providerId}`);
+    const override = modeToOverride(mode);
+    this.rawSql(
+      "UPDATE assistant_provider_config SET tool_calling_override=?, updated_at=? WHERE id=?",
+      [override === null ? null : override ? 1 : 0, now(), providerId],
+    );
+  }
+
   saveCapabilities(
     providerId: string,
     capabilities: AiProviderCapabilities,
@@ -309,13 +356,24 @@ export class ProviderStore {
 
   private rowToInternal(row: Record<string, unknown>): InternalProviderConfig {
     const apiKey = row.api_key ? String(row.api_key) : null;
-    const caps = this.getCapabilities(String(row.id));
+    const override =
+      row.tool_calling_override === null ||
+      row.tool_calling_override === undefined
+        ? null
+        : Number(row.tool_calling_override) === 1;
+    // Bake the override into `capabilities.toolCalling` so both the run service and
+    // the frontend DTO see the effective value without touching the published contract.
+    const caps = applyToolCallingOverride(
+      this.getCapabilities(String(row.id)),
+      override,
+    );
     return {
       id: String(row.id),
       label: String(row.label),
       kind: String(row.kind) as AiProviderKind,
       baseUrl: String(row.base_url),
       apiKey,
+      toolCallingOverride: override,
       defaultModel: String(row.default_model),
       enabled: bool(row.enabled),
       isBuiltin: bool(row.is_builtin),

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "git status *": "allow",
+      "git log *": "allow",
+      "git diff *": "allow",
+      "ls *": "allow",
+      "pwd": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "grep *": "allow",
+      "find *": "allow",
+      "wc *": "allow",
+      "echo *": "allow",
+      "npm run typecheck *": "allow",
+      "npm run build *": "allow",
+      "cargo check": "allow",
+      "npm run test": "allow",
+      "npm run test:*": "allow",
+      "npm run test:e2e *": "allow",
+      "bun test *": "allow",
+      "bun build": "allow",
+      "bun install *": "allow",
+      "npm install *": "allow",
+      "mkdir *": "allow",
+      "printf *": "allow",
+      "^curl(?:\\s+-[^\\s]+(?:\\s+[^\\s]+)*)?\\s+https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(?::\\d+)?(?:/.*)?$": "allow"
+    },
+    "skill": {
+      "task-system": "allow",
+      "streaming-debug": "allow",
+      "provider-engine": "allow",
+      "db-migration": "allow",
+      "react-hook": "allow",
+      "code-review": "allow",
+      "git-workflow": "allow",
+      "ddd-service": "allow",
+      "module-create": "allow",
+      "tauri-bridge": "allow",
+      "codegen": "allow",
+      "test-module": "allow",
+      "tool-create": "allow"
+    }
+  },
+
+  "instructions": ["./CLAUDE.md", "./AGENTS.md"],
+
+  "mcp": {
+    "sqlite": {
+      "type": "local",
+      "command": ["npx", "-y", "mcp-sqlite", "/Users/andrejvysny/andrejvysny/OneMind/data/OneMind.db"],
+      "enabled": false
+    }
+  },
+
+  "watcher": {
+    "ignore": [
+      "**/node_modules/**",
+      "**/target/**",
+      "**/.git/**",
+      "**/src-react/src/generated/**",
+      "**/src-ts/src/tauri-bindings.ts",
+      "**/scripts/.dist/**"
+    ]
+  },
+
+  "compaction": { "auto": true, "prune": true }
+}

@@ -1,6 +1,7 @@
 // Serialize a PCB projection into a self-contained `BoardSnapshot` for the cloud
-// auto-router (cloud-auto-router, port 3002). Pure — derives everything from a
-// single `DesignerPcbProjection` plus caller-supplied route options.
+// auto-layout service (cloud-auto-layout, port 3002 — both /v1/route and /v1/place
+// consume this one superset shape). Pure — derives everything from a single
+// `DesignerPcbProjection` plus caller-supplied route/place options.
 //
 // UNITS (the #1 bug surface): `traces[].pointsNm` is integer NANOMETERS and is
 // passed through verbatim (the store already holds nm); EVERYTHING else
@@ -27,6 +28,7 @@ import { resolveNetClassId } from "./net-class-resolver";
 import { flattenCutout, flattenOutline } from "./outline-geometry";
 import { placementPads } from "./pad-geometry";
 import { freePadOutlineWorldMm, padOutlineWorldMm } from "./pad-outline";
+import { buildSnapshotPourIslands } from "./board-snapshot-pours";
 
 const STACKUP_ORDER: PcbCopperLayerId[] = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"];
 const DEFAULT_BOARD_THICKNESS_MM = 1.6;
@@ -56,6 +58,8 @@ export interface BuildSnapshotOptions {
    * keep their exact byte-shape.
    */
   placeOptions?: PlaceOptions;
+  /** Serialize copper-pour islands into the snapshot. Default-off until service deploy flips. */
+  serializePours?: boolean;
 }
 
 export interface BuildSnapshotResult {
@@ -183,8 +187,8 @@ export function buildBoardSnapshot(
     mirrored: p.mirrored,
   }));
 
-  // ── pours: never sent in v1 (service rejects non-empty pours) ───────────
-  if (projection.zones.length > 0) {
+  const pours = opts.serializePours ? buildSnapshotPourIslands(projection) : [];
+  if (!opts.serializePours && projection.zones.length > 0) {
     warnings.push(
       `Design has ${projection.zones.length} copper ${
         projection.zones.length === 1 ? "zone" : "zones"
@@ -221,7 +225,7 @@ export function buildBoardSnapshot(
     padOutlines,
     vias,
     traces,
-    pours: [],
+    pours,
     freeHoles,
     ratsnest,
     netNames: projection.netNames,

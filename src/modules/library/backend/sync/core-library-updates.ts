@@ -4,6 +4,7 @@ import type { CoreBackendModuleContext } from "../../../../core/contracts/module
 import { ValidationError } from "../../../../core/contracts/errors";
 import { getDb } from "../queries";
 import { components, releases } from "../schema";
+import { shouldImportCorePackage } from "./bootstrap";
 import { importOpclib } from "./opclib-importer";
 import { locateBundledOpclib } from "./package-locator";
 import { readOpclibFromBytes, readOpclibFromPath } from "./opclib-reader";
@@ -123,7 +124,8 @@ export async function getCoreLibraryStatus(
   ctx: CoreBackendModuleContext,
   options: CoreLibraryStatusOptions = {},
 ): Promise<CoreLibraryStatus> {
-  const installed = getInstalledCoreRelease(ctx);
+  const installedRows = getInstalledCoreReleaseRows(ctx);
+  const installed = getInstalledCoreRelease(ctx, installedRows);
   let bundled: CoreLibraryPackageSummary | null = null;
   let error: string | null = null;
 
@@ -136,7 +138,7 @@ export async function getCoreLibraryStatus(
 
   return {
     sourceId: CORE_SOURCE_ID,
-    state: deriveState(installed, bundled, error),
+    state: deriveState(installedRows, installed, bundled, error, options),
     installed,
     bundled,
     error,
@@ -209,20 +211,8 @@ export async function updateCoreLibrary(
 
 function getInstalledCoreRelease(
   ctx: CoreBackendModuleContext,
+  rows = getInstalledCoreReleaseRows(ctx),
 ): CoreLibraryReleaseSummary | null {
-  const db = getDb(ctx);
-  const rows = db
-    .select({
-      version: releases.version,
-      channel: releases.channel,
-      packageSha256: releases.packageSha256,
-      signatureValid: releases.signatureValid,
-      installedAt: releases.installedAt,
-      manifestJson: releases.manifestJson,
-    })
-    .from(releases)
-    .where(eq(releases.sourceId, CORE_SOURCE_ID))
-    .all();
   const latest = pickLatestRelease(rows);
   if (!latest) return null;
   return {
@@ -236,6 +226,22 @@ function getInstalledCoreRelease(
   };
 }
 
+function getInstalledCoreReleaseRows(ctx: CoreBackendModuleContext): ReleaseRow[] {
+  const db = getDb(ctx);
+  return db
+    .select({
+      version: releases.version,
+      channel: releases.channel,
+      packageSha256: releases.packageSha256,
+      signatureValid: releases.signatureValid,
+      installedAt: releases.installedAt,
+      manifestJson: releases.manifestJson,
+    })
+    .from(releases)
+    .where(eq(releases.sourceId, CORE_SOURCE_ID))
+    .all();
+}
+
 function pickLatestRelease(rows: ReleaseRow[]): ReleaseRow | null {
   let latest: ReleaseRow | null = null;
   for (const row of rows) {
@@ -243,13 +249,7 @@ function pickLatestRelease(rows: ReleaseRow[]): ReleaseRow | null {
       latest = row;
       continue;
     }
-    const versionCompare = compareSemverVersions(row.version, latest.version);
-    if (versionCompare > 0) {
-      latest = row;
-    } else if (
-      versionCompare === 0 &&
-      row.installedAt.localeCompare(latest.installedAt) > 0
-    ) {
+    if (row.installedAt.localeCompare(latest.installedAt) > 0) {
       latest = row;
     }
   }
@@ -284,24 +284,32 @@ async function summarizeBundledPackage(
 }
 
 function deriveState(
+  installedRows: ReleaseRow[],
   installed: CoreLibraryReleaseSummary | null,
   bundled: CoreLibraryPackageSummary | null,
   error: string | null,
+  options: CoreLibraryStatusOptions,
 ): CoreLibraryUpdateState {
   if (error) return "error";
   if (!installed && !bundled) return "missing";
   if (!installed && bundled) return "bundled_update_available";
   if (installed && !bundled) return "up_to_date";
   if (!installed || !bundled) return "missing";
-  if (
-    bundled.version === installed.version &&
-    bundled.packageSha256 !== installed.packageSha256
-  ) {
-    return "bundled_update_available";
-  }
-  return compareSemverVersions(bundled.version, installed.version) > 0
-    ? "bundled_update_available"
-    : "up_to_date";
+  const shouldImport = shouldImportCorePackage(
+    listCoreReleasesFromRows(installedRows),
+    bundled,
+    options,
+  );
+  return shouldImport ? "bundled_update_available" : "up_to_date";
+}
+
+function listCoreReleasesFromRows(
+  rows: ReleaseRow[],
+): Array<{ version: string; packageSha256: string }> {
+  return rows.map((row) => ({
+    version: row.version,
+    packageSha256: row.packageSha256,
+  }));
 }
 
 async function fetchLatestStableRemoteRelease(

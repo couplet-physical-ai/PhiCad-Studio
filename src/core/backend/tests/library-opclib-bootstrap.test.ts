@@ -261,10 +261,16 @@ describe("core library .opclib bootstrap", () => {
     const sdk = r2
       .getSdkRegistry()
       .resolve<LibrarySDK>(MODULE_SDK_TOKENS.LIBRARY);
+    const resistor = await sdk.resolveComponentForPlacement(
+      "openpcb.core.passive.resistor",
+    );
+    const capacitor = await sdk.resolveComponentForPlacement(
+      "openpcb.core.passive.capacitor",
+    );
     const results = await sdk.searchComponents({});
     const ids = results.map((c) => c.id);
-    expect(ids).toContain("openpcb.core.passive.resistor");
-    expect(ids).toContain("openpcb.core.passive.capacitor");
+    expect(resistor).not.toBeNull();
+    expect(capacitor).not.toBeNull();
     // No duplicates from the second bootstrap
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -365,14 +371,14 @@ describe("core library .opclib bootstrap", () => {
     expect(releaseRows.map((row) => row.version)).toContain("999.0.2-dev");
   });
 
-  test("does not downgrade a dev DB to an older dev package", async () => {
-    isolateTestDb("opclib-bootstrap-dev-no-downgrade");
+  test("imports a changed lower-numbered dev package in development", async () => {
+    isolateTestDb("opclib-bootstrap-dev-lower-sha");
     prevBundleEnv = process.env.OPENPCB_BUNDLED_LIBRARY_PATH;
-    const root = await mkdtemp(path.join(os.tmpdir(), "opclib-dev-down-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "opclib-dev-lower-"));
     tempRoots.push(root);
     const newDevPath = path.join(
       root,
-      "openpcb-core-library-999.0.2-dev.opclib",
+      "openpcb-core-library-999.9.9-dev.opclib",
     );
     const oldDevPath = path.join(
       root,
@@ -380,11 +386,11 @@ describe("core library .opclib bootstrap", () => {
     );
     await writeFile(
       newDevPath,
-      buildCorePackage("999.0.2-dev", "openpcb.core.test.dev-v2"),
+      buildCorePackage("999.9.9-dev", "openpcb.core.test.dev-stale"),
     );
     await writeFile(
       oldDevPath,
-      buildCorePackage("999.0.0-dev", "openpcb.core.test.dev-v0"),
+      buildCorePackage("999.0.0-dev", "openpcb.core.test.dev-live"),
     );
 
     process.env.OPENPCB_BUNDLED_LIBRARY_PATH = newDevPath;
@@ -398,8 +404,37 @@ describe("core library .opclib bootstrap", () => {
     const ids = (await sdk.searchComponents({})).map(
       (component) => component.id,
     );
-    expect(ids).toContain("openpcb.core.test.dev-v2");
-    expect(ids).not.toContain("openpcb.core.test.dev-v0");
+    expect(ids).toContain("openpcb.core.test.dev-live");
+    expect(ids).not.toContain("openpcb.core.test.dev-stale");
+  });
+
+  test("skips exact same version and SHA on re-bootstrap", async () => {
+    isolateTestDb("opclib-bootstrap-exact-sha");
+    prevBundleEnv = process.env.OPENPCB_BUNDLED_LIBRARY_PATH;
+    const root = await mkdtemp(path.join(os.tmpdir(), "opclib-exact-sha-"));
+    tempRoots.push(root);
+    const packagePath = path.join(root, "openpcb-core-library-999.0.0-dev.opclib");
+    await writeFile(
+      packagePath,
+      buildCorePackage("999.0.0-dev", "openpcb.core.test.exact-sha"),
+    );
+    process.env.OPENPCB_BUNDLED_LIBRARY_PATH = packagePath;
+
+    const firstRuntime = await bootRuntime();
+    const firstCtx = (firstRuntime as unknown as MapBackedRuntime).loaded.get(
+      "library",
+    )!.context as Parameters<typeof getDb>[0];
+    const firstRow = getDb(firstCtx).select().from(releases).get();
+
+    const secondRuntime = await bootRuntime();
+    const secondCtx = (secondRuntime as unknown as MapBackedRuntime).loaded.get(
+      "library",
+    )!.context as Parameters<typeof getDb>[0];
+    const secondRows = getDb(secondCtx).select().from(releases).all();
+
+    expect(secondRows).toHaveLength(1);
+    expect(secondRows[0]?.packageSha256).toBe(firstRow?.packageSha256);
+    expect(secondRows[0]?.installedAt).toBe(firstRow?.installedAt);
   });
 
   test("keeps stale core assets when user components still reference them", async () => {

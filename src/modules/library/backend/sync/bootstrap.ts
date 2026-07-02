@@ -105,7 +105,7 @@ interface InstalledRelease {
   packageSha256: string;
 }
 
-function listCoreReleases(ctx: CoreBackendModuleContext): InstalledRelease[] {
+export function listCoreReleases(ctx: CoreBackendModuleContext): InstalledRelease[] {
   const db = getDb(ctx);
   return db
     .select({
@@ -161,32 +161,67 @@ function pickLatestSemver(versions: string[]): ParsedSemver | null {
 export function shouldImportBundledRelease(
   installed: InstalledRelease[],
   pkg: OpclibPackage,
+  options: { nodeEnv?: string } = {},
+): boolean {
+  return shouldImportCorePackage(
+    installed,
+    {
+      version: pkg.manifest.library.version,
+      packageSha256: pkg.manifest.integrity.packageSha256,
+    },
+    options,
+  );
+}
+
+export function shouldImportCorePackage(
+  installed: InstalledRelease[],
+  bundled: InstalledRelease,
+  options: { nodeEnv?: string } = {},
 ): boolean {
   if (installed.length === 0) return true;
-  const bundledVersion = pkg.manifest.library.version;
-  const bundledSha = pkg.manifest.integrity.packageSha256;
   const exact = installed.find(
-    (row) => row.version === bundledVersion && row.packageSha256 === bundledSha,
+    (row) =>
+      row.version === bundled.version &&
+      row.packageSha256 === bundled.packageSha256,
   );
   if (exact) return false;
 
-  const sameVersion = installed.find((row) => row.version === bundledVersion);
+  const sameVersion = installed.find((row) => row.version === bundled.version);
   if (sameVersion) {
-    return sameVersion.packageSha256 !== bundledSha;
+    return sameVersion.packageSha256 !== bundled.packageSha256;
   }
 
-  if (isDevCoreLibraryVersion(installed.map((row) => row.version))) {
-    // A non-dev *release* always supersedes a dev install — even when the dev
-    // version was inflated (e.g. 999.x) to win during local development.
-    if (!isDevCoreLibraryVersion([bundledVersion])) return true;
-    // dev → dev: version ordering between dev packs is still meaningful here
-    // (e.g. 999.0.2-dev > 999.0.0-dev). Fall through to the semver comparison
-    // so a corrected dev pack (e.g. fixed 3D-model orientation) actually
-    // replaces an older one. Identical content already returned false above
-    // via the exact version+sha check, so this can't churn on every boot.
+  const bundledIsDev = isDevCoreLibraryVersion([bundled.version]);
+  const installedDevRows = installed.filter((row) =>
+    isDevCoreLibraryVersion([row.version]),
+  );
+  const installedStableRows = installed.filter(
+    (row) => !isDevCoreLibraryVersion([row.version]),
+  );
+
+  if (!bundledIsDev && installedStableRows.length > 0) {
+    const bundledParsed = parseSemver(bundled.version);
+    const latestStable = pickLatestSemver(
+      installedStableRows.map((row) => row.version),
+    );
+    if (bundledParsed && latestStable) {
+      return compareSemver(bundledParsed, latestStable) > 0;
+    }
   }
 
-  const bundledParsed = parseSemver(bundledVersion);
+  if (!bundledIsDev && installedDevRows.length > 0) {
+    return true;
+  }
+
+  if (
+    bundledIsDev &&
+    installedDevRows.length > 0 &&
+    (options.nodeEnv ?? process.env.NODE_ENV) !== "production"
+  ) {
+    return true;
+  }
+
+  const bundledParsed = parseSemver(bundled.version);
   const latestInstalled = pickLatestSemver(installed.map((row) => row.version));
   if (bundledParsed && latestInstalled) {
     return compareSemver(bundledParsed, latestInstalled) > 0;

@@ -1,5 +1,13 @@
 # Release 1.0 — Production Hardening (active 2026-06-21)
 
+## CoreLibrary Live Link Setup (active)
+
+- [x] Add dev CoreLibrary pack watcher script and `dev:*:corelib` wiring
+- [x] Unify CoreLibrary import/status policy for dev SHA changes
+- [x] Add backend live `.opclib` watcher for development
+- [x] Refresh Library frontend list/facets/detail from installed SHA changes
+- [x] Verify with targeted backend tests, CoreLibrary validation, typecheck/codegen, runtime QA
+
 > Goal: ship a **signed, notarized, auto-updating `1.0.0`** (macOS signed now / Windows method
 > chosen pre-launch), AI assistant **visible** (local providers; cloud presets dev-gated),
 > **4-layer in scope**, **Sentry on-by-default + first-run consent**, full hardening.

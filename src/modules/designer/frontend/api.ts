@@ -658,6 +658,7 @@ export function createDesignerApi(params: {
         options?: RouteOptions;
         routableNetClassIds?: string[];
         excludedNetIds?: string[];
+        serializePours?: boolean;
       },
     ): Promise<SubmitRouteResponse & { warnings: string[] }> {
       return fetchData<SubmitRouteResponse & { warnings: string[] }>(

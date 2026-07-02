@@ -1,4 +1,5 @@
-// Wire contracts for the cloud auto-router service (cloud-auto-router, port 3002).
+// Wire contracts for the route side of the cloud auto-layout service
+// (cloud-auto-layout, /v1/route, port 3002 — formerly the standalone cloud-auto-router).
 //
 // Hand-mirrored from the service's Python-canonical Pydantic models, which are
 // also emitted to `contracts/*.schema.json` in that repo. The desktop is the
@@ -114,7 +115,7 @@ export interface ExistingTrace {
   segmentMode: PcbTraceSegmentMode;
 }
 
-/** Zone-filler island. Sent empty in v1 (the service rejects non-empty pours). */
+/** Zone-filler island. Default-off from desktop requests until service deploy coordination flips it. */
 export interface PourIsland {
   islandId: string;
   layer: PcbCopperLayerId;
@@ -213,9 +214,7 @@ export interface BoardSnapshot {
 // ── RouteResultEnvelope (response) ───────────────────────────────────────
 
 export type RouteOperationKind =
-  | "pcb_add_trace"
-  | "pcb_add_via"
-  | "pcb_add_trace_via";
+  "pcb_add_trace" | "pcb_add_via" | "pcb_add_trace_via";
 
 /** The op body — already a valid desktop designer command (carries `type`). */
 export type RouteOperationPayload =
@@ -356,11 +355,7 @@ export interface SubmitRouteResponse {
 
 /** Job-record status from `GET /v1/route/{id}` (distinct from ProgressFrame.type). */
 export type RouteJobStatus =
-  | "queued"
-  | "running"
-  | "done"
-  | "failed"
-  | "cancelled";
+  "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface RouteStatusResponse {
   jobId: string;
@@ -390,13 +385,22 @@ export interface ProgressFrame {
 }
 
 export interface VersionResponse {
+  /** Service name — "cloud-auto-layout" since the route/place merge. */
+  service?: string;
+  /** Back-compat alias of `routeEngineVersion` (the merged service keeps it). */
   engineVersion: string;
+  /** Route engine version (independent cadence from place). */
+  routeEngineVersion?: string;
+  /** Place engine version (independent cadence from route). */
+  placeEngineVersion?: string;
   contractVersion: string;
   schemaMajor: number;
   capabilities: {
     async: boolean;
     progressStream: string;
     cancel: boolean;
+    /** Endpoints the merged service exposes, e.g. ["/v1/route", "/v1/place"]. */
+    endpoints?: string[];
     viaSpans: string[];
     engineImplemented: boolean;
   };
