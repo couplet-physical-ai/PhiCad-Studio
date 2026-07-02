@@ -1,0 +1,1254 @@
+{
+  "$defs": {
+    "BoardGeometry": {
+      "properties": {
+        "outline": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PointMm"
+            },
+            "type": "array"
+          },
+          "title": "Outline",
+          "type": "array"
+        },
+        "cutouts": {
+          "default": [],
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PointMm"
+            },
+            "type": "array"
+          },
+          "title": "Cutouts",
+          "type": "array"
+        },
+        "copperToEdgeMm": {
+          "title": "Coppertoedgemm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "outline",
+        "copperToEdgeMm"
+      ],
+      "title": "BoardGeometry",
+      "type": "object"
+    },
+    "ClearanceRules": {
+      "properties": {
+        "traceToTraceMm": {
+          "title": "Tracetotracemm",
+          "type": "number"
+        },
+        "traceToPadMm": {
+          "title": "Tracetopadmm",
+          "type": "number"
+        },
+        "padToPadMm": {
+          "title": "Padtopadmm",
+          "type": "number"
+        },
+        "traceToViaMm": {
+          "title": "Tracetoviamm",
+          "type": "number"
+        },
+        "viaToViaMm": {
+          "title": "Viatoviamm",
+          "type": "number"
+        },
+        "copperToBoardEdgeMm": {
+          "title": "Coppertoboardedgemm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "traceToTraceMm",
+        "traceToPadMm",
+        "padToPadMm",
+        "traceToViaMm",
+        "viaToViaMm",
+        "copperToBoardEdgeMm"
+      ],
+      "title": "ClearanceRules",
+      "type": "object"
+    },
+    "ConstraintGroup": {
+      "description": "A relational/electrical placement constraint (0D). All cost terms it drives default to\nweight 0 and the engine only activates a positive default when the matching group is present\n(see ``app/place/engine.py::_weights``) \u2014 so a snapshot without ``constraintGroups`` is\nunaffected.\n\n* ``decap`` \u2014 ``members`` are decoupling caps, ``anchorId`` their host IC (cap \u2192 IC proximity).\n* ``crystal`` \u2014 ``members`` are the crystal(s), ``anchorId`` the MCU (crystal \u2192 MCU proximity).\n* ``diff_pair`` \u2014 ``members`` are the two components carrying the P/N nets (symmetry/proximity).\n* ``matched`` \u2014 components to co-locate / keep symmetric (e.g. matched passives); inferred from\n  refdes/net-name is FORBIDDEN \u2014 matched groups exist ONLY when explicitly supplied here.\n* ``room`` \u2014 a named placement region (reserved; not yet consumed by a cost term).\n\n``netId``/``padNumber`` are optional power-pin targeting hints (e.g. the IC's VCC pad a decap\nshould hug); v1 targets component origins and treats them as advisory.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "decap",
+            "crystal",
+            "diff_pair",
+            "matched",
+            "room"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Members",
+          "type": "array"
+        },
+        "anchorId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchorid"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Netid"
+        },
+        "padNumber": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Padnumber"
+        }
+      },
+      "required": [
+        "kind",
+        "members"
+      ],
+      "title": "ConstraintGroup",
+      "type": "object"
+    },
+    "DesignRules": {
+      "properties": {
+        "clearance": {
+          "$ref": "#/$defs/ClearanceRules"
+        },
+        "minimums": {
+          "$ref": "#/$defs/MinimumRules"
+        },
+        "fabPresetId": {
+          "default": "custom",
+          "enum": [
+            "jlcpcb_2l",
+            "jlcpcb_4l",
+            "pcbway_std",
+            "pcbway_advanced",
+            "custom"
+          ],
+          "title": "Fabpresetid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "clearance",
+        "minimums"
+      ],
+      "title": "DesignRules",
+      "type": "object"
+    },
+    "ExistingTrace": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "netClassId": {
+          "title": "Netclassid",
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "widthMm": {
+          "title": "Widthmm",
+          "type": "number"
+        },
+        "pointsNm": {
+          "items": {
+            "$ref": "#/$defs/PointNm"
+          },
+          "title": "Pointsnm",
+          "type": "array"
+        },
+        "segmentMode": {
+          "enum": [
+            "manhattan-90",
+            "manhattan-45"
+          ],
+          "title": "Segmentmode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "netId",
+        "netClassId",
+        "layer",
+        "widthMm",
+        "pointsNm",
+        "segmentMode"
+      ],
+      "title": "ExistingTrace",
+      "type": "object"
+    },
+    "FreeHole": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "centerMm": {
+          "$ref": "#/$defs/PointMm"
+        },
+        "drillMm": {
+          "title": "Drillmm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "centerMm",
+        "drillMm"
+      ],
+      "title": "FreeHole",
+      "type": "object"
+    },
+    "MinimumRules": {
+      "properties": {
+        "traceWidthMm": {
+          "title": "Tracewidthmm",
+          "type": "number"
+        },
+        "drillSizeMm": {
+          "title": "Drillsizemm",
+          "type": "number"
+        },
+        "annularRingMm": {
+          "title": "Annularringmm",
+          "type": "number"
+        },
+        "viaDiameterMm": {
+          "title": "Viadiametermm",
+          "type": "number"
+        },
+        "viaDrillMm": {
+          "title": "Viadrillmm",
+          "type": "number"
+        },
+        "holeToHoleMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Holetoholemm"
+        }
+      },
+      "required": [
+        "traceWidthMm",
+        "drillSizeMm",
+        "annularRingMm",
+        "viaDiameterMm",
+        "viaDrillMm"
+      ],
+      "title": "MinimumRules",
+      "type": "object"
+    },
+    "NetClass": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "traceWidthMm": {
+          "title": "Tracewidthmm",
+          "type": "number"
+        },
+        "clearanceMm": {
+          "title": "Clearancemm",
+          "type": "number"
+        },
+        "viaDiameterMm": {
+          "title": "Viadiametermm",
+          "type": "number"
+        },
+        "viaDrillMm": {
+          "title": "Viadrillmm",
+          "type": "number"
+        },
+        "color": {
+          "title": "Color",
+          "type": "string"
+        },
+        "defaultViaProtection": {
+          "enum": [
+            "none",
+            "tented",
+            "plugged",
+            "filled",
+            "capped"
+          ],
+          "title": "Defaultviaprotection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "traceWidthMm",
+        "clearanceMm",
+        "viaDiameterMm",
+        "viaDrillMm",
+        "color",
+        "defaultViaProtection"
+      ],
+      "title": "NetClass",
+      "type": "object"
+    },
+    "PadOutline": {
+      "description": "Pre-polygonized pad copper, one row per spanned copper layer.",
+      "properties": {
+        "placementId": {
+          "title": "Placementid",
+          "type": "string"
+        },
+        "padNumber": {
+          "title": "Padnumber",
+          "type": "string"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "layer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "ring": {
+          "items": {
+            "$ref": "#/$defs/PointMm"
+          },
+          "title": "Ring",
+          "type": "array"
+        },
+        "isConnectable": {
+          "title": "Isconnectable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "placementId",
+        "padNumber",
+        "netId",
+        "layer",
+        "ring",
+        "isConnectable"
+      ],
+      "title": "PadOutline",
+      "type": "object"
+    },
+    "PlaceOptions": {
+      "properties": {
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "restarts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Restarts"
+        },
+        "maxMoves": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxmoves"
+        },
+        "mode": {
+          "default": "all",
+          "enum": [
+            "all",
+            "subset"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "selectedIds": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Selectedids",
+          "type": "array"
+        },
+        "lockReferences": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Lockreferences",
+          "type": "array"
+        },
+        "allowRotate": {
+          "default": true,
+          "title": "Allowrotate",
+          "type": "boolean"
+        },
+        "allowFlip": {
+          "default": true,
+          "title": "Allowflip",
+          "type": "boolean"
+        },
+        "moveConnectors": {
+          "default": false,
+          "title": "Moveconnectors",
+          "type": "boolean"
+        },
+        "respectExistingTraces": {
+          "default": true,
+          "title": "Respectexistingtraces",
+          "type": "boolean"
+        },
+        "targetUtilization": {
+          "default": 0.7,
+          "title": "Targetutilization",
+          "type": "number"
+        },
+        "gridSnapMm": {
+          "default": 0.01,
+          "title": "Gridsnapmm",
+          "type": "number"
+        },
+        "weights": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceWeights"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "PlaceOptions",
+      "type": "object"
+    },
+    "PlaceWeights": {
+      "description": "Cost-term weights (scale-normalized terms; see ``app/place/cost.py``).",
+      "properties": {
+        "hpwl": {
+          "default": 1.0,
+          "title": "Hpwl",
+          "type": "number"
+        },
+        "spread": {
+          "default": 1.0,
+          "title": "Spread",
+          "type": "number"
+        },
+        "overlap": {
+          "default": 50.0,
+          "title": "Overlap",
+          "type": "number"
+        },
+        "edge": {
+          "default": 20.0,
+          "title": "Edge",
+          "type": "number"
+        },
+        "connector": {
+          "default": 4.0,
+          "title": "Connector",
+          "type": "number"
+        },
+        "displacement": {
+          "default": 0.0,
+          "title": "Displacement",
+          "type": "number"
+        },
+        "congestion": {
+          "default": 0.0,
+          "title": "Congestion",
+          "type": "number"
+        },
+        "decap": {
+          "default": 0.0,
+          "title": "Decap",
+          "type": "number"
+        },
+        "crystal": {
+          "default": 0.0,
+          "title": "Crystal",
+          "type": "number"
+        },
+        "thermal": {
+          "default": 0.0,
+          "title": "Thermal",
+          "type": "number"
+        },
+        "align": {
+          "default": 0.0,
+          "title": "Align",
+          "type": "number"
+        },
+        "sym": {
+          "default": 0.0,
+          "title": "Sym",
+          "type": "number"
+        },
+        "zone": {
+          "default": 0.0,
+          "title": "Zone",
+          "type": "number"
+        },
+        "orient": {
+          "default": 0.0,
+          "title": "Orient",
+          "type": "number"
+        },
+        "side": {
+          "default": 10.0,
+          "title": "Side",
+          "type": "number"
+        }
+      },
+      "title": "PlaceWeights",
+      "type": "object"
+    },
+    "Placement": {
+      "description": "A component instance to (potentially) place. The base fields (id/reference/layer) are\nall the autorouter consumes; the rest are the auto-place EXTENSION (optional-with-fallback)\nso the engine can seed + diff + emit faithful commands. The router ignores them.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "positionMm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PointMm"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rotationDeg": {
+          "default": 0.0,
+          "title": "Rotationdeg",
+          "type": "number"
+        },
+        "mirrored": {
+          "default": false,
+          "title": "Mirrored",
+          "type": "boolean"
+        },
+        "mountType": {
+          "anyOf": [
+            {
+              "enum": [
+                "smd",
+                "tht"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mounttype"
+        },
+        "heightMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heightmm"
+        },
+        "watts": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watts"
+        },
+        "courtyardPolygon": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PointMm"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Courtyardpolygon"
+        },
+        "connectorEdge": {
+          "anyOf": [
+            {
+              "enum": [
+                "left",
+                "right",
+                "top",
+                "bottom"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connectoredge"
+        }
+      },
+      "required": [
+        "id",
+        "reference",
+        "layer"
+      ],
+      "title": "Placement",
+      "type": "object"
+    },
+    "PointMm": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "PointMm",
+      "type": "object"
+    },
+    "PointNm": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "PointNm",
+      "type": "object"
+    },
+    "PourIsland": {
+      "description": "One ZoneFiller copper-fill island. Same ``pourNetId`` as the routed net \u2192\na connection target (via/stub into the correct island closes the ratsnest);\notherwise an inflated obstacle.",
+      "properties": {
+        "islandId": {
+          "title": "Islandid",
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "pourNetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pournetid"
+        },
+        "rings": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PointMm"
+            },
+            "type": "array"
+          },
+          "title": "Rings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "islandId",
+        "layer",
+        "pourNetId",
+        "rings"
+      ],
+      "title": "PourIsland",
+      "type": "object"
+    },
+    "RatsnestTarget": {
+      "description": "An unrouted pad-pair to connect (mirrors TS ``RatsnestSegment``).",
+      "properties": {
+        "netId": {
+          "title": "Netid",
+          "type": "string"
+        },
+        "netClassId": {
+          "title": "Netclassid",
+          "type": "string"
+        },
+        "fromMm": {
+          "$ref": "#/$defs/PointMm"
+        },
+        "toMm": {
+          "$ref": "#/$defs/PointMm"
+        },
+        "fromPlacementId": {
+          "title": "Fromplacementid",
+          "type": "string"
+        },
+        "fromPadNumber": {
+          "title": "Frompadnumber",
+          "type": "string"
+        },
+        "toPlacementId": {
+          "title": "Toplacementid",
+          "type": "string"
+        },
+        "toPadNumber": {
+          "title": "Topadnumber",
+          "type": "string"
+        }
+      },
+      "required": [
+        "netId",
+        "netClassId",
+        "fromMm",
+        "toMm",
+        "fromPlacementId",
+        "fromPadNumber",
+        "toPlacementId",
+        "toPadNumber"
+      ],
+      "title": "RatsnestTarget",
+      "type": "object"
+    },
+    "RouteOptions": {
+      "properties": {
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "geometryMode": {
+          "default": "manhattan-45",
+          "enum": [
+            "manhattan-90",
+            "manhattan-45"
+          ],
+          "title": "Geometrymode",
+          "type": "string"
+        },
+        "allowVias": {
+          "default": true,
+          "title": "Allowvias",
+          "type": "boolean"
+        },
+        "maxViasPerNet": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxviaspernet"
+        },
+        "layerPolicy": {
+          "anyOf": [
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "additionalProperties": {
+                "enum": [
+                  "h",
+                  "v",
+                  "any"
+                ],
+                "type": "string"
+              },
+              "type": "object"
+            }
+          ],
+          "default": "auto",
+          "title": "Layerpolicy"
+        },
+        "epsilonNm": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epsilonnm"
+        },
+        "maxExpansions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxexpansions"
+        },
+        "maxRipupPasses": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxripuppasses"
+        },
+        "maxShoveNodes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxshovenodes"
+        },
+        "maxShoveDepthTraces": {
+          "default": 20,
+          "title": "Maxshovedepthtraces",
+          "type": "integer"
+        },
+        "maxShoveDepthVias": {
+          "default": 5,
+          "title": "Maxshovedepthvias",
+          "type": "integer"
+        },
+        "netOrder": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Netorder"
+        },
+        "progressEveryNNets": {
+          "default": 1,
+          "title": "Progresseverynnets",
+          "type": "integer"
+        },
+        "portfolio": {
+          "default": 1,
+          "title": "Portfolio",
+          "type": "integer"
+        }
+      },
+      "title": "RouteOptions",
+      "type": "object"
+    },
+    "Stackup": {
+      "properties": {
+        "layerCount": {
+          "enum": [
+            2,
+            4
+          ],
+          "title": "Layercount",
+          "type": "integer"
+        },
+        "copperLayers": {
+          "items": {
+            "enum": [
+              "F.Cu",
+              "In1.Cu",
+              "In2.Cu",
+              "B.Cu"
+            ],
+            "type": "string"
+          },
+          "title": "Copperlayers",
+          "type": "array"
+        },
+        "boardThicknessMm": {
+          "default": 1.6,
+          "title": "Boardthicknessmm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "layerCount",
+        "copperLayers"
+      ],
+      "title": "Stackup",
+      "type": "object"
+    },
+    "ViaObstacle": {
+      "description": "An existing via or a drilled hole.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "centerMm": {
+          "$ref": "#/$defs/PointMm"
+        },
+        "diameterMm": {
+          "title": "Diametermm",
+          "type": "number"
+        },
+        "drillMm": {
+          "title": "Drillmm",
+          "type": "number"
+        },
+        "fromLayer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu"
+          ],
+          "title": "Fromlayer",
+          "type": "string"
+        },
+        "toLayer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "B.Cu"
+          ],
+          "title": "Tolayer",
+          "type": "string"
+        },
+        "isHoleOnly": {
+          "default": false,
+          "title": "Isholeonly",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "netId",
+        "centerMm",
+        "diameterMm",
+        "drillMm",
+        "fromLayer",
+        "toLayer"
+      ],
+      "title": "ViaObstacle",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schemaVersion": {
+      "default": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "designId": {
+      "title": "Designid",
+      "type": "string"
+    },
+    "baseRevision": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Baserevision"
+    },
+    "sessionId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sessionid"
+    },
+    "board": {
+      "$ref": "#/$defs/BoardGeometry"
+    },
+    "stackup": {
+      "$ref": "#/$defs/Stackup"
+    },
+    "designRules": {
+      "$ref": "#/$defs/DesignRules"
+    },
+    "netClasses": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/NetClass"
+      },
+      "title": "Netclasses",
+      "type": "array"
+    },
+    "netAssignments": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Netassignments",
+      "type": "object"
+    },
+    "routableNetClassIds": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Routablenetclassids",
+      "type": "array"
+    },
+    "excludedNetIds": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Excludednetids",
+      "type": "array"
+    },
+    "placements": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Placement"
+      },
+      "title": "Placements",
+      "type": "array"
+    },
+    "padOutlines": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PadOutline"
+      },
+      "title": "Padoutlines",
+      "type": "array"
+    },
+    "vias": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ViaObstacle"
+      },
+      "title": "Vias",
+      "type": "array"
+    },
+    "traces": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ExistingTrace"
+      },
+      "title": "Traces",
+      "type": "array"
+    },
+    "pours": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PourIsland"
+      },
+      "title": "Pours",
+      "type": "array"
+    },
+    "freeHoles": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FreeHole"
+      },
+      "title": "Freeholes",
+      "type": "array"
+    },
+    "ratsnest": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RatsnestTarget"
+      },
+      "title": "Ratsnest",
+      "type": "array"
+    },
+    "netNames": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Netnames",
+      "type": "object"
+    },
+    "options": {
+      "$ref": "#/$defs/RouteOptions"
+    },
+    "constraintGroups": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConstraintGroup"
+      },
+      "title": "Constraintgroups",
+      "type": "array"
+    },
+    "placeOptions": {
+      "$ref": "#/$defs/PlaceOptions"
+    }
+  },
+  "required": [
+    "designId",
+    "board",
+    "stackup",
+    "designRules"
+  ],
+  "title": "BoardSnapshot",
+  "type": "object"
+}

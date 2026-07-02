@@ -58,6 +58,9 @@ jobs:
       - name: Codegen drift check
         run: npm run gen:check
 
+      - name: Contract codegen drift check
+        run: npm run gen:contracts -- --check
+
       - name: Backend tests (Bun)
         run: npm run test:backend
 

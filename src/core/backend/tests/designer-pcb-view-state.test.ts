@@ -12,6 +12,7 @@ import { DiagnosticsStore } from "../diagnostics/diagnostics-store";
 import { createHttpServer } from "../http/create-http-server";
 import { ModuleRuntime } from "../modules/module-loader";
 import { ModuleRouterRegistry } from "../router/module-registry";
+import { MentionRegistry } from "../mentions";
 
 const SESSION = "designer-pcb-view-state";
 
@@ -24,6 +25,9 @@ function isolateTestDb(testLabel: string): void {
 }
 
 async function createRuntime() {
+  // The library module registers @mention providers on activate; the real boot
+  // (runtime.ts) calls this before bootstrap. Idempotent — safe per test.
+  MentionRegistry.init();
   const repoRoot = path.resolve(import.meta.dir, "../../..");
   const moduleRegistry = new ModuleRouterRegistry();
   const moduleRuntime = new ModuleRuntime({
@@ -180,6 +184,59 @@ describe("designer PCB view-state persistence", () => {
       "TRACE_TO_TRACE_CLEARANCE-abc123",
     ]);
     expect(viewState?.drcIgnoredRuleClasses).toEqual(["manufacturability"]);
+  });
+
+  test("autoLayoutConfig round-trips through pcb_set_view_state and is absent on new rows", async () => {
+    const { sdk, designId } = await createDesignerSdk(
+      "pcb-view-state-autolayout",
+    );
+    // New rows carry no persisted config (frontend seeds from its default).
+    const fresh = await sdk.getPcbProjection(designId);
+    expect(fresh?.board.viewState?.autoLayoutConfig).toBeUndefined();
+
+    const result = await sdk.dispatchCommand(
+      designId,
+      envelope(designId, "cmd-vs-autolayout", 0, {
+        type: "pcb_set_view_state",
+        patch: {
+          autoLayoutConfig: {
+            runPlace: true,
+            runRoute: false,
+            preset: "custom",
+            effort: "quality",
+            place: {
+              allowRotate: false,
+              allowFlip: true,
+              moveConnectors: true,
+              respectExistingTraces: false,
+              targetUtilization: 0.85,
+            },
+            route: {
+              geometryMode: "manhattan-90",
+              allowVias: false,
+              maxViasPerNet: 3,
+              serializePours: "auto",
+            },
+          },
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+
+    const projection = await sdk.getPcbProjection(designId);
+    const cfg = projection?.board.viewState?.autoLayoutConfig;
+    expect(cfg).toBeDefined();
+    expect(cfg?.runPlace).toBe(true);
+    expect(cfg?.runRoute).toBe(false);
+    expect(cfg?.preset).toBe("custom");
+    expect(cfg?.effort).toBe("quality");
+    expect(cfg?.place.allowRotate).toBe(false);
+    expect(cfg?.place.moveConnectors).toBe(true);
+    expect(cfg?.place.targetUtilization).toBe(0.85);
+    expect(cfg?.route.geometryMode).toBe("manhattan-90");
+    expect(cfg?.route.allowVias).toBe(false);
+    expect(cfg?.route.maxViasPerNet).toBe(3);
+    expect(cfg?.route.serializePours).toBe("auto");
   });
 
   test("pcb_set_design_rules persists rules, net classes, thickness through reload", async () => {

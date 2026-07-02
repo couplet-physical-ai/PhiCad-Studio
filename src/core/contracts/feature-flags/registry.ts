@@ -56,14 +56,10 @@ export const FEATURE_FLAGS = {
     availability: "dev",
     description: "Comment cloud sync (local comments are unaffected)",
   },
-  "cloud.autoroute": {
-    availability: "dev",
-    description: "Cloud auto-router (BoardSnapshot → trace/via proposals)",
-  },
-  "cloud.autoplace": {
+  "cloud.autolayout": {
     availability: "dev",
     description:
-      "Cloud auto-place (BoardSnapshot → move/rotate/flip proposals)",
+      "Cloud Auto-Layout (unified auto-place + auto-route: BoardSnapshot → placement/trace/via proposals)",
   },
   "cloud.library": {
     availability: "dev",
@@ -98,7 +94,7 @@ export function evaluateFeatureFlag(
 
 /**
  * Env-var key for a flag's override, shared by both runtime adapters (only the
- * prefix differs): "cloud.autoroute" → "CLOUD_AUTOROUTE".
+ * prefix differs): "cloud.autolayout" → "CLOUD_AUTOLAYOUT".
  */
 export function featureFlagEnvSuffix(name: FeatureFlagName): string {
   return name.toUpperCase().replace(/[.-]/g, "_");

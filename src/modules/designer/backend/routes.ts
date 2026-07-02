@@ -97,6 +97,7 @@ import { runErc } from "./erc/erc-engine";
 import { buildBoardSnapshot } from "./pcb/board-snapshot";
 import { cancelRoute, getRouteStatus, submitRoute } from "./autoroute/client";
 import { cancelPlace, getPlaceStatus, submitPlace } from "./autoplace/client";
+import { getAutoLayoutVersion, resolveSerializePours } from "./autolayout/client";
 import { asNumber, asRecord, asString } from "./value-guards";
 
 function success<T>(data: T, status = 200): Response {
@@ -2416,8 +2417,8 @@ export function registerRoutes(
   // ── Cloud auto-router: submit snapshot → review ops → apply ─────────────
   // Proxies the user's GoTrue bearer to the routing service; the desktop stays
   // the authoritative DRC engine (re-validated on apply). Gated dev-only via
-  // the `cloud.autoroute` feature flag — the routes 404 in release builds.
-  if (isFeatureEnabled("cloud.autoroute")) {
+  // the `cloud.autolayout` feature flag — the routes 404 in release builds.
+  if (isFeatureEnabled("cloud.autolayout")) {
     router.post("/designs/:designId/autoroute", async ({ params, req }) => {
       const designId = params.getOrThrow("designId");
       const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
@@ -2437,11 +2438,28 @@ export function registerRoutes(
         Array.isArray(v)
           ? v.filter((x): x is string => typeof x === "string")
           : undefined;
+      // An explicit caller request always wins. Otherwise, negotiate against the
+      // deployed service's advertised capability (GET /v1/version,
+      // capabilities.pours.accepted — Phase 5 pour-aware routing) rather than
+      // hardcoding a producer-side default: the service deploys independently of
+      // the desktop and its version can lag behind what shipped here, so a
+      // hardcoded `true` could send pours to a deployment that doesn't consume
+      // them yet. Fails safe to `false` (identical to pre-WP7 behavior) if the
+      // service is unreachable, slow, or simply doesn't advertise the capability.
+      // (Autoplace does NOT get this treatment: the place engine never consumes
+      // `pours` — see app/contracts/capabilities.py PLACE_IGNORED_TOP — so there's
+      // nothing to negotiate there.)
+      const requestedPours = body.serializePours;
+      const version =
+        requestedPours === true || requestedPours === false
+          ? null // explicit request — skip the network round-trip entirely
+          : await getAutoLayoutVersion();
+      const serializePours = resolveSerializePours(requestedPours, version);
       const { snapshot, warnings } = buildBoardSnapshot(projection, {
         routeOptions: body.options,
         routableNetClassIds: asStringArray(body.routableNetClassIds),
         excludedNetIds: asStringArray(body.excludedNetIds),
-        serializePours: body.serializePours === true,
+        serializePours,
       });
       const submitted = await submitRoute(snapshot, bearer);
       return success({ ...submitted, warnings });
@@ -2513,13 +2531,13 @@ export function registerRoutes(
         return success({ appliedCount, failures, drc });
       },
     );
-  } // end cloud.autoroute gate
+  } // end cloud.autolayout gate (route)
 
   // ── Cloud auto-place: submit snapshot → review move/rotate/flip ops → apply ──
   // Same proxy shape as auto-router; the desktop stays the authoritative DRC engine
   // (re-validated on apply). Runs BEFORE the autorouter. Gated dev-only via the
-  // `cloud.autoplace` feature flag — the routes 404 in release builds.
-  if (isFeatureEnabled("cloud.autoplace")) {
+  // `cloud.autolayout` feature flag — the routes 404 in release builds.
+  if (isFeatureEnabled("cloud.autolayout")) {
     router.post("/designs/:designId/autoplace", async ({ params, req }) => {
       const designId = params.getOrThrow("designId");
       const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
@@ -2630,7 +2648,7 @@ export function registerRoutes(
         return success({ appliedCount, failures, drc });
       },
     );
-  } // end cloud.autoplace gate
+  } // end cloud.autolayout gate (place)
 
   // Project cloud sync: link / status-read / unlink. Gated dev-only via the
   // `cloud.sync` feature flag — these routes 404 in release builds.

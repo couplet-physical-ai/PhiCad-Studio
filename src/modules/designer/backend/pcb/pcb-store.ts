@@ -27,6 +27,7 @@ import type {
   PcbViewSide,
   PcbViewState,
   PcbZone,
+  AutoLayoutConfig,
 } from "../../../../sdks/designer";
 import { pcbEntities } from "../schema";
 import { asNumber, asRecord, asString } from "../value-guards";
@@ -359,6 +360,71 @@ function parsePadConnection(value: unknown): "solid" | "thermal" | undefined {
       : undefined;
 }
 
+function parseBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+/**
+ * Whitelist-parse a persisted `AutoLayoutConfig` (stored inside the view-state
+ * JSON). Malformed / partial rows return `undefined` so the frontend seeds from
+ * its global default rather than a half-formed object.
+ */
+function parseAutoLayoutConfig(value: unknown): AutoLayoutConfig | undefined {
+  const r = asRecord(value);
+  if (!r) return undefined;
+  const place = asRecord(r.place);
+  const route = asRecord(r.route);
+  if (!place || !route) return undefined;
+  const preset =
+    r.preset === "fast" ||
+    r.preset === "balanced" ||
+    r.preset === "quality" ||
+    r.preset === "custom"
+      ? r.preset
+      : undefined;
+  const effort =
+    r.effort === "fast" || r.effort === "balanced" || r.effort === "quality"
+      ? r.effort
+      : undefined;
+  if (!preset || !effort) return undefined;
+  const util =
+    typeof place.targetUtilization === "number" &&
+    Number.isFinite(place.targetUtilization)
+      ? Math.max(0, Math.min(1, place.targetUtilization))
+      : 0.7;
+  const pours = route.serializePours;
+  const serializePours: boolean | "auto" =
+    pours === true || pours === false ? pours : "auto";
+  const maxVias =
+    typeof route.maxViasPerNet === "number"
+      ? route.maxViasPerNet
+      : route.maxViasPerNet === null
+        ? null
+        : undefined;
+  return {
+    runPlace: parseBool(r.runPlace, true),
+    runRoute: parseBool(r.runRoute, true),
+    preset,
+    effort,
+    place: {
+      allowRotate: parseBool(place.allowRotate, true),
+      allowFlip: parseBool(place.allowFlip, true),
+      moveConnectors: parseBool(place.moveConnectors, false),
+      respectExistingTraces: parseBool(place.respectExistingTraces, true),
+      targetUtilization: util,
+    },
+    route: {
+      geometryMode:
+        route.geometryMode === "manhattan-90"
+          ? "manhattan-90"
+          : "manhattan-45",
+      allowVias: parseBool(route.allowVias, true),
+      maxViasPerNet: maxVias,
+      serializePours,
+    },
+  };
+}
+
 function parseViewState(value: unknown): PcbViewState {
   const record = asRecord(value);
   const defaults = createDefaultPcbViewState();
@@ -379,6 +445,7 @@ function parseViewState(value: unknown): PcbViewState {
           : defaults.ratsnestVisible,
     drcIgnoredRuleClasses: parseDrcRuleClasses(record.drcIgnoredRuleClasses),
     drcWaivedViolationIds: parseStringArray(record.drcWaivedViolationIds),
+    autoLayoutConfig: parseAutoLayoutConfig(record.autoLayoutConfig),
   };
 }
 
@@ -413,6 +480,10 @@ function mergeViewState(
     drcWaivedViolationIds: patch.drcWaivedViolationIds
       ? parseStringArray(patch.drcWaivedViolationIds)
       : (current.drcWaivedViolationIds ?? []),
+    autoLayoutConfig:
+      patch.autoLayoutConfig !== undefined
+        ? parseAutoLayoutConfig(patch.autoLayoutConfig)
+        : current.autoLayoutConfig,
   };
 }
 

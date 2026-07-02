@@ -7,7 +7,7 @@
  * the frontend, so it is excluded from the renderer bundle.
  *
  * Gate = not a production build, unless overridden by
- * `OPENPCB_FEATURE_<SUFFIX>` (e.g. `OPENPCB_FEATURE_CLOUD_AUTOROUTE=1`).
+ * `OPENPCB_FEATURE_<SUFFIX>` (e.g. `OPENPCB_FEATURE_CLOUD_AUTOLAYOUT=1`).
  * `NODE_ENV` is "production" only in packaged Electron builds, so dev and test
  * runtimes keep gated features on.
  */

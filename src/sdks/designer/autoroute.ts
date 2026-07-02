@@ -80,6 +80,13 @@ export interface SnapshotPlacement {
   positionMm: PcbPointMm;
   rotationDeg: number;
   mirrored: boolean;
+  /**
+   * Library footprint mount type, when resolvable. AUTHORITATIVE for cloud-auto-place's
+   * flip-eligibility/THT logic when present (overrides its refdes-prefix heuristic);
+   * omitted when the footprint's `mountType` doesn't map cleanly (null, "virtual",
+   * "unknown", or free text) — the service falls back to its own heuristic then.
+   */
+  mountType?: "smd" | "tht";
 }
 
 export interface PadOutline {
@@ -403,5 +410,16 @@ export interface VersionResponse {
     endpoints?: string[];
     viaSpans: string[];
     engineImplemented: boolean;
+    /**
+     * Route-engine pour support (app/contracts/capabilities.py `capabilities_static()`).
+     * `accepted`: the route engine consumes a `pours` block if sent (Phase 5 pour-aware
+     * routing). Absent on older/unreachable-version-unknown deployments — treat as
+     * `false`. See autolayout/client.ts + routes.ts's autoroute handler.
+     */
+    pours?: {
+      accepted?: boolean;
+      routeAware?: boolean;
+      producerDefault?: string;
+    };
   };
 }

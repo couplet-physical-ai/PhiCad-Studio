@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AutoLayoutConfig,
   DesignerCommand,
   DesignerDispatchResult,
   DrcRuleClass,
@@ -135,6 +136,8 @@ interface PcbViewStoreActions {
   setDrcRuleClassIgnored(ruleClass: DrcRuleClass, ignored: boolean): void;
   /** Toggle a single DRC violation's waiver by its stable id (persisted). */
   toggleDrcWaived(violationId: string): void;
+  /** Persist the per-design Auto-Layout modal config (debounced write). */
+  setAutoLayoutConfig(config: AutoLayoutConfig): void;
 }
 
 type Store = PcbViewStoreState & PcbViewStoreActions;
@@ -454,6 +457,11 @@ export const usePcbViewStore = create<Store>((set, get) => ({
       viewState: { ...s.viewState, drcWaivedViolationIds: next },
     }));
     persistPatch({ drcWaivedViolationIds: next });
+  },
+
+  setAutoLayoutConfig(config) {
+    set((s) => ({ viewState: { ...s.viewState, autoLayoutConfig: config } }));
+    persistPatch({ autoLayoutConfig: config });
   },
 }));
 

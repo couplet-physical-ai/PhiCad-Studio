@@ -349,6 +349,47 @@ export type PcbLayerPreset =
   | "assembly";
 
 /**
+ * Curated cloud-auto-place knobs the Auto-Layout modal exposes — a subset of
+ * the service `PlaceOptions` (weights + subset mode intentionally omitted).
+ */
+export interface AutoLayoutPlaceConfig {
+  allowRotate: boolean;
+  allowFlip: boolean;
+  moveConnectors: boolean;
+  respectExistingTraces: boolean;
+  /** Board fill target, 0..1. */
+  targetUtilization: number;
+}
+
+/**
+ * Curated cloud-auto-route knobs the Auto-Layout modal exposes — a subset of
+ * the service `RouteOptions`. `serializePours: "auto"` omits the flag from the
+ * request so the backend negotiates it against the service capability.
+ */
+export interface AutoLayoutRouteConfig {
+  geometryMode: PcbTraceSegmentMode;
+  allowVias: boolean;
+  maxViasPerNet?: number | null;
+  serializePours?: boolean | "auto";
+}
+
+/**
+ * Persisted per-design Auto-Layout config: which stages run, the chosen preset
+ * + effort tier, and the curated place/route knobs. Stored inside
+ * `board_settings.viewState` JSON (no migration). Additive-optional on
+ * `PcbViewState`; absent rows seed from the localStorage global default or the
+ * frontend `DEFAULT_AUTOLAYOUT_CONFIG`.
+ */
+export interface AutoLayoutConfig {
+  runPlace: boolean;
+  runRoute: boolean;
+  preset: "fast" | "balanced" | "quality" | "custom";
+  effort: "fast" | "balanced" | "quality";
+  place: AutoLayoutPlaceConfig;
+  route: AutoLayoutRouteConfig;
+}
+
+/**
  * Per-design persisted display state. Carries everything the layer panel /
  * canvas chrome needs to re-render identically on reload. Additive: missing
  * fields fall back to defaults (no destructive migration).
@@ -393,6 +434,12 @@ export interface PcbViewState {
    * Additive; absent = no waivers.
    */
   drcWaivedViolationIds?: string[];
+  /**
+   * Persisted Auto-Layout modal config (place/route stage toggles, preset,
+   * curated knobs). Additive; absent = seed from the localStorage global
+   * default or `DEFAULT_AUTOLAYOUT_CONFIG`.
+   */
+  autoLayoutConfig?: AutoLayoutConfig;
 }
 
 export interface PcbPointMm {

@@ -99,7 +99,10 @@ import { PcbTopToolbar } from "./PcbTopToolbar";
 import { PcbExportDialog } from "./PcbExportDialog";
 import { PcbAutorouteDialog } from "./PcbAutorouteDialog";
 import { PcbAutoplaceDialog } from "./PcbAutoplaceDialog";
+import { PcbAutoLayoutDialog } from "./PcbAutoLayoutDialog";
 import { PcbPlacePreviewBar } from "./PcbPlacePreviewBar";
+import { useAutoLayoutRun } from "./autolayout/useAutoLayoutRun";
+import { seedConfig, writeGlobalDefaultConfig } from "./autolayout/config";
 import {
   applyTransformsToPlacements,
   buildFromMarkers,
@@ -257,12 +260,10 @@ interface PcbCanvasProps {
   moduleId: string;
   designId: string | null;
   gridVisible?: boolean;
-  /** Login-only cloud auth headers (bearer) for the auto-router. */
+  /** Login-only cloud auth headers (bearer) for the auto-layout service. */
   cloudHeaders?: CloudHeadersProvider;
-  /** Logged in + cloud configured → show the Autoroute button. */
-  autorouteEnabled?: boolean;
-  /** Logged in + cloud configured → show the Auto-place button. */
-  autoplaceEnabled?: boolean;
+  /** Logged in + cloud configured → show the unified Auto-Layout button. */
+  autoLayoutEnabled?: boolean;
   dispatchCommand: (
     command: DesignerCommand,
   ) => Promise<DesignerDispatchResult>;
@@ -473,11 +474,21 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   );
   const [cursorMm, setCursorMmState] = useState<PcbPointMm | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
-  const [autorouteDialogOpen, setAutorouteDialogOpen] = useState(false);
+  const [autoLayoutConfigOpen, setAutoLayoutConfigOpen] = useState(false);
   const [autoroutePreview, setAutoroutePreview] = useState<
     AutoroutePreviewTrace[] | null
   >(null);
-  const [autoplaceDialogOpen, setAutoplaceDialogOpen] = useState(false);
+  // Unified Auto-Layout run: sequences place → route reusing the two dialogs +
+  // the place-preview infra below as review surfaces.
+  const autoLayout = useAutoLayoutRun();
+  const persistedAutoLayoutConfig = usePcbViewStore(
+    (s) => s.viewState.autoLayoutConfig,
+  );
+  const setAutoLayoutConfig = usePcbViewStore((s) => s.setAutoLayoutConfig);
+  const seededAutoLayoutConfig = useMemo(
+    () => seedConfig(persistedAutoLayoutConfig),
+    [persistedAutoLayoutConfig],
+  );
   // Interactive, non-destructive auto-place preview: the result envelope's proposed poses
   // are held locally and the user drags/rotates/flips to adjust before Accept (see hook).
   const placePreview = usePcbPlacePreview();
@@ -516,7 +527,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       );
       setPlacePreviewPayload(envelope.payload);
       setPlaceAppliedNote(null);
-      setAutoplaceDialogOpen(false);
+      // The autoplace dialog auto-hides now that the preview is active (its
+      // `open` is gated on `!previewActive`); the ghost preview bar takes over.
     },
     [beginPlacePreview, workspace.projection?.placements],
   );
@@ -525,7 +537,9 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     clearPlacePreview();
     setPlacePreviewPayload(null);
     setPlaceApplying(false);
-  }, [clearPlacePreview]);
+    // Rejecting the placement ends the whole Auto-Layout run (route won't chain).
+    autoLayout.finish();
+  }, [clearPlacePreview, autoLayout]);
   // Diff the adjusted preview vs. the captured originals → reuse the existing apply
   // endpoint (per-op commands + one DRC pass), then reload and clear the preview. Plain
   // function so the click closure always reads the latest transforms/originals.
@@ -559,6 +573,9 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       });
       clearPlacePreview();
       setPlacePreviewPayload(null);
+      // Placement applied + board refreshed — chain to routing if the run
+      // requested it (route submits rebuild the snapshot from the placed board).
+      autoLayout.placeApplied();
     } catch (e) {
       setPlaceAppliedNote({
         text: e instanceof Error ? e.message : String(e),
@@ -3496,53 +3513,53 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             open={exportDialogOpen}
             onClose={() => setExportDialogOpen(false)}
           />
-          {props.autorouteEnabled ? (
+          {props.autoLayoutEnabled ? (
             <>
-              <button
-                type="button"
-                onClick={() => setAutorouteDialogOpen(true)}
-                title="Auto-route unrouted nets via the cloud auto-router"
-                data-testid="pcb-autoroute-button"
-                className="absolute bottom-12 right-3 z-20 inline-flex items-center gap-1.5 rounded-md border border-violet-300 bg-white/95 px-2.5 py-1 text-xs font-medium text-violet-700 shadow-sm backdrop-blur hover:bg-violet-50 dark:border-violet-800 dark:bg-slate-900/90 dark:text-violet-300 dark:hover:bg-slate-800"
-              >
-                Autoroute…
-              </button>
-              <PcbAutorouteDialog
-                backendURL={props.backendURL}
-                moduleId={props.moduleId}
-                designId={props.designId}
-                cloudHeaders={props.cloudHeaders}
-                open={autorouteDialogOpen}
-                onClose={() => {
-                  setAutorouteDialogOpen(false);
-                  setAutoroutePreview(null);
-                }}
-                onApplied={() => void workspace.refresh()}
-                onPreviewChange={setAutoroutePreview}
-              />
-            </>
-          ) : null}
-          {props.autoplaceEnabled ? (
-            <>
-              {!previewActive ? (
+              {autoLayout.stage === "idle" && !previewActive ? (
                 <button
                   type="button"
-                  onClick={() => setAutoplaceDialogOpen(true)}
-                  title="Auto-place components via the cloud auto-placer (run before routing)"
-                  data-testid="pcb-autoplace-button"
-                  className="absolute bottom-20 right-3 z-20 inline-flex items-center gap-1.5 rounded-md border border-violet-300 bg-white/95 px-2.5 py-1 text-xs font-medium text-violet-700 shadow-sm backdrop-blur hover:bg-violet-50 dark:border-violet-800 dark:bg-slate-900/90 dark:text-violet-300 dark:hover:bg-slate-800"
+                  onClick={() => setAutoLayoutConfigOpen(true)}
+                  title="Auto-place and/or auto-route the board via the cloud (configurable)"
+                  data-testid="pcb-autolayout-button"
+                  className="absolute bottom-12 right-3 z-20 inline-flex items-center gap-1.5 rounded-md border border-violet-300 bg-white/95 px-2.5 py-1 text-xs font-medium text-violet-700 shadow-sm backdrop-blur hover:bg-violet-50 dark:border-violet-800 dark:bg-slate-900/90 dark:text-violet-300 dark:hover:bg-slate-800"
                 >
-                  Auto-place…
+                  Auto-Layout…
                 </button>
               ) : null}
+              <PcbAutoLayoutDialog
+                open={autoLayoutConfigOpen}
+                config={seededAutoLayoutConfig}
+                onClose={() => setAutoLayoutConfigOpen(false)}
+                onRun={(cfg) => {
+                  setAutoLayoutConfig(cfg);
+                  writeGlobalDefaultConfig(cfg);
+                  setAutoLayoutConfigOpen(false);
+                  autoLayout.start(cfg);
+                }}
+              />
               <PcbAutoplaceDialog
                 backendURL={props.backendURL}
                 moduleId={props.moduleId}
                 designId={props.designId}
                 cloudHeaders={props.cloudHeaders}
-                open={autoplaceDialogOpen}
-                onClose={() => setAutoplaceDialogOpen(false)}
+                open={autoLayout.stage === "place" && !previewActive}
+                request={autoLayout.placeRequest}
+                onClose={() => autoLayout.finish()}
                 onPreviewResult={handlePreviewResult}
+              />
+              <PcbAutorouteDialog
+                backendURL={props.backendURL}
+                moduleId={props.moduleId}
+                designId={props.designId}
+                cloudHeaders={props.cloudHeaders}
+                open={autoLayout.stage === "route"}
+                request={autoLayout.routeRequest}
+                onClose={() => {
+                  setAutoroutePreview(null);
+                  autoLayout.finish();
+                }}
+                onApplied={() => void workspace.refresh()}
+                onPreviewChange={setAutoroutePreview}
               />
               {previewActive ? (
                 <PcbPlacePreviewBar

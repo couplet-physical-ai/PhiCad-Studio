@@ -32,7 +32,7 @@ describe("evaluateFeatureFlag", () => {
 
 describe("featureFlagEnvSuffix", () => {
   test("uppercases and replaces separators", () => {
-    expect(featureFlagEnvSuffix("cloud.autoroute")).toBe("CLOUD_AUTOROUTE");
+    expect(featureFlagEnvSuffix("cloud.autolayout")).toBe("CLOUD_AUTOLAYOUT");
   });
 });
 
@@ -51,33 +51,33 @@ describe("parseOverride", () => {
 
 describe("backend isFeatureEnabled", () => {
   const prevNodeEnv = process.env.NODE_ENV;
-  const prevOverride = process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+  const prevOverride = process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT;
 
   afterEach(() => {
     if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = prevNodeEnv;
     if (prevOverride === undefined)
-      delete process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
-    else process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE = prevOverride;
+      delete process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT;
+    else process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT = prevOverride;
   });
 
   test("cloud flag enabled in dev, disabled in production", () => {
-    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT;
     process.env.NODE_ENV = "development";
-    expect(isFeatureEnabled("cloud.autoroute")).toBe(true);
+    expect(isFeatureEnabled("cloud.autolayout")).toBe(true);
     process.env.NODE_ENV = "production";
-    expect(isFeatureEnabled("cloud.autoroute")).toBe(false);
+    expect(isFeatureEnabled("cloud.autolayout")).toBe(false);
   });
 
   test("non-production NODE_ENV (e.g. test) keeps cloud flags on", () => {
-    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE;
+    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT;
     process.env.NODE_ENV = "test";
-    expect(isFeatureEnabled("cloud.autoroute")).toBe(true);
+    expect(isFeatureEnabled("cloud.autolayout")).toBe(true);
   });
 
   test("env override force-enables in production", () => {
     process.env.NODE_ENV = "production";
-    process.env.OPENPCB_FEATURE_CLOUD_AUTOROUTE = "1";
-    expect(isFeatureEnabled("cloud.autoroute")).toBe(true);
+    process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT = "1";
+    expect(isFeatureEnabled("cloud.autolayout")).toBe(true);
   });
 });

@@ -3,7 +3,7 @@
  *
  * Evaluates the shared registry against the Vite build mode
  * (`import.meta.env.DEV`) with an optional per-flag env override
- * `VITE_FEATURE_<SUFFIX>` (e.g. `VITE_FEATURE_CLOUD_AUTOROUTE=1`).
+ * `VITE_FEATURE_<SUFFIX>` (e.g. `VITE_FEATURE_CLOUD_AUTOLAYOUT=1`).
  *
  * Values are static per build/runtime — `useFeatureFlag` is a thin wrapper so
  * callers read it like any other gate (mirrors `useAuth().enabled`).

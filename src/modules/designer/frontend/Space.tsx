@@ -299,8 +299,7 @@ function DesignerSpaceInner({
   const projectSyncEnabled = useCloudPrefs((s) => s.projectSyncEnabled);
   // Per-feature cloud gates (dev-only by default — see @/feature-flags).
   const syncFeatureEnabled = useFeatureFlag("cloud.sync");
-  const autorouteFeatureEnabled = useFeatureFlag("cloud.autoroute");
-  const autoplaceFeatureEnabled = useFeatureFlag("cloud.autoplace");
+  const autoLayoutFeatureEnabled = useFeatureFlag("cloud.autolayout");
   const presenceFeatureEnabled = useFeatureFlag("cloud.presence");
   const commentsFeatureEnabled = useFeatureFlag("cloud.comments");
   const designBrowserFeatureEnabled = useFeatureFlag("cloud.designBrowser");
@@ -323,10 +322,10 @@ function DesignerSpaceInner({
     syncFeatureEnabled,
     session?.access_token,
   ]);
-  // Auto-router only needs a valid login (the snapshot is self-contained; the
+  // Auto-Layout only needs a valid login (the snapshot is self-contained; the
   // service is stateless) — NOT project sync. Separate from `cloudHeaders` so a
-  // user with sync off can still autoroute.
-  const autorouteCloudHeaders = useMemo(() => {
+  // user with sync off can still run auto-place/auto-route.
+  const autoLayoutCloudHeaders = useMemo(() => {
     if (!cloudEnabled || !session) return undefined;
     return () => {
       const token = session.access_token;
@@ -337,12 +336,10 @@ function DesignerSpaceInner({
       };
     };
   }, [cloudEnabled, session]);
-  const autorouteEnabled =
-    cloudEnabled && Boolean(session) && autorouteFeatureEnabled;
-  // Auto-place mirrors auto-router gating: a valid login is enough (self-contained
-  // snapshot, stateless service) — project sync is NOT required.
-  const autoplaceEnabled =
-    cloudEnabled && Boolean(session) && autoplaceFeatureEnabled;
+  // A valid login is enough (self-contained snapshot, stateless service) —
+  // project sync is NOT required.
+  const autoLayoutEnabled =
+    cloudEnabled && Boolean(session) && autoLayoutFeatureEnabled;
   const { state, actions } = useDesignerWorkspace({
     backendURL,
     moduleId,
@@ -1172,9 +1169,8 @@ function DesignerSpaceInner({
                   moduleId={moduleId}
                   designId={state.selectedDesignId}
                   gridVisible={gridVisible}
-                  cloudHeaders={autorouteCloudHeaders}
-                  autorouteEnabled={autorouteEnabled}
-                  autoplaceEnabled={autoplaceEnabled}
+                  cloudHeaders={autoLayoutCloudHeaders}
+                  autoLayoutEnabled={autoLayoutEnabled}
                   dispatchCommand={actions.dispatchCommand}
                   notifyExternalRevisionBump={
                     actions.notifyExternalRevisionBump

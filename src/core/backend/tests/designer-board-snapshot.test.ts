@@ -13,9 +13,11 @@ import type {
   DesignerPcbProjection,
   PcbBoardSettings,
   PcbFreeHole,
+  PcbFreePad,
   PcbPointMm,
   PcbPlacedPart,
   PcbTrace,
+  PcbVia,
   PcbZone,
   PourIsland,
   RatsnestSegment,
@@ -75,6 +77,7 @@ function placement(
   id: string,
   pads: FootprintRenderSourcePad[],
   positionMm = { x: 0, y: 0 },
+  mountType: string | null = null,
 ): PcbPlacedPart {
   return {
     id,
@@ -88,7 +91,7 @@ function placement(
     footprint: {
       footprintId: "fp",
       name: "FP",
-      mountType: null,
+      mountType,
       sourceHash: null,
       preview: {
         kind: "footprint",
@@ -101,6 +104,42 @@ function placement(
         warnings: [],
       },
     },
+  };
+}
+
+function freePad(overrides: Partial<PcbFreePad> = {}): PcbFreePad {
+  return {
+    id: "fp1",
+    centerMm: { x: 0, y: 0 },
+    rotationDeg: 0,
+    padType: "smd",
+    shape: "circle",
+    widthMm: 1,
+    heightMm: 1,
+    drillMm: null,
+    layer: "F.Cu",
+    netId: null,
+    solderMaskExpansionMm: null,
+    solderPasteExpansionMm: null,
+    lockedAt: null,
+    ...overrides,
+  };
+}
+
+function via(overrides: Partial<PcbVia> = {}): PcbVia {
+  return {
+    id: "v1",
+    netId: "net_a",
+    netClassId: "default",
+    centerMm: { x: 0, y: 0 },
+    diameterMm: 0.6,
+    drillMm: 0.3,
+    fromLayer: "F.Cu",
+    toLayer: "B.Cu",
+    viaType: "through",
+    protection: "tented",
+    provenance: "route",
+    ...overrides,
   };
 }
 
@@ -376,5 +415,118 @@ describe("buildBoardSnapshot", () => {
         }),
       ).snapshot;
     expect(JSON.stringify(make())).toBe(JSON.stringify(make()));
+  });
+
+  test("stamps schemaVersion on every snapshot", () => {
+    const { snapshot } = buildBoardSnapshot(projection());
+    expect(snapshot.schemaVersion).toBe("1.0");
+  });
+
+  test("NPTH free pad emits a freeHole, no padOutline (data-loss fix)", () => {
+    const proj = projection({
+      freePads: [
+        freePad({ id: "h1", padType: "hole", drillMm: 0.8, centerMm: { x: 3, y: 4 } }),
+      ],
+    });
+    const { snapshot } = buildBoardSnapshot(proj);
+    expect(snapshot.padOutlines).toHaveLength(0);
+    expect(snapshot.freeHoles).toHaveLength(1);
+    expect(snapshot.freeHoles![0]).toEqual({
+      id: "free:h1",
+      centerMm: { x: 3, y: 4 },
+      drillMm: 0.8,
+    });
+  });
+
+  test("oblong free hole degrades drillMm to the slot length, with a warning", () => {
+    const proj = projection({
+      freeHoles: [
+        freeHole({
+          id: "h1",
+          drillMm: 0.8,
+          drillSlot: { lengthMm: 2, widthMm: 0.8, angleDeg: 0 },
+        }),
+      ],
+    });
+    const { snapshot, warnings } = buildBoardSnapshot(proj);
+    expect(snapshot.freeHoles![0]!.drillMm).toBe(2);
+    expect(warnings.some((w) => w.includes("h1") && w.includes("oblong"))).toBe(true);
+  });
+
+  test("round free hole (no slot, or slot not longer) keeps drillMm unchanged, no warning", () => {
+    const proj = projection({
+      freeHoles: [freeHole({ id: "h1", drillMm: 0.8 })],
+      ratsnest: [rats("net_a")],
+    });
+    const { snapshot, warnings } = buildBoardSnapshot(proj);
+    expect(snapshot.freeHoles![0]!.drillMm).toBe(0.8);
+    expect(warnings).toEqual([]);
+  });
+
+  test("oblong NPTH free pad also degrades drillMm to the slot length, with a warning", () => {
+    const proj = projection({
+      freePads: [
+        freePad({
+          id: "h1",
+          padType: "hole",
+          drillMm: 0.5,
+          drillSlot: { lengthMm: 1.5, widthMm: 0.5, angleDeg: 90 },
+        }),
+      ],
+    });
+    const { snapshot, warnings } = buildBoardSnapshot(proj);
+    expect(snapshot.freeHoles![0]!.drillMm).toBe(1.5);
+    expect(warnings.some((w) => w.includes("free:h1") && w.includes("oblong"))).toBe(true);
+  });
+
+  test("mountType projects smd/tht from library metadata, omits unrecognized/null", () => {
+    const proj = projection({
+      placements: [
+        placement("U1", [smdPad("1", { x: 0, y: 0 })], { x: 0, y: 0 }, "smd"),
+        placement("U2", [smdPad("1", { x: 0, y: 0 })], { x: 5, y: 0 }, "through_hole"),
+        placement("U3", [smdPad("1", { x: 0, y: 0 })], { x: 10, y: 0 }, "SMD"),
+        placement("U4", [smdPad("1", { x: 0, y: 0 })], { x: 15, y: 0 }, "virtual"),
+        placement("U5", [smdPad("1", { x: 0, y: 0 })], { x: 20, y: 0 }, null),
+      ],
+    });
+    const { snapshot } = buildBoardSnapshot(proj);
+    const byId = new Map(snapshot.placements!.map((p) => [p.id, p]));
+    expect(byId.get("U1")?.mountType).toBe("smd");
+    expect(byId.get("U2")?.mountType).toBe("tht");
+    expect(byId.get("U3")?.mountType).toBe("smd"); // case-insensitive
+    expect(byId.get("U4")?.mountType).toBeUndefined(); // "virtual" unrecognized
+    expect(byId.get("U5")?.mountType).toBeUndefined(); // null
+    expect(Object.hasOwn(byId.get("U4")!, "mountType")).toBe(false);
+    expect(Object.hasOwn(byId.get("U5")!, "mountType")).toBe(false);
+  });
+
+  test("a blind/buried/micro via emits a warning; serialized as an unchanged through-span obstacle", () => {
+    const proj = projection({
+      vias: [via({ id: "v1", viaType: "blind", fromLayer: "F.Cu", toLayer: "In1.Cu" })],
+      board: board({ layerCount: 4 }),
+    });
+    const { snapshot, warnings } = buildBoardSnapshot(proj);
+    expect(snapshot.vias).toHaveLength(1);
+    const emitted = snapshot.vias![0]!;
+    expect(emitted).toEqual({
+      id: "v1",
+      netId: "net_a",
+      centerMm: { x: 0, y: 0 },
+      diameterMm: 0.6,
+      drillMm: 0.3,
+      fromLayer: "F.Cu",
+      toLayer: "In1.Cu",
+      isHoleOnly: false,
+    });
+    expect(warnings.some((w) => w.includes("v1") && w.includes("blind"))).toBe(true);
+  });
+
+  test("a through via emits no warning", () => {
+    const proj = projection({
+      vias: [via({ id: "v1", viaType: "through" })],
+      ratsnest: [rats("net_a")],
+    });
+    const { warnings } = buildBoardSnapshot(proj);
+    expect(warnings).toEqual([]);
   });
 });

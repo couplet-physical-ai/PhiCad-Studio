@@ -209,8 +209,8 @@ General per-feature build-target gate, separate from the whole-module `availabil
 
 - **Registry (edit here):** `src/core/contracts/feature-flags/registry.ts` — each flag is `{ availability: "all" | "dev" }` (reuses the module-manifest vocabulary). `"dev"` = enabled in dev, hidden from release builds. Graduate a feature to prod by flipping to `"all"`.
 - **Adapters:** frontend `src/core/frontend/src/feature-flags` (`isFeatureEnabled` / `useFeatureFlag`, uses `import.meta.env.DEV`); backend `src/core/contracts/feature-flags/backend` (`isFeatureEnabled`, uses `process.env.NODE_ENV`; module backends import this — `core/backend/feature-flags` re-exports it). Non-prod `NODE_ENV`/`import.meta.env.DEV` (incl. tests) ⇒ flags on.
-- **Override (any build, e.g. QA):** `VITE_FEATURE_<FLAG>` (frontend) / `OPENPCB_FEATURE_<FLAG>` (backend), value `1/true/on` or `0/false/off`. `<FLAG>` = name upper-cased, `.`→`_` (`cloud.autoroute` → `CLOUD_AUTOROUTE`).
-- **Current flags:** all cloud features (`cloud.auth` foundation + `cloud.{sync,designBrowser,presence,comments,autoroute,library,componentSearch,assistantProviders}`), all `dev`-only. `cloud.auth` is wired at the `readCloudConfig().enabled` chokepoint; per-feature flags gate their own UI surfaces + backend routes.
+- **Override (any build, e.g. QA):** `VITE_FEATURE_<FLAG>` (frontend) / `OPENPCB_FEATURE_<FLAG>` (backend), value `1/true/on` or `0/false/off`. `<FLAG>` = name upper-cased, `.`→`_` (`cloud.autolayout` → `CLOUD_AUTOLAYOUT`).
+- **Current flags:** all cloud features (`cloud.auth` foundation + `cloud.{sync,designBrowser,presence,comments,autolayout,library,componentSearch,assistantProviders}`), all `dev`-only. `cloud.autolayout` gates the unified Auto-Layout button/modal + both the `/autoroute` and `/autoplace` backend routes (replaced the former separate `cloud.autoroute` + `cloud.autoplace`). `cloud.auth` is wired at the `readCloudConfig().enabled` chokepoint; per-feature flags gate their own UI surfaces + backend routes.
 
 ## TypeScript
 

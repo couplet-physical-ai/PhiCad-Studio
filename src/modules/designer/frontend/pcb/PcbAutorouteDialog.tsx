@@ -3,6 +3,7 @@ import { AlertTriangle, X } from "lucide-react";
 import { createDesignerApi, type CloudHeadersProvider } from "../api";
 import type {
   RouteOperation,
+  RouteOptions,
   RouteResultEnvelope,
 } from "../../../../sdks/designer";
 import type { AutoroutePreviewTrace } from "./PcbScene";
@@ -14,6 +15,16 @@ interface PcbAutorouteDialogProps {
   cloudHeaders?: CloudHeadersProvider;
   open: boolean;
   onClose: () => void;
+  /**
+   * Optional engine request. When present (Auto-Layout orchestrator), its
+   * `options` + `serializePours` drive the submit; absent = backend defaults.
+   */
+  request?: {
+    options?: RouteOptions;
+    routableNetClassIds?: string[];
+    excludedNetIds?: string[];
+    serializePours?: boolean;
+  };
   /** Called after ops are applied so the canvas can reload its projection. */
   onApplied?: () => void;
   /** Ghost-trace preview of the currently-selected ops (null = clear). */
@@ -71,6 +82,7 @@ export function PcbAutorouteDialog({
   cloudHeaders,
   open,
   onClose,
+  request,
   onApplied,
   onPreviewChange,
 }: PcbAutorouteDialogProps): ReactElement | null {
@@ -113,7 +125,7 @@ export function PcbAutorouteDialog({
     setMessage(null);
     setApplied(null);
     void api
-      .submitAutoroute(designId)
+      .submitAutoroute(designId, request)
       .then((res) => {
         if (cancelled) return;
         setWarnings(res.warnings ?? []);
@@ -128,7 +140,7 @@ export function PcbAutorouteDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, api, designId]);
+  }, [open, api, designId, request]);
 
   // Poll the job until a terminal status.
   useEffect(() => {

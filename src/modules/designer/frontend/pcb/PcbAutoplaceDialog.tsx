@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { createDesignerApi, type CloudHeadersProvider } from "../api";
-import type { PlacementResultEnvelope } from "../../../../sdks";
+import type { PlaceOptions, PlacementResultEnvelope } from "../../../../sdks";
 
 interface PcbAutoplaceDialogProps {
   backendURL: string | null | undefined;
@@ -10,6 +10,15 @@ interface PcbAutoplaceDialogProps {
   cloudHeaders?: CloudHeadersProvider;
   open: boolean;
   onClose: () => void;
+  /**
+   * Optional engine request. When present (Auto-Layout orchestrator), its
+   * `placeOptions` drive the submit; absent = the backend's own defaults.
+   */
+  request?: {
+    placeOptions?: PlaceOptions;
+    routableNetClassIds?: string[];
+    excludedNetIds?: string[];
+  };
   /**
    * Called once the job completes with the result envelope. The canvas then enters the
    * interactive preview (move/adjust/accept); this dialog only owns submit + poll.
@@ -36,6 +45,7 @@ export function PcbAutoplaceDialog({
   cloudHeaders,
   open,
   onClose,
+  request,
   onPreviewResult,
 }: PcbAutoplaceDialogProps): ReactElement | null {
   const [phase, setPhase] = useState<Phase>("submitting");
@@ -67,7 +77,7 @@ export function PcbAutoplaceDialog({
     setWarnings([]);
     setMessage(null);
     void api
-      .submitAutoplace(designId)
+      .submitAutoplace(designId, request)
       .then((res) => {
         if (cancelled) return;
         setWarnings(res.warnings ?? []);
@@ -82,7 +92,7 @@ export function PcbAutoplaceDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, api, designId]);
+  }, [open, api, designId, request]);
 
   // Poll the job until a terminal status, then hand the result to the canvas.
   useEffect(() => {

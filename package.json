@@ -36,6 +36,7 @@
     "sdk:generate": "npm run scripts:build && bun scripts/module-cli.ts --codegen-sdk",
     "gen": "npm run module:codegen",
     "gen:check": "npm run gen && git diff --quiet -- src/core/frontend/src/generated/modules.ts src/core/frontend/src/generated/sdk || (echo 'Codegen not committed. Run npm run gen and commit generated files.' && git --no-pager diff -- src/core/frontend/src/generated/modules.ts src/core/frontend/src/generated/sdk && exit 1)",
+    "gen:contracts": "bun scripts/gen-contract-types.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node -e \"console.log('Module SQL migrations are applied automatically on backend startup. No standalone db:migrate script configured yet.')\"",
     "db:push": "drizzle-kit push",
