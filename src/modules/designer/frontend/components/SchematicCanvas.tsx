@@ -264,6 +264,21 @@ function snapNm(pointNm: PointNm, gridEnabled: boolean): PointNm {
   };
 }
 
+/** Capture the pointer on the canvas for the duration of a drag so
+ *  pointermove/pointerup keep arriving even when the cursor leaves the
+ *  canvas or passes over an HTML overlay. */
+function capturePointerForDrag(event: InteractionEvent): void {
+  const dom = event.nativeEvent?.nativeEvent;
+  const target = dom?.target;
+  if (dom && target instanceof Element) {
+    try {
+      target.setPointerCapture(dom.pointerId);
+    } catch {
+      // Unsupported (synthetic events in tests) — window fallback covers it.
+    }
+  }
+}
+
 function emptySelection(): SelectionState {
   return {
     partIds: new Set<string>(),
@@ -780,6 +795,9 @@ export const SchematicCanvas = forwardRef<
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const [dragSession, setDragSession] = useState<DragPartsSession | null>(null);
+  // Sessions already finalized (committed or cancelled) — one pointerup can
+  // be observed by both the hit-plane handler and the window fallback.
+  const finishedDragSessionsRef = useRef(new WeakSet<DragPartsSession>());
   // Optimistic overlay held from drop until the move commands + projection
   // refresh settle — without it, parts/wires flash back to their pre-drag
   // positions (and through partial multi-command states) while the async
@@ -1442,6 +1460,8 @@ export const SchematicCanvas = forwardRef<
           event.preventDefault();
           setWireSession(null);
           marquee.cancelMarquee();
+          // Cancelled — a late pointerup for this session must not commit it.
+          if (dragSession) finishedDragSessionsRef.current.add(dragSession);
           setDragSession(null);
           setArmedLabelText(null);
           setArmedPrimitive(null);
@@ -1678,6 +1698,17 @@ export const SchematicCanvas = forwardRef<
       });
     }
     if (nextByPinId.size === 0) return overrides;
+    // Co-moving wires must not see each other's STALE pre-drag paths as
+    // walls — those phantom obstacles force absurd detours that change every
+    // drag step. Matches the backend's move re-route obstacle set.
+    const movedWireIds = new Set(
+      projection.wires
+        .filter(
+          (w) => nextByPinId.has(w.sourcePinId) || nextByPinId.has(w.targetPinId),
+        )
+        .map((w) => w.id),
+    );
+    const staticWires = projection.wires.filter((w) => !movedWireIds.has(w.id));
     for (const wire of projection.wires) {
       const movedSource = nextByPinId.get(wire.sourcePinId);
       const movedTarget = nextByPinId.get(wire.targetPinId);
@@ -1697,6 +1728,7 @@ export const SchematicCanvas = forwardRef<
                 target,
                 sourcePinId: wire.sourcePinId,
                 targetPinId: wire.targetPinId,
+                wires: staticWires,
               }),
             }),
           ),
@@ -1716,6 +1748,81 @@ export const SchematicCanvas = forwardRef<
     }
     return overrides;
   }, [dragSession, projection]);
+
+  // ── Drag lifecycle ──
+  // One finalization path shared by the canvas pointerup, the window-level
+  // fallback (pointerup lost off-canvas), pointercancel/blur (cancel), and
+  // the stuck-session click guard.
+  const finishDrag = useCallback(
+    (session: DragPartsSession, commit: boolean) => {
+      if (finishedDragSessionsRef.current.has(session)) return;
+      finishedDragSessionsRef.current.add(session);
+      const hasMovement = session.deltaNm.x !== 0 || session.deltaNm.y !== 0;
+      if (commit && hasMovement) {
+        const commands: DesignerCommand[] = [];
+        const finalPartPositionsNm = new Map<string, PointNm>();
+        const finalPrimitivePositionsNm = new Map<string, PointNm>();
+        for (const [
+          partId,
+          initial,
+        ] of session.initialPartPositionsNm.entries()) {
+          const positionNm = {
+            x: initial.x + session.deltaNm.x,
+            y: initial.y + session.deltaNm.y,
+          };
+          finalPartPositionsNm.set(partId, positionNm);
+          commands.push({ type: "move_part", partId, positionNm });
+        }
+        for (const [
+          primitiveId,
+          initial,
+        ] of session.initialPrimitivePositionsNm.entries()) {
+          const positionNm = {
+            x: initial.x + session.deltaNm.x,
+            y: initial.y + session.deltaNm.y,
+          };
+          finalPrimitivePositionsNm.set(primitiveId, positionNm);
+          commands.push({ type: "move_primitive", primitiveId, positionNm });
+        }
+        // Hold the dropped state on screen until every move command has
+        // landed AND the projection refreshed — clearing the drag overlay
+        // immediately would flash parts/wires back through their stale
+        // (and partially-moved) positions while the async chain runs.
+        setPendingMove({
+          partPositionsNm: finalPartPositionsNm,
+          primitivePositionsNm: finalPrimitivePositionsNm,
+          wirePointsNm: new Map(dragReroutedWires),
+        });
+        void dispatchCommandsSequentially(commands)
+          .catch((err) =>
+            actions.setError(
+              err instanceof Error ? err.message : "Failed to move",
+            ),
+          )
+          .finally(() => setPendingMove(null));
+      }
+      setDragSession(null);
+    },
+    [actions, dispatchCommandsSequentially, dragReroutedWires],
+  );
+
+  // Window-level safety net: without pointer capture support (or when the
+  // release happens over an HTML overlay), the canvas never sees pointerup
+  // and the part keeps following the cursor forever.
+  useEffect(() => {
+    if (!dragSession) return;
+    const session = dragSession;
+    const handleUp = () => finishDrag(session, true);
+    const handleCancel = () => finishDrag(session, false);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+    window.addEventListener("blur", handleCancel);
+    return () => {
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+      window.removeEventListener("blur", handleCancel);
+    };
+  }, [dragSession, finishDrag]);
 
   const interactionHandler: InteractionHandler = useMemo(
     () => ({
@@ -1757,6 +1864,14 @@ export const SchematicCanvas = forwardRef<
       },
       onPointerDown(event) {
         if (!projection) {
+          return;
+        }
+
+        // A previous drag lost its pointerup (released off-canvas before
+        // capture engaged) — treat this click as the drop instead of
+        // spawning a second, confused drag session.
+        if (dragSession) {
+          finishDrag(dragSession, true);
           return;
         }
 
@@ -2001,6 +2116,7 @@ export const SchematicCanvas = forwardRef<
             startPointerNm: worldNm,
             deltaNm: { x: 0, y: 0 },
           });
+          capturePointerForDrag(event);
           return;
         }
 
@@ -2108,6 +2224,7 @@ export const SchematicCanvas = forwardRef<
             startPointerNm: worldNm,
             deltaNm: { x: 0, y: 0 },
           });
+          capturePointerForDrag(event);
           return;
         }
 
@@ -2121,52 +2238,7 @@ export const SchematicCanvas = forwardRef<
         }
 
         if (dragSession) {
-          const hasMovement =
-            dragSession.deltaNm.x !== 0 || dragSession.deltaNm.y !== 0;
-          if (hasMovement) {
-            const commands: DesignerCommand[] = [];
-            const finalPartPositionsNm = new Map<string, PointNm>();
-            const finalPrimitivePositionsNm = new Map<string, PointNm>();
-            for (const [
-              partId,
-              initial,
-            ] of dragSession.initialPartPositionsNm.entries()) {
-              const positionNm = {
-                x: initial.x + dragSession.deltaNm.x,
-                y: initial.y + dragSession.deltaNm.y,
-              };
-              finalPartPositionsNm.set(partId, positionNm);
-              commands.push({ type: "move_part", partId, positionNm });
-            }
-            for (const [
-              primitiveId,
-              initial,
-            ] of dragSession.initialPrimitivePositionsNm.entries()) {
-              const positionNm = {
-                x: initial.x + dragSession.deltaNm.x,
-                y: initial.y + dragSession.deltaNm.y,
-              };
-              finalPrimitivePositionsNm.set(primitiveId, positionNm);
-              commands.push({ type: "move_primitive", primitiveId, positionNm });
-            }
-            // Hold the dropped state on screen until every move command has
-            // landed AND the projection refreshed — clearing the drag overlay
-            // immediately would flash parts/wires back through their stale
-            // (and partially-moved) positions while the async chain runs.
-            setPendingMove({
-              partPositionsNm: finalPartPositionsNm,
-              primitivePositionsNm: finalPrimitivePositionsNm,
-              wirePointsNm: new Map(dragReroutedWires),
-            });
-            void dispatchCommandsSequentially(commands)
-              .catch((err) =>
-                actions.setError(
-                  err instanceof Error ? err.message : "Failed to move",
-                ),
-              )
-              .finally(() => setPendingMove(null));
-          }
-          setDragSession(null);
+          finishDrag(dragSession, true);
           return;
         }
 
@@ -2611,9 +2683,9 @@ export const SchematicCanvas = forwardRef<
       dragPlacementDetail,
       dragPlacementLoading,
       dragGhostNm,
-      dragReroutedWires,
       dragSession,
       draggingComponentId,
+      finishDrag,
       hitLabelId,
       hitPartId,
       hitPin,

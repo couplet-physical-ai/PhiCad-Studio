@@ -1009,6 +1009,85 @@ describe("designer commands hardening", () => {
     expect(restored?.routeStatus).toBe("colliding");
   });
 
+  test("move re-route: co-moving wires ignore each other's stale paths (no phantom-wall detours)", async () => {
+    isolateTestDb("designer-hardening-sibling-reroute");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Sibling reroute" });
+    let revision = 0;
+    const dispatch = async (command: DesignerCommandEnvelope["command"]) => {
+      const result = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "sibling-reroute",
+        aggregateId: design.id,
+        baseRevision: revision,
+        issuedAt: Date.now(),
+        command,
+      });
+      expect(result.ok).toBe(true);
+      revision += 1;
+      return result;
+    };
+
+    const placeA = await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 0, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 6_000_000 },
+    });
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const aLeft = placed?.parts[0]?.pins[0]; // (-2mm, 0)
+    const aRight = placed?.parts[0]?.pins[1]; // (2mm, 0)
+    const bLeft = placed?.parts[1]?.pins[0]; // (18mm, 0)
+    const cLeft = placed?.parts[2]?.pins[0]; // (18mm, 6mm)
+    if (!aLeft || !aRight || !bLeft || !cLeft || !placeA.ok) {
+      throw new Error("Expected placed parts with pins");
+    }
+
+    const wire1 = await dispatch({
+      type: "create_wire",
+      sourcePinId: aRight.id,
+      targetPinId: bLeft.id,
+    });
+    await dispatch({
+      type: "create_wire",
+      sourcePinId: aLeft.id,
+      targetPinId: cLeft.id,
+    });
+
+    // Move part A up: both wires re-route together. wire1's only clean simple
+    // route (VH) crosses wire2's STALE pre-move path — which must not count
+    // as an obstacle, or wire1 detours absurdly.
+    if (!placeA.createdEntityId) throw new Error("Expected part A id");
+    await dispatch({
+      type: "move_part",
+      partId: placeA.createdEntityId,
+      positionNm: { x: 0, y: 10_000_000 },
+    });
+
+    const after = await designerSdk.getSchematicProjection(design.id);
+    if (!wire1.ok || !wire1.createdEntityId) throw new Error("wire1 id");
+    const rerouted = after?.wires.find((w) => w.id === wire1.createdEntityId);
+    expect(rerouted?.pointsNm).toEqual([
+      { x: 2_000_000, y: 10_000_000 },
+      { x: 2_000_000, y: 0 },
+      { x: 18_000_000, y: 0 },
+    ]);
+  });
+
   test("rejects a duplicate wire between the same two pins (either orientation)", async () => {
     isolateTestDb("designer-hardening-duplicate-wire");
     const { moduleRuntime, server } = await createRuntimeAndServer();

@@ -96,16 +96,19 @@ function rerouteWireWithUpdatedEndpoints(
     projection: DesignerSchematicProjection;
     sourcePinId: string;
     targetPinId: string;
+    obstacleWires: DesignerSchematicProjection["wires"];
   },
 ): { points: Point[]; routeStatus: "colliding" | null | undefined } {
   if (points.length <= 2) {
     // No user-placed interior waypoints — the wire is a plain pin-to-pin run,
     // so re-route it through the obstacle-aware router (audit §4.3). The wire
-    // itself is skipped as an obstacle because it shares both endpoint pins.
+    // itself is skipped as an obstacle because it shares both endpoint pins;
+    // `obstacleWires` excludes co-moving wires' stale paths (phantom walls).
     const routed = autoRouteWirePointsDetailed(
       route.projection,
       pinShell(route.sourcePinId, source),
       pinShell(route.targetPinId, target),
+      route.obstacleWires,
     );
     return {
       points: simplifyCollinearPath(routed.points),
@@ -153,6 +156,13 @@ export function updateConnectedWireGeometry(params: {
     )
     .all();
 
+  // Wires attached to the moved pins re-route together — none of them may
+  // treat another's STALE pre-move path as an obstacle wall.
+  const movedWireIds = new Set(wireRows.map((row) => row.id));
+  const obstacleWires = projection.wires.filter(
+    (wire) => !movedWireIds.has(wire.id),
+  );
+
   for (const wireRow of wireRows) {
     const points = parseWirePointsJson(wireRow.pointsJson);
     const source = nextByPinId.get(wireRow.sourcePinId) ?? points[0];
@@ -163,6 +173,7 @@ export function updateConnectedWireGeometry(params: {
       projection,
       sourcePinId: wireRow.sourcePinId,
       targetPinId: wireRow.targetPinId,
+      obstacleWires,
     });
     tx.update(schematicWires)
       .set({
