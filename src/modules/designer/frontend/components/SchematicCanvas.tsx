@@ -15,6 +15,7 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import {
+  DRAG_THRESHOLD_PX,
   EdaCanvas,
   type InteractionEvent,
   type InteractionHandler,
@@ -88,6 +89,11 @@ import {
 import { routeSchematicWire } from "../../../../shared/schematic-routing/schematic-autoroute";
 import { collectWireObstacles } from "../../../../shared/schematic-routing/wire-obstacles";
 import { computeWireCrossingGaps } from "../../../../shared/schematic-routing/crossing-gaps";
+import {
+  applyPendingMoveToProjection,
+  mergePendingMoves,
+  type PendingMoveState,
+} from "../lib/pending-move-overlay";
 const PIN_HIT_MM = 0.35;
 // Primitive connection dots are rendered larger (≈0.36 mm radius), so the
 // hit zone must be wider than for part pins to match the visible target.
@@ -136,24 +142,25 @@ type ArmedPrimitive =
   | { kind: "net_portal"; portalText: string }
   | null;
 
-interface DragPartsSession {
+/** Move-drag state machine. ARMED on pointerdown over a part/primitive;
+ *  becomes ACTIVE only once the pointer travels DRAG_THRESHOLD_PX on screen,
+ *  so a plain click can never leave a sticky move behind. Lives in a ref
+ *  (stable identity across pointermove steps — window listeners register once
+ *  per gesture); `dragVersion` state drives re-renders. */
+interface DragMoveState {
+  phase: "armed" | "active";
   initialPartPositionsNm: Map<string, PointNm>;
   initialPrimitivePositionsNm: Map<string, PointNm>;
+  startScreenPx: { x: number; y: number };
   startPointerNm: PointNm;
   deltaNm: PointNm;
+  /** Removes the gesture's window listeners + releases pointer capture. */
+  cleanup: () => void;
 }
 
 interface WireSession {
   sourcePinId: string;
   waypointsNm: PointNm[];
-}
-
-/** Optimistic post-drop state: final positions + re-routed wire geometry kept
- *  on screen until the move commands land and the projection refreshes. */
-interface PendingMoveState {
-  partPositionsNm: Map<string, PointNm>;
-  primitivePositionsNm: Map<string, PointNm>;
-  wirePointsNm: Map<string, PointNm[]>;
 }
 
 export interface SchematicCanvasHandle {
@@ -266,17 +273,109 @@ function snapNm(pointNm: PointNm, gridEnabled: boolean): PointNm {
 
 /** Capture the pointer on the canvas for the duration of a drag so
  *  pointermove/pointerup keep arriving even when the cursor leaves the
- *  canvas or passes over an HTML overlay. */
-function capturePointerForDrag(event: InteractionEvent): void {
+ *  canvas or passes over an HTML overlay. Returns the release fn. */
+function capturePointerForDrag(event: InteractionEvent): () => void {
   const dom = event.nativeEvent?.nativeEvent;
   const target = dom?.target;
   if (dom && target instanceof Element) {
     try {
       target.setPointerCapture(dom.pointerId);
+      return () => {
+        try {
+          target.releasePointerCapture(dom.pointerId);
+        } catch {
+          // Already released (implicit on pointerup) — nothing to do.
+        }
+      };
     } catch {
       // Unsupported (synthetic events in tests) — window fallback covers it.
     }
   }
+  return () => {};
+}
+
+/**
+ * Commit-parity wire geometry for a move: wires attached to the moved parts/
+ * primitives get the exact polyline the backend will persist on drop (≤2
+ * points → obstacle-aware router; user waypoints kept verbatim + re-
+ * Manhattaned to the moved endpoints). Used both for the live drag preview
+ * (per pointer step) and to seed the optimistic overlay at drop — the drop
+ * path recomputes from the FINAL delta so it can never lag the render memo.
+ * Co-moving wires are excluded from each other's obstacle sets (their stale
+ * pre-move paths are phantom walls), matching the backend's move re-route.
+ */
+function computeDragWireOverrides(
+  projection: DesignerSchematicProjection,
+  initialPartPositionsNm: ReadonlyMap<string, PointNm>,
+  initialPrimitivePositionsNm: ReadonlyMap<string, PointNm>,
+  deltaNm: PointNm,
+): Map<string, PointNm[]> {
+  const overrides = new Map<string, PointNm[]>();
+  if (deltaNm.x === 0 && deltaNm.y === 0) return overrides;
+  const nextByPinId = new Map<string, PointNm>();
+  for (const part of projection.parts) {
+    if (!initialPartPositionsNm.has(part.id)) continue;
+    for (const p of part.pins) {
+      nextByPinId.set(p.id, {
+        x: p.worldPositionNm.x + deltaNm.x,
+        y: p.worldPositionNm.y + deltaNm.y,
+      });
+    }
+  }
+  for (const primitive of projection.primitives) {
+    if (!initialPrimitivePositionsNm.has(primitive.id)) continue;
+    nextByPinId.set(`primitive:${primitive.id}`, {
+      x: primitive.positionNm.x + deltaNm.x,
+      y: primitive.positionNm.y + deltaNm.y,
+    });
+  }
+  if (nextByPinId.size === 0) return overrides;
+  const movedWireIds = new Set(
+    projection.wires
+      .filter(
+        (w) => nextByPinId.has(w.sourcePinId) || nextByPinId.has(w.targetPinId),
+      )
+      .map((w) => w.id),
+  );
+  const staticWires = projection.wires.filter((w) => !movedWireIds.has(w.id));
+  for (const wire of projection.wires) {
+    const movedSource = nextByPinId.get(wire.sourcePinId);
+    const movedTarget = nextByPinId.get(wire.targetPinId);
+    if (!movedSource && !movedTarget) continue;
+    const source = movedSource ?? wire.pointsNm[0];
+    const target = movedTarget ?? wire.pointsNm[wire.pointsNm.length - 1];
+    if (!source || !target) continue;
+    if (wire.pointsNm.length <= 2) {
+      overrides.set(
+        wire.id,
+        simplifyCollinearPath(
+          routeSchematicWire({
+            source,
+            target,
+            obstacles: collectWireObstacles(projection, {
+              source,
+              target,
+              sourcePinId: wire.sourcePinId,
+              targetPinId: wire.targetPinId,
+              wires: staticWires,
+            }),
+          }),
+        ),
+      );
+    } else {
+      overrides.set(
+        wire.id,
+        simplifyCollinearPath(
+          buildManhattanPathThroughAnchors([
+            source,
+            ...wire.pointsNm.slice(1, -1),
+            target,
+          ]),
+        ),
+      );
+    }
+  }
+  return overrides;
 }
 
 function emptySelection(): SelectionState {
@@ -671,7 +770,7 @@ function InvalidateOnCanvasChange({
   projection,
   cursorNm,
   selection,
-  dragSession,
+  dragVersion,
   pendingMove,
   marqueeRect,
   wireSession,
@@ -680,7 +779,7 @@ function InvalidateOnCanvasChange({
   projection: DesignerSchematicProjection | null;
   cursorNm: PointNm | null;
   selection: SelectionState;
-  dragSession: DragPartsSession | null;
+  dragVersion: number;
   pendingMove: PendingMoveState | null;
   marqueeRect: { a: PointMm | null; b: PointMm | null } | null;
   wireSession: WireSession | null;
@@ -694,7 +793,7 @@ function InvalidateOnCanvasChange({
     projection,
     cursorNm,
     selection,
-    dragSession,
+    dragVersion,
     pendingMove,
     marqueeRect,
     wireSession,
@@ -794,15 +893,21 @@ export const SchematicCanvas = forwardRef<
   const [selection, setSelection] = useState<SelectionState>(emptySelection);
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
-  const [dragSession, setDragSession] = useState<DragPartsSession | null>(null);
-  // Sessions already finalized (committed or cancelled) — one pointerup can
-  // be observed by both the hit-plane handler and the window fallback.
-  const finishedDragSessionsRef = useRef(new WeakSet<DragPartsSession>());
+  // Move-drag machine lives in a ref (stable identity across pointermove
+  // steps); dragVersion bumps to re-render the position/wire overlays.
+  const dragRef = useRef<DragMoveState | null>(null);
+  const [dragVersion, setDragVersion] = useState(0);
   // Optimistic overlay held from drop until the move commands + projection
   // refresh settle — without it, parts/wires flash back to their pre-drag
   // positions (and through partial multi-command states) while the async
-  // dispatch chain runs.
+  // dispatch chain runs. Drops stack (merge) while earlier commits are still
+  // in flight; the overlay clears only when the serialized queue drains.
   const [pendingMove, setPendingMove] = useState<PendingMoveState | null>(null);
+  const moveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const movesInFlightRef = useRef(0);
+  // Latest finalizer — window listeners registered at gesture start call
+  // through this ref so they can never commit via a stale closure.
+  const finalizeDragRef = useRef<(commit: boolean) => void>(() => {});
   const [wireSession, setWireSession] = useState<WireSession | null>(null);
   const [armedLabelText, setArmedLabelText] = useState<string | null>(null);
   const [armedPrimitive, setArmedPrimitive] = useState<ArmedPrimitive>(null);
@@ -810,6 +915,18 @@ export const SchematicCanvas = forwardRef<
     useState<LibraryComponentPlacementDetail | null>(null);
   const [pwrPickerOpen, setPwrPickerOpen] = useState(false);
   const [netPortalPickerOpen, setNetPortalPickerOpen] = useState(false);
+
+  // Single optimistic source of truth: the raw projection with any in-flight
+  // move overlaid (parts/primitives at committed positions, pins shifted,
+  // wires re-routed). EVERY position consumer below — hit tests, drag
+  // seeding, live re-route, marquee, rendering — reads this, never the raw
+  // projection, so a drag started while a previous move is still saving can
+  // never teleport parts or stretch wires between stale and new endpoints.
+  const effectiveProjection = useMemo(
+    () => (projection ? applyPendingMoveToProjection(projection, pendingMove) : null),
+    [projection, pendingMove],
+  );
+
   const cameraRef = useRef<OrthographicCamera | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const lastAutoFittedDesignIdRef = useRef<string | null>(null);
@@ -884,7 +1001,7 @@ export const SchematicCanvas = forwardRef<
     if (!projection) {
       setSelection(emptySelection());
       setWireSession(null);
-      setDragSession(null);
+      finalizeDragRef.current(false);
       marquee.cancelMarquee();
       return;
     }
@@ -1053,7 +1170,7 @@ export const SchematicCanvas = forwardRef<
       setArmedPrimitive(null);
       setPwrPickerOpen(false);
       setNetPortalPickerOpen(false);
-      setDragSession(null);
+      finalizeDragRef.current(false);
       setWireSession(null);
       actions.setWireSourcePinId(null);
       setArmedComponentDetail(detail);
@@ -1085,38 +1202,41 @@ export const SchematicCanvas = forwardRef<
     },
   }));
 
+  // Parts/primitives passed in come from `effectiveProjection` (pending moves
+  // already applied); only the LIVE drag delta is layered on top here. The
+  // drag delta is seeded from effective positions at arm time, so both
+  // branches agree mid-flight. `dragVersion` keys the callbacks to the ref's
+  // mutations.
   const renderedPartPositionNm = useCallback(
     (part: DesignerPlacedPart): PointNm => {
-      const initial = dragSession?.initialPartPositionsNm.get(part.id);
-      if (dragSession && initial) {
+      const state = dragRef.current;
+      const initial = state?.initialPartPositionsNm.get(part.id);
+      if (state && initial) {
         return {
-          x: initial.x + dragSession.deltaNm.x,
-          y: initial.y + dragSession.deltaNm.y,
+          x: initial.x + state.deltaNm.x,
+          y: initial.y + state.deltaNm.y,
         };
       }
-      const pending = pendingMove?.partPositionsNm.get(part.id);
-      if (pending) return { x: pending.x, y: pending.y };
       return { x: part.positionNm.x, y: part.positionNm.y };
     },
-    [dragSession, pendingMove],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragVersion tracks dragRef mutations
+    [dragVersion],
   );
 
   const renderedPrimitivePositionNm = useCallback(
     (primitive: DesignerPrimitive): PointNm => {
-      const initial = dragSession?.initialPrimitivePositionsNm.get(
-        primitive.id,
-      );
-      if (dragSession && initial) {
+      const state = dragRef.current;
+      const initial = state?.initialPrimitivePositionsNm.get(primitive.id);
+      if (state && initial) {
         return {
-          x: initial.x + dragSession.deltaNm.x,
-          y: initial.y + dragSession.deltaNm.y,
+          x: initial.x + state.deltaNm.x,
+          y: initial.y + state.deltaNm.y,
         };
       }
-      const pending = pendingMove?.primitivePositionsNm.get(primitive.id);
-      if (pending) return { x: pending.x, y: pending.y };
       return { x: primitive.positionNm.x, y: primitive.positionNm.y };
     },
-    [dragSession, pendingMove],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragVersion tracks dragRef mutations
+    [dragVersion],
   );
 
   // Marquee/rubber-band selection — uses the same shared hook as PCB so both
@@ -1130,14 +1250,14 @@ export const SchematicCanvas = forwardRef<
     setSelection,
     applyMarqueeHits: ({ rect, mode, baseSelection }) => {
       const next = cloneSelection(baseSelection);
-      if (!projection) return next;
+      if (!effectiveProjection) return next;
       const partTest = (b: BoundsMm) =>
         mode === "window" ? aabbContains(rect, b) : aabbOverlap(b, rect);
-      for (const part of projection.parts) {
+      for (const part of effectiveProjection.parts) {
         const b = worldBoundsForPart(part, renderedPartPositionNm(part));
         if (b && partTest(b)) next.partIds.add(part.id);
       }
-      for (const wire of projection.wires) {
+      for (const wire of effectiveProjection.wires) {
         if (wire.pointsNm.length === 0) continue;
         const ptsMm: PointMm[] = wire.pointsNm.map((p) => toMm(p));
         const inside =
@@ -1147,12 +1267,12 @@ export const SchematicCanvas = forwardRef<
         if (inside) next.wireIds.add(wire.id);
       }
       // Labels & primitives are point-like → window/crossing equivalent.
-      for (const label of projection.labels) {
+      for (const label of effectiveProjection.labels) {
         if (isPointInAabb(toMm(label.positionNm), rect)) {
           next.labelIds.add(label.id);
         }
       }
-      for (const primitive of projection.primitives) {
+      for (const primitive of effectiveProjection.primitives) {
         if (isPointInAabb(toMm(renderedPrimitivePositionNm(primitive)), rect)) {
           next.primitiveIds.add(primitive.id);
         }
@@ -1163,10 +1283,10 @@ export const SchematicCanvas = forwardRef<
 
   const pinById = useMemo(() => {
     const map = new Map<string, DesignerPin>();
-    if (!projection) {
+    if (!effectiveProjection) {
       return map;
     }
-    for (const part of projection.parts) {
+    for (const part of effectiveProjection.parts) {
       for (const pin of part.pins) {
         map.set(pin.id, pin);
       }
@@ -1174,7 +1294,7 @@ export const SchematicCanvas = forwardRef<
     // Synthetic single-pin entries for each primitive's connection point.
     // Connection point is local (0, 0); rotation pivots around it so the
     // world position equals the primitive's position.
-    for (const primitive of projection.primitives) {
+    for (const primitive of effectiveProjection.primitives) {
       const id = `primitive:${primitive.id}`;
       map.set(id, {
         id,
@@ -1188,11 +1308,11 @@ export const SchematicCanvas = forwardRef<
       });
     }
     return map;
-  }, [projection]);
+  }, [effectiveProjection]);
 
   const hitPin = useCallback(
     (worldNm: PointNm): DesignerPin | null => {
-      if (!projection) {
+      if (!effectiveProjection) {
         return null;
       }
       const cursor = toMm(worldNm);
@@ -1208,7 +1328,7 @@ export const SchematicCanvas = forwardRef<
       // when its source pin disappears.
       let best: DesignerPin | null = null;
       let bestDistance = Number.POSITIVE_INFINITY;
-      for (const part of projection.parts) {
+      for (const part of effectiveProjection.parts) {
         for (const pin of part.pins) {
           const d = distanceMm(cursor, toMm(pin.worldPositionNm));
           if (d <= PIN_HIT_MM && d < bestDistance) {
@@ -1217,7 +1337,7 @@ export const SchematicCanvas = forwardRef<
           }
         }
       }
-      for (const primitive of projection.primitives) {
+      for (const primitive of effectiveProjection.primitives) {
         const synthPin = pinById.get(`primitive:${primitive.id}`);
         if (!synthPin) continue;
         const d = distanceMm(cursor, toMm(synthPin.worldPositionNm));
@@ -1228,12 +1348,12 @@ export const SchematicCanvas = forwardRef<
       }
       return best;
     },
-    [pinById, projection],
+    [pinById, effectiveProjection],
   );
 
   const hitWire = useCallback(
     (worldNm: PointNm): { wire: DesignerWire; projectedNm: PointNm } | null => {
-      if (!projection) {
+      if (!effectiveProjection) {
         return null;
       }
       const cursor = toMm(worldNm);
@@ -1241,7 +1361,7 @@ export const SchematicCanvas = forwardRef<
       let bestProjected: PointNm | null = null;
       let bestDistance = Number.POSITIVE_INFINITY;
 
-      for (const wire of projection.wires) {
+      for (const wire of effectiveProjection.wires) {
         for (let index = 1; index < wire.pointsNm.length; index += 1) {
           const prev = wire.pointsNm[index - 1];
           const next = wire.pointsNm[index];
@@ -1269,18 +1389,18 @@ export const SchematicCanvas = forwardRef<
         projectedNm: bestProjected,
       };
     },
-    [projection],
+    [effectiveProjection],
   );
 
   const hitLabelId = useCallback(
     (worldNm: PointNm): string | null => {
-      if (!projection) {
+      if (!effectiveProjection) {
         return null;
       }
       const cursor = toMm(worldNm);
       let bestId: string | null = null;
       let bestDistance = Number.POSITIVE_INFINITY;
-      for (const label of projection.labels) {
+      for (const label of effectiveProjection.labels) {
         const d = distanceMm(cursor, toMm(label.positionNm));
         if (d < bestDistance) {
           bestDistance = d;
@@ -1289,17 +1409,17 @@ export const SchematicCanvas = forwardRef<
       }
       return bestDistance <= LABEL_HIT_MM ? bestId : null;
     },
-    [projection],
+    [effectiveProjection],
   );
 
   const hitPrimitiveId = useCallback(
     (worldNm: PointNm): string | null => {
-      if (!projection) return null;
+      if (!effectiveProjection) return null;
       const cursorMm = toMm(worldNm);
       // Glyph-bounds hit-test: transform cursor into the primitive's local
       // frame (inverse of position + rotation) and check the kind's AABB
       // padded by PRIMITIVE_HIT_PADDING_MM.
-      for (const primitive of projection.primitives) {
+      for (const primitive of effectiveProjection.primitives) {
         const positionNm = renderedPrimitivePositionNm(primitive);
         const tx = cursorMm.x - Units.nmToMm(positionNm.x);
         const ty = cursorMm.y - Units.nmToMm(positionNm.y);
@@ -1324,7 +1444,7 @@ export const SchematicCanvas = forwardRef<
       // misclicks just above the GND pin stub etc.).
       let bestId: string | null = null;
       let bestDistance = Number.POSITIVE_INFINITY;
-      for (const primitive of projection.primitives) {
+      for (const primitive of effectiveProjection.primitives) {
         const d = distanceMm(
           cursorMm,
           toMm(renderedPrimitivePositionNm(primitive)),
@@ -1336,17 +1456,17 @@ export const SchematicCanvas = forwardRef<
       }
       return bestDistance <= 0.6 ? bestId : null;
     },
-    [projection, renderedPrimitivePositionNm],
+    [effectiveProjection, renderedPrimitivePositionNm],
   );
 
   const hitPartId = useCallback(
     (worldNm: PointNm): string | null => {
-      if (!projection) {
+      if (!effectiveProjection) {
         return null;
       }
       const cursorMm = toMm(worldNm);
 
-      for (const part of projection.parts) {
+      for (const part of effectiveProjection.parts) {
         const positionNm = renderedPartPositionNm(part);
         const bounds = part.symbol.preview.bounds;
         if (!bounds) {
@@ -1365,7 +1485,7 @@ export const SchematicCanvas = forwardRef<
 
       let bestPartId: string | null = null;
       let bestDistance = Number.POSITIVE_INFINITY;
-      for (const part of projection.parts) {
+      for (const part of effectiveProjection.parts) {
         const position = toMm(renderedPartPositionNm(part));
         const d = distanceMm(cursorMm, position);
         if (d < bestDistance) {
@@ -1375,16 +1495,7 @@ export const SchematicCanvas = forwardRef<
       }
       return bestDistance <= PART_CENTER_FALLBACK_MM ? bestPartId : null;
     },
-    [projection, renderedPartPositionNm],
-  );
-
-  const dispatchCommandsSequentially = useCallback(
-    async (commands: DesignerCommand[]) => {
-      for (const command of commands) {
-        await actions.dispatchCommand(command);
-      }
-    },
-    [actions],
+    [effectiveProjection, renderedPartPositionNm],
   );
 
   const commitWireToPin = useCallback(
@@ -1450,7 +1561,7 @@ export const SchematicCanvas = forwardRef<
         if (
           wireSession ||
           marquee.marqueeSession ||
-          dragSession ||
+          dragRef.current ||
           armedLabelText ||
           armedPrimitive ||
           armedComponentDetail ||
@@ -1460,9 +1571,9 @@ export const SchematicCanvas = forwardRef<
           event.preventDefault();
           setWireSession(null);
           marquee.cancelMarquee();
-          // Cancelled — a late pointerup for this session must not commit it.
-          if (dragSession) finishedDragSessionsRef.current.add(dragSession);
-          setDragSession(null);
+          // Cancelled — finalize removes the gesture's window listeners, so
+          // a late pointerup can never commit it.
+          finalizeDragRef.current(false);
           setArmedLabelText(null);
           setArmedPrimitive(null);
           setArmedComponentDetail(null);
@@ -1551,7 +1662,8 @@ export const SchematicCanvas = forwardRef<
             entityKind: "primitive",
           });
         }
-        void dispatchCommandsSequentially(commands)
+        void actions
+          .dispatchCommandsBatch(commands)
           .then(() => setSelection(emptySelection()))
           .catch((error) =>
             actions.setError(
@@ -1592,7 +1704,7 @@ export const SchematicCanvas = forwardRef<
         if (commands.length === 0) {
           return;
         }
-        void dispatchCommandsSequentially(commands).catch((error) =>
+        void actions.dispatchCommandsBatch(commands).catch((error) =>
           actions.setError(
             error instanceof Error ? error.message : "Rotate failed",
           ),
@@ -1657,8 +1769,6 @@ export const SchematicCanvas = forwardRef<
     armedComponentDetail,
     pwrPickerOpen,
     netPortalPickerOpen,
-    dispatchCommandsSequentially,
-    dragSession,
     labelDraftText,
     marquee,
     projection,
@@ -1667,162 +1777,150 @@ export const SchematicCanvas = forwardRef<
   ]);
 
   // Live wire re-route while dragging: wires attached to the dragged parts/
-  // primitives preview their COMMIT geometry each drag step, using the exact
-  // rules the backend applies on drop (≤2 points → obstacle-aware router;
-  // user waypoints kept verbatim + re-Manhattaned to the moved endpoints).
-  // Declared before interactionHandler — its drop path snapshots this map.
+  // primitives preview their COMMIT geometry each drag step (shared with the
+  // drop path via computeDragWireOverrides). Reads effectiveProjection so a
+  // drag started while a previous move is still saving re-routes from the
+  // optimistic — not stale — endpoints.
   const dragReroutedWires = useMemo(() => {
-    const overrides = new Map<string, PointNm[]>();
-    if (!projection || !dragSession) return overrides;
-    const delta = dragSession.deltaNm;
-    if (delta.x === 0 && delta.y === 0) return overrides;
-    const draggedPartIds = new Set(dragSession.initialPartPositionsNm.keys());
-    const draggedPrimitiveIds = new Set(
-      dragSession.initialPrimitivePositionsNm.keys(),
+    const state = dragRef.current;
+    if (!effectiveProjection || !state || state.phase !== "active") {
+      return new Map<string, PointNm[]>();
+    }
+    return computeDragWireOverrides(
+      effectiveProjection,
+      state.initialPartPositionsNm,
+      state.initialPrimitivePositionsNm,
+      state.deltaNm,
     );
-    const nextByPinId = new Map<string, PointNm>();
-    for (const part of projection.parts) {
-      if (!draggedPartIds.has(part.id)) continue;
-      for (const p of part.pins) {
-        nextByPinId.set(p.id, {
-          x: p.worldPositionNm.x + delta.x,
-          y: p.worldPositionNm.y + delta.y,
-        });
-      }
-    }
-    for (const primitive of projection.primitives) {
-      if (!draggedPrimitiveIds.has(primitive.id)) continue;
-      nextByPinId.set(`primitive:${primitive.id}`, {
-        x: primitive.positionNm.x + delta.x,
-        y: primitive.positionNm.y + delta.y,
-      });
-    }
-    if (nextByPinId.size === 0) return overrides;
-    // Co-moving wires must not see each other's STALE pre-drag paths as
-    // walls — those phantom obstacles force absurd detours that change every
-    // drag step. Matches the backend's move re-route obstacle set.
-    const movedWireIds = new Set(
-      projection.wires
-        .filter(
-          (w) => nextByPinId.has(w.sourcePinId) || nextByPinId.has(w.targetPinId),
-        )
-        .map((w) => w.id),
-    );
-    const staticWires = projection.wires.filter((w) => !movedWireIds.has(w.id));
-    for (const wire of projection.wires) {
-      const movedSource = nextByPinId.get(wire.sourcePinId);
-      const movedTarget = nextByPinId.get(wire.targetPinId);
-      if (!movedSource && !movedTarget) continue;
-      const source = movedSource ?? wire.pointsNm[0];
-      const target = movedTarget ?? wire.pointsNm[wire.pointsNm.length - 1];
-      if (!source || !target) continue;
-      if (wire.pointsNm.length <= 2) {
-        overrides.set(
-          wire.id,
-          simplifyCollinearPath(
-            routeSchematicWire({
-              source,
-              target,
-              obstacles: collectWireObstacles(projection, {
-                source,
-                target,
-                sourcePinId: wire.sourcePinId,
-                targetPinId: wire.targetPinId,
-                wires: staticWires,
-              }),
-            }),
-          ),
-        );
-      } else {
-        overrides.set(
-          wire.id,
-          simplifyCollinearPath(
-            buildManhattanPathThroughAnchors([
-              source,
-              ...wire.pointsNm.slice(1, -1),
-              target,
-            ]),
-          ),
-        );
-      }
-    }
-    return overrides;
-  }, [dragSession, projection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragVersion tracks dragRef mutations
+  }, [dragVersion, effectiveProjection]);
 
   // ── Drag lifecycle ──
-  // One finalization path shared by the canvas pointerup, the window-level
-  // fallback (pointerup lost off-canvas), pointercancel/blur (cancel), and
-  // the stuck-session click guard.
-  const finishDrag = useCallback(
-    (session: DragPartsSession, commit: boolean) => {
-      if (finishedDragSessionsRef.current.has(session)) return;
-      finishedDragSessionsRef.current.add(session);
-      const hasMovement = session.deltaNm.x !== 0 || session.deltaNm.y !== 0;
-      if (commit && hasMovement) {
-        const commands: DesignerCommand[] = [];
-        const finalPartPositionsNm = new Map<string, PointNm>();
-        const finalPrimitivePositionsNm = new Map<string, PointNm>();
-        for (const [
-          partId,
-          initial,
-        ] of session.initialPartPositionsNm.entries()) {
-          const positionNm = {
-            x: initial.x + session.deltaNm.x,
-            y: initial.y + session.deltaNm.y,
-          };
-          finalPartPositionsNm.set(partId, positionNm);
-          commands.push({ type: "move_part", partId, positionNm });
-        }
-        for (const [
-          primitiveId,
-          initial,
-        ] of session.initialPrimitivePositionsNm.entries()) {
-          const positionNm = {
-            x: initial.x + session.deltaNm.x,
-            y: initial.y + session.deltaNm.y,
-          };
-          finalPrimitivePositionsNm.set(primitiveId, positionNm);
-          commands.push({ type: "move_primitive", primitiveId, positionNm });
-        }
-        // Hold the dropped state on screen until every move command has
-        // landed AND the projection refreshed — clearing the drag overlay
-        // immediately would flash parts/wires back through their stale
-        // (and partially-moved) positions while the async chain runs.
-        setPendingMove({
-          partPositionsNm: finalPartPositionsNm,
-          primitivePositionsNm: finalPrimitivePositionsNm,
-          wirePointsNm: new Map(dragReroutedWires),
-        });
-        void dispatchCommandsSequentially(commands)
-          .catch((err) =>
-            actions.setError(
-              err instanceof Error ? err.message : "Failed to move",
-            ),
-          )
-          .finally(() => setPendingMove(null));
+  // One idempotent finalization path (the ref is nulled on entry) shared by
+  // the canvas pointerup, the per-gesture window listeners (pointerup lost
+  // off-canvas → commit; pointercancel/blur → cancel), Escape, and the
+  // stuck-session click guard. A sub-threshold gesture ("armed") finalizes
+  // as a plain click — nothing to commit, nothing left behind.
+  const finalizeDrag = useCallback(
+    (commit: boolean) => {
+      const state = dragRef.current;
+      if (!state) return;
+      dragRef.current = null;
+      state.cleanup();
+      setDragVersion((v) => v + 1);
+      const hasMovement = state.deltaNm.x !== 0 || state.deltaNm.y !== 0;
+      if (!commit || state.phase !== "active" || !hasMovement) return;
+
+      const commands: DesignerCommand[] = [];
+      const partPositionsNm = new Map<string, PointNm>();
+      const primitivePositionsNm = new Map<string, PointNm>();
+      for (const [partId, initial] of state.initialPartPositionsNm.entries()) {
+        const positionNm = {
+          x: initial.x + state.deltaNm.x,
+          y: initial.y + state.deltaNm.y,
+        };
+        partPositionsNm.set(partId, positionNm);
+        commands.push({ type: "move_part", partId, positionNm });
       }
-      setDragSession(null);
+      for (const [
+        primitiveId,
+        initial,
+      ] of state.initialPrimitivePositionsNm.entries()) {
+        const positionNm = {
+          x: initial.x + state.deltaNm.x,
+          y: initial.y + state.deltaNm.y,
+        };
+        primitivePositionsNm.set(primitiveId, positionNm);
+        commands.push({ type: "move_primitive", primitiveId, positionNm });
+      }
+      // Re-compute the dropped wire geometry from the FINAL delta — the
+      // render memo can lag one pointer step behind this event.
+      const wirePointsNm = effectiveProjection
+        ? computeDragWireOverrides(
+            effectiveProjection,
+            state.initialPartPositionsNm,
+            state.initialPrimitivePositionsNm,
+            state.deltaNm,
+          )
+        : new Map<string, PointNm[]>();
+
+      // Hold the dropped state on screen until every enqueued move chain has
+      // landed AND the projection refreshed. Drops merge over any overlay
+      // still in flight; the overlay clears only when the whole queue drains
+      // — a chain finishing early must not strip a newer drop's overlay.
+      setPendingMove((prev) =>
+        mergePendingMoves(prev, {
+          partPositionsNm,
+          primitivePositionsNm,
+          wirePointsNm,
+        }),
+      );
+      // Serialize drops: each batch dispatches only after the previous one
+      // (including its projection refresh) settled, so concurrent chains can
+      // never interleave move commands or race baseRevision.
+      movesInFlightRef.current += 1;
+      moveChainRef.current = moveChainRef.current
+        .then(() => actions.dispatchCommandsBatch(commands))
+        .catch((err) =>
+          actions.setError(
+            err instanceof Error ? err.message : "Failed to move",
+          ),
+        )
+        .finally(() => {
+          movesInFlightRef.current -= 1;
+          if (movesInFlightRef.current === 0) setPendingMove(null);
+        });
     },
-    [actions, dispatchCommandsSequentially, dragReroutedWires],
+    [actions, effectiveProjection],
+  );
+  finalizeDragRef.current = finalizeDrag;
+
+  // Arm a move gesture: pointer capture + per-gesture window listeners. The
+  // gesture stays a plain click until the pointer travels DRAG_THRESHOLD_PX.
+  const armDrag = useCallback(
+    (
+      event: InteractionEvent,
+      worldNm: PointNm,
+      initialPartPositionsNm: Map<string, PointNm>,
+      initialPrimitivePositionsNm: Map<string, PointNm>,
+    ) => {
+      // Never two live gestures — cancel any leftover state first.
+      finalizeDragRef.current(false);
+      const releaseCapture = capturePointerForDrag(event);
+      const handleUp = () => finalizeDragRef.current(true);
+      const handleCancel = () => finalizeDragRef.current(false);
+      window.addEventListener("pointerup", handleUp);
+      window.addEventListener("pointercancel", handleCancel);
+      window.addEventListener("blur", handleCancel);
+      dragRef.current = {
+        phase: "armed",
+        initialPartPositionsNm,
+        initialPrimitivePositionsNm,
+        startScreenPx: { x: event.screenPoint.x, y: event.screenPoint.y },
+        startPointerNm: worldNm,
+        deltaNm: { x: 0, y: 0 },
+        cleanup: () => {
+          window.removeEventListener("pointerup", handleUp);
+          window.removeEventListener("pointercancel", handleCancel);
+          window.removeEventListener("blur", handleCancel);
+          releaseCapture();
+        },
+      };
+    },
+    [],
   );
 
-  // Window-level safety net: without pointer capture support (or when the
-  // release happens over an HTML overlay), the canvas never sees pointerup
-  // and the part keeps following the cursor forever.
-  useEffect(() => {
-    if (!dragSession) return;
-    const session = dragSession;
-    const handleUp = () => finishDrag(session, true);
-    const handleCancel = () => finishDrag(session, false);
-    window.addEventListener("pointerup", handleUp);
-    window.addEventListener("pointercancel", handleCancel);
-    window.addEventListener("blur", handleCancel);
-    return () => {
-      window.removeEventListener("pointerup", handleUp);
-      window.removeEventListener("pointercancel", handleCancel);
-      window.removeEventListener("blur", handleCancel);
-    };
-  }, [dragSession, finishDrag]);
+  // Component unmount mid-gesture must not leak the window listeners.
+  useEffect(
+    () => () => {
+      const state = dragRef.current;
+      if (state) {
+        dragRef.current = null;
+        state.cleanup();
+      }
+    },
+    [],
+  );
 
   const interactionHandler: InteractionHandler = useMemo(
     () => ({
@@ -1838,20 +1936,30 @@ export const SchematicCanvas = forwardRef<
           return worldNm;
         });
 
-        if (dragSession) {
-          const rawDelta = {
-            x: worldNm.x - dragSession.startPointerNm.x,
-            y: worldNm.y - dragSession.startPointerNm.y,
-          };
-          const snappedDelta = snap(rawDelta);
-          if (
-            snappedDelta.x !== dragSession.deltaNm.x ||
-            snappedDelta.y !== dragSession.deltaNm.y
-          ) {
-            setDragSession({
-              ...dragSession,
-              deltaNm: snappedDelta,
-            });
+        const dragState = dragRef.current;
+        if (dragState) {
+          if (dragState.phase === "armed") {
+            // Screen-space threshold: below it the gesture is still a click
+            // (select only) — parts never stick to an accidental press.
+            const dxPx = event.screenPoint.x - dragState.startScreenPx.x;
+            const dyPx = event.screenPoint.y - dragState.startScreenPx.y;
+            if (Math.hypot(dxPx, dyPx) >= DRAG_THRESHOLD_PX) {
+              dragState.phase = "active";
+            }
+          }
+          if (dragState.phase === "active") {
+            const rawDelta = {
+              x: worldNm.x - dragState.startPointerNm.x,
+              y: worldNm.y - dragState.startPointerNm.y,
+            };
+            const snappedDelta = snap(rawDelta);
+            if (
+              snappedDelta.x !== dragState.deltaNm.x ||
+              snappedDelta.y !== dragState.deltaNm.y
+            ) {
+              dragState.deltaNm = snappedDelta;
+              setDragVersion((v) => v + 1);
+            }
           }
         }
 
@@ -1867,12 +1975,15 @@ export const SchematicCanvas = forwardRef<
           return;
         }
 
-        // A previous drag lost its pointerup (released off-canvas before
-        // capture engaged) — treat this click as the drop instead of
-        // spawning a second, confused drag session.
-        if (dragSession) {
-          finishDrag(dragSession, true);
+        // Belt-and-braces: a live gesture surviving to the next pointerdown
+        // should be impossible (per-gesture window listeners finalize on any
+        // release), but if one exists, treat this press as its drop.
+        if (dragRef.current?.phase === "active") {
+          finalizeDrag(true);
           return;
+        }
+        if (dragRef.current) {
+          finalizeDrag(false);
         }
 
         const worldNm = {
@@ -2081,9 +2192,13 @@ export const SchematicCanvas = forwardRef<
             selection.partIds.has(partId) && selection.partIds.size > 0
               ? [...selection.partIds]
               : [partId];
+          // Seed from the EFFECTIVE (pending-move-aware) positions — seeding
+          // from the raw projection mid-flight teleports the part back to its
+          // pre-move position and commits the next move from that stale base.
+          const effective = effectiveProjection ?? projection;
           const initialPartPositionsNm = new Map<string, PointNm>();
           for (const selectedPartId of selectedPartIds) {
-            const selectedPart = projection.parts.find(
+            const selectedPart = effective.parts.find(
               (part) => part.id === selectedPartId,
             );
             if (!selectedPart) {
@@ -2101,7 +2216,7 @@ export const SchematicCanvas = forwardRef<
           const initialPrimitivePositionsNm = new Map<string, PointNm>();
           if (selection.partIds.has(partId)) {
             for (const id of selection.primitiveIds) {
-              const found = projection.primitives.find((p) => p.id === id);
+              const found = effective.primitives.find((p) => p.id === id);
               if (!found) continue;
               initialPrimitivePositionsNm.set(id, {
                 x: found.positionNm.x,
@@ -2110,13 +2225,12 @@ export const SchematicCanvas = forwardRef<
             }
           }
 
-          setDragSession({
+          armDrag(
+            event,
+            worldNm,
             initialPartPositionsNm,
             initialPrimitivePositionsNm,
-            startPointerNm: worldNm,
-            deltaNm: { x: 0, y: 0 },
-          });
-          capturePointerForDrag(event);
+          );
           return;
         }
 
@@ -2137,7 +2251,6 @@ export const SchematicCanvas = forwardRef<
               primitiveIds: new Set(),
             });
           }
-          setDragSession(null);
           return;
         }
 
@@ -2158,7 +2271,6 @@ export const SchematicCanvas = forwardRef<
               primitiveIds: new Set(),
             });
           }
-          setDragSession(null);
           return;
         }
 
@@ -2194,9 +2306,10 @@ export const SchematicCanvas = forwardRef<
             selection.primitiveIds.size > 0
               ? [...selection.primitiveIds]
               : [primitiveId];
+          const effective = effectiveProjection ?? projection;
           const initialPrimitivePositionsNm = new Map<string, PointNm>();
           for (const id of selectedPrimitiveIds) {
-            const found = projection.primitives.find((p) => p.id === id);
+            const found = effective.primitives.find((p) => p.id === id);
             if (!found) continue;
             initialPrimitivePositionsNm.set(id, {
               x: found.positionNm.x,
@@ -2209,7 +2322,7 @@ export const SchematicCanvas = forwardRef<
           const initialPartPositionsNm = new Map<string, PointNm>();
           if (selection.primitiveIds.has(primitiveId)) {
             for (const id of selection.partIds) {
-              const found = projection.parts.find((p) => p.id === id);
+              const found = effective.parts.find((p) => p.id === id);
               if (!found) continue;
               initialPartPositionsNm.set(id, {
                 x: found.positionNm.x,
@@ -2218,18 +2331,16 @@ export const SchematicCanvas = forwardRef<
             }
           }
 
-          setDragSession({
+          armDrag(
+            event,
+            worldNm,
             initialPartPositionsNm,
             initialPrimitivePositionsNm,
-            startPointerNm: worldNm,
-            deltaNm: { x: 0, y: 0 },
-          });
-          capturePointerForDrag(event);
+          );
           return;
         }
 
         const startMm = toMm(worldNm);
-        setDragSession(null);
         marquee.beginMarquee(startMm, event.modifiers.shift);
       },
       onPointerUp() {
@@ -2237,8 +2348,10 @@ export const SchematicCanvas = forwardRef<
           return;
         }
 
-        if (dragSession) {
-          finishDrag(dragSession, true);
+        if (dragRef.current) {
+          // Fast path — the per-gesture window listener would finalize this
+          // same release anyway (finalizeDrag is idempotent).
+          finalizeDrag(true);
           return;
         }
 
@@ -2675,17 +2788,17 @@ export const SchematicCanvas = forwardRef<
       armedLabelText,
       armedPrimitive,
       armedComponentDetail,
+      armDrag,
       commentMode,
       commentThreads,
       commitWireToPin,
       commitWireToWireJunction,
-      dispatchCommandsSequentially,
       dragPlacementDetail,
       dragPlacementLoading,
       dragGhostNm,
-      dragSession,
       draggingComponentId,
-      finishDrag,
+      effectiveProjection,
+      finalizeDrag,
       hitLabelId,
       hitPartId,
       hitPin,
@@ -2703,38 +2816,34 @@ export const SchematicCanvas = forwardRef<
     ],
   );
 
+  // Wires as displayed: effectiveProjection already carries any pending-move
+  // geometry; the live drag re-route layers on top (merge, not replace — a
+  // previous drop's wires must not snap back the instant a new drag starts).
   const effectiveWires = useMemo(() => {
-    if (!projection) return [];
-    const overrides =
-      dragReroutedWires.size > 0
-        ? dragReroutedWires
-        : (pendingMove?.wirePointsNm ?? null);
-    if (!overrides || overrides.size === 0) return projection.wires;
-    return projection.wires.map((wire) => {
-      const pointsNm = overrides.get(wire.id);
+    if (!effectiveProjection) return [];
+    if (dragReroutedWires.size === 0) return effectiveProjection.wires;
+    return effectiveProjection.wires.map((wire) => {
+      const pointsNm = dragReroutedWires.get(wire.id);
       return pointsNm ? { ...wire, pointsNm } : wire;
     });
-  }, [dragReroutedWires, pendingMove, projection]);
+  }, [dragReroutedWires, effectiveProjection]);
 
   const selectedWires = useMemo(() => {
-    if (!projection || selection.wireIds.size === 0) {
+    if (selection.wireIds.size === 0) {
       return [];
     }
     return effectiveWires.filter((wire) => selection.wireIds.has(wire.id));
-  }, [effectiveWires, projection, selection.wireIds]);
+  }, [effectiveWires, selection.wireIds]);
 
   const unselectedWires = useMemo(() => {
-    if (!projection) {
-      return [];
-    }
     if (selection.wireIds.size === 0) {
       return effectiveWires;
     }
     return effectiveWires.filter((wire) => !selection.wireIds.has(wire.id));
-  }, [effectiveWires, projection, selection.wireIds]);
+  }, [effectiveWires, selection.wireIds]);
 
   const wirePreview = useMemo(() => {
-    if (!projection || !wireSession || !cursorNm) {
+    if (!effectiveProjection || !wireSession || !cursorNm) {
       return null;
     }
     const sourcePin = pinById.get(wireSession.sourcePinId);
@@ -2751,7 +2860,7 @@ export const SchematicCanvas = forwardRef<
         ? routeSchematicWire({
             source: sourcePin.worldPositionNm,
             target,
-            obstacles: collectWireObstacles(projection, {
+            obstacles: collectWireObstacles(effectiveProjection, {
               source: sourcePin.worldPositionNm,
               target,
               sourcePinId: sourcePin.id,
@@ -2769,22 +2878,23 @@ export const SchematicCanvas = forwardRef<
       targetPinId: "cursor",
       pointsNm,
     } satisfies DesignerWire;
-  }, [cursorNm, gridVisible, pinById, projection, wireSession]);
+  }, [cursorNm, gridVisible, pinById, effectiveProjection, wireSession]);
 
   // Live connect-by-touch indicator while dragging (Altium-style): a dragged
   // pin (or primitive connection point) landing on a non-dragged wire's path
   // will auto-connect at commit — preview the junction dot during the drag.
   const dragTouchIndicators = useMemo(() => {
-    if (!projection || !dragSession) return [];
-    const delta = dragSession.deltaNm;
+    const state = dragRef.current;
+    if (!effectiveProjection || !state || state.phase !== "active") return [];
+    const delta = state.deltaNm;
     if (delta.x === 0 && delta.y === 0) return [];
-    const draggedPartIds = new Set(dragSession.initialPartPositionsNm.keys());
+    const draggedPartIds = new Set(state.initialPartPositionsNm.keys());
     const draggedPrimitiveIds = new Set(
-      dragSession.initialPrimitivePositionsNm.keys(),
+      state.initialPrimitivePositionsNm.keys(),
     );
     const movedPinIds = new Set<string>();
     const movedPoints: PointNm[] = [];
-    for (const part of projection.parts) {
+    for (const part of effectiveProjection.parts) {
       if (!draggedPartIds.has(part.id)) continue;
       for (const pin of part.pins) {
         movedPinIds.add(pin.id);
@@ -2794,7 +2904,7 @@ export const SchematicCanvas = forwardRef<
         });
       }
     }
-    for (const primitive of projection.primitives) {
+    for (const primitive of effectiveProjection.primitives) {
       if (!draggedPrimitiveIds.has(primitive.id)) continue;
       movedPinIds.add(`primitive:${primitive.id}`);
       movedPoints.push({
@@ -2804,7 +2914,7 @@ export const SchematicCanvas = forwardRef<
     }
     // Wires attached to the dragged selection re-route at commit; only wires
     // that stay put are touch targets during the drag.
-    const staticWires = projection.wires.filter(
+    const staticWires = effectiveProjection.wires.filter(
       (w) => !movedPinIds.has(w.sourcePinId) && !movedPinIds.has(w.targetPinId),
     );
     const indicators: PointNm[] = [];
@@ -2826,7 +2936,8 @@ export const SchematicCanvas = forwardRef<
       }
     }
     return indicators;
-  }, [dragSession, projection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragVersion tracks dragRef mutations
+  }, [dragVersion, effectiveProjection]);
 
   const dragGhostModel = dragPlacementDetail?.symbol.preview ?? null;
   const componentGhostModel = armedComponentDetail?.symbol.preview ?? null;
@@ -2835,14 +2946,12 @@ export const SchematicCanvas = forwardRef<
   const marqueeOverlay = marquee.overlayProps;
 
   const displayedPrimitives = useMemo(() => {
-    if (!projection) return [];
-    const dragging =
-      dragSession && dragSession.initialPrimitivePositionsNm.size > 0;
-    const pending = pendingMove && pendingMove.primitivePositionsNm.size > 0;
-    if (!dragging && !pending) {
-      return projection.primitives;
+    if (!effectiveProjection) return [];
+    const state = dragRef.current;
+    if (!state || state.initialPrimitivePositionsNm.size === 0) {
+      return effectiveProjection.primitives;
     }
-    return projection.primitives.map((primitive) => {
+    return effectiveProjection.primitives.map((primitive) => {
       const positionNm = renderedPrimitivePositionNm(primitive);
       if (
         positionNm.x === primitive.positionNm.x &&
@@ -2852,7 +2961,8 @@ export const SchematicCanvas = forwardRef<
       }
       return { ...primitive, positionNm };
     });
-  }, [dragSession, pendingMove, projection, renderedPrimitivePositionNm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragVersion tracks dragRef mutations
+  }, [dragVersion, effectiveProjection, renderedPrimitivePositionNm]);
 
   const primitiveGhost: DesignerPrimitive | null = useMemo(() => {
     if (!armedPrimitive || !cursorNm) return null;
@@ -2906,28 +3016,28 @@ export const SchematicCanvas = forwardRef<
           }}
         />
         <InvalidateOnCanvasChange
-          projection={projection}
+          projection={effectiveProjection}
           cursorNm={cursorNm}
           selection={selection}
-          dragSession={dragSession}
+          dragVersion={dragVersion}
           pendingMove={pendingMove}
           marqueeRect={{ a: marqueeOverlay.a, b: marqueeOverlay.b }}
           wireSession={wireSession}
           armedComponentDetail={armedComponentDetail}
         />
         <SchematicScene
-          projection={projection}
+          projection={effectiveProjection}
           gridVisible={gridVisible}
           unselectedWires={unselectedWires}
           selectedWires={selectedWires}
           wirePreview={wirePreview}
-          parts={projection?.parts ?? []}
+          parts={effectiveProjection?.parts ?? []}
           renderedPartPositionNm={renderedPartPositionNm}
           selection={selection}
-          labels={projection?.labels ?? []}
+          labels={effectiveProjection?.labels ?? []}
           primitives={displayedPrimitives}
           primitiveGhost={primitiveGhost}
-          junctions={projection?.junctions ?? []}
+          junctions={effectiveProjection?.junctions ?? []}
           dragTouchIndicators={dragTouchIndicators}
           marqueeOverlay={marqueeOverlay}
           dragGhostNm={dragGhostNm}

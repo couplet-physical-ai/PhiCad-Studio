@@ -78,6 +78,10 @@ export interface DesignerWorkspaceActions {
   setSelectedWireId(wireId: string | null): void;
   setWireSourcePinId(pinId: string | null): void;
   dispatchCommand(command: DesignerCommand): Promise<DesignerDispatchResult>;
+  /** Dispatch several commands sequentially with ONE projection + history
+   *  refresh at the end — a multi-part move refetching per command keeps the
+   *  optimistic overlay window (and its race surface) open N× longer. */
+  dispatchCommandsBatch(commands: DesignerCommand[]): Promise<void>;
   undo(): Promise<void>;
   redo(): Promise<void>;
   notifyExternalRevisionBump(revision: number): void;
@@ -474,7 +478,7 @@ export function useDesignerWorkspace(params: {
     dragResolveComponentRef.current = null;
   }, []);
 
-  const dispatchCommand = useCallback(
+  const dispatchEnvelope = useCallback(
     async (command: DesignerCommand) => {
       let designId = selectedDesignIdRef.current;
       if (!designId && command.type === "place_part") {
@@ -504,25 +508,52 @@ export function useDesignerWorkspace(params: {
         throw new Error(commandErrorMessage(result));
       }
 
-      if (isPcbCommand) {
-        if (projectionRef.current) {
-          projectionRef.current = {
-            ...projectionRef.current,
-            revision: result.revision,
-          };
-        }
-      } else {
+      // PCB commands track revision optimistically instead of refetching the
+      // schematic projection; keep the ref current so the NEXT envelope's
+      // baseRevision is valid even before any refresh runs.
+      if (projectionRef.current) {
+        projectionRef.current = {
+          ...projectionRef.current,
+          revision: result.revision,
+        };
+      }
+      return { designId, result, isPcbCommand };
+    },
+    [api, ensureDesignForPlacement],
+  );
+
+  const dispatchCommand = useCallback(
+    async (command: DesignerCommand) => {
+      const { designId, result, isPcbCommand } =
+        await dispatchEnvelope(command);
+      if (!isPcbCommand) {
         await refreshProjectionForDesign(designId);
         await refreshHistoryForDesign(designId);
       }
       return result;
     },
-    [
-      api,
-      ensureDesignForPlacement,
-      refreshProjectionForDesign,
-      refreshHistoryForDesign,
-    ],
+    [dispatchEnvelope, refreshProjectionForDesign, refreshHistoryForDesign],
+  );
+
+  const dispatchCommandsBatch = useCallback(
+    async (commands: DesignerCommand[]) => {
+      if (commands.length === 0) return;
+      let refreshDesignId: string | null = null;
+      try {
+        for (const command of commands) {
+          const { designId, isPcbCommand } = await dispatchEnvelope(command);
+          if (!isPcbCommand) refreshDesignId = designId;
+        }
+      } finally {
+        // Refresh even after a mid-batch failure — earlier commands already
+        // applied and the UI must converge on the persisted state.
+        if (refreshDesignId) {
+          await refreshProjectionForDesign(refreshDesignId);
+          await refreshHistoryForDesign(refreshDesignId);
+        }
+      }
+    },
+    [dispatchEnvelope, refreshProjectionForDesign, refreshHistoryForDesign],
   );
 
   const undo = useCallback(async () => {
@@ -687,6 +718,7 @@ export function useDesignerWorkspace(params: {
       setSelectedWireId,
       setWireSourcePinId,
       dispatchCommand,
+      dispatchCommandsBatch,
       undo,
       redo,
       notifyExternalRevisionBump,

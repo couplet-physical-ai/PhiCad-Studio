@@ -1,13 +1,20 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 /**
- * Regression: dragging a schematic part must not flash the part (or its
- * wires) back to the pre-drag position while the move commands + projection
- * refresh are in flight (optimistic `pendingMove` overlay in
- * SchematicCanvas). The part is located and tracked by scanning for its
- * saturated-blue pin dots on the WebGL canvas, so the test is independent of
- * camera math and works in both themes (text/body strokes are excluded by
- * the color predicate).
+ * Schematic move regressions. Parts are located and tracked by scanning for
+ * their saturated-blue pin dots on the WebGL canvas, so the tests are
+ * independent of camera math and work in both themes (text/body strokes are
+ * excluded by the color predicate). Covered:
+ *  - dragging must not flash the part (or wires) back to the pre-drag
+ *    position while the move commands + projection refresh are in flight
+ *    (optimistic `pendingMove` overlay in SchematicCanvas);
+ *  - release ends the move — the part must NOT keep following the cursor
+ *    (ref-based drag lifecycle; no extra click-to-place);
+ *  - a plain click selects without moving (DRAG_THRESHOLD_PX arming);
+ *  - an immediate re-grab while the previous move is still saving must seed
+ *    from the optimistic positions (`effectiveProjection`), not the stale
+ *    projection — the pre-fix failure teleported the part back and stretched
+ *    its wires to ghost endpoints.
  */
 
 const API = "http://127.0.0.1:3000/api/modules";
@@ -185,14 +192,29 @@ async function blueStats(
   );
 }
 
-test("dragging a part keeps it (and wires) at the drop position with no snap-back flash", async ({
-  page,
-  request,
-}) => {
-  // ── Seed: two wired parts via the API. ──
+interface MoveScene {
+  canvas: ReturnType<Page["locator"]>;
+  box: { x: number; y: number; width: number; height: number };
+  /** Page coords of part A's body center (safe grab point). */
+  grabX: number;
+  grabY: number;
+  /** Canvas-relative coords of part A's pin-pair center. */
+  originCx: number;
+  originCy: number;
+  pinSpanPx: number;
+}
+
+/** Seed two wired parts via the API, open the design, and locate part A by
+ *  its two leftmost pin-dot clusters. Unique design name per test — the dev
+ *  DB persists across tests, so a shared name would open a stale design. */
+async function seedAndOpenScene(
+  page: Page,
+  request: APIRequestContext,
+  designName: string,
+): Promise<MoveScene> {
   const componentId = await importDrawnComponent(request);
   const createResponse = await request.post(`${API}/designer/designs`, {
-    data: { name: "Drag regression" },
+    data: { name: designName },
   });
   expect(createResponse.status()).toBe(201);
   const created = (await createResponse.json()) as {
@@ -231,10 +253,9 @@ test("dragging a part keeps it (and wires) at the drop position with no snap-bac
     targetPinId: pinB,
   });
 
-  // ── Open the design in the browser. ──
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Designs" })).toBeVisible();
-  await page.getByText("Drag regression").first().click();
+  await page.getByText(designName).first().click();
   const canvas = page.locator("canvas").first();
   await expect(canvas).toBeVisible();
   await page.waitForTimeout(700); // camera + first projection render
@@ -242,9 +263,9 @@ test("dragging a part keeps it (and wires) at the drop position with no snap-bac
   const box = await canvas.boundingBox();
   if (!box) throw new Error("canvas has no bounding box");
 
-  // Locate part A: its pins are the two leftmost pin-dot clusters; the
-  // midpoint between them is the symbol body center — a safe grab point
-  // (clicking a pin dot itself would start a wire draw instead of a drag).
+  // Part A's pins are the two leftmost pin-dot clusters; the midpoint
+  // between them is the symbol body center — a safe grab point (clicking a
+  // pin dot itself would start a wire draw instead of a drag).
   const before = await canvas.screenshot();
   const clusters = await blueClusters(page, before);
   expect(clusters.length).toBeGreaterThanOrEqual(2);
@@ -252,18 +273,28 @@ test("dragging a part keeps it (and wires) at the drop position with no snap-bac
   if (!pinDotA1 || !pinDotA2) throw new Error("expected two pin dots");
   const pinSpanPx = pinDotA2.cx - pinDotA1.cx;
   expect(pinSpanPx).toBeGreaterThan(40); // sane zoom: 4 mm pin span on screen
-  const grabX = box.x + (pinDotA1.cx + pinDotA2.cx) / 2;
-  const grabY = box.y + (pinDotA1.cy + pinDotA2.cy) / 2;
-  const originCx = (pinDotA1.cx + pinDotA2.cx) / 2;
-  const originCy = (pinDotA1.cy + pinDotA2.cy) / 2;
+  return {
+    canvas,
+    box,
+    grabX: box.x + (pinDotA1.cx + pinDotA2.cx) / 2,
+    grabY: box.y + (pinDotA1.cy + pinDotA2.cy) / 2,
+    originCx: (pinDotA1.cx + pinDotA2.cx) / 2,
+    originCy: (pinDotA1.cy + pinDotA2.cy) / 2,
+    pinSpanPx,
+  };
+}
 
-  // Slow the move commands + projection refetch (as on large designs /
-  // slower machines) so any snap-back flash spans several captured frames
-  // instead of a single sub-screenshot-latency blink.
-  await page.route("**/api/modules/designer/designs/*/commands", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    await route.continue();
-  });
+/** Slow the move commands + projection refetch (as on large designs / slower
+ *  machines) so races span several captured frames instead of a single
+ *  sub-screenshot-latency blink. */
+async function installRouteDelays(page: Page): Promise<void> {
+  await page.route(
+    "**/api/modules/designer/designs/*/commands",
+    async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.continue();
+    },
+  );
   await page.route(
     "**/api/modules/designer/designs/*/projection/schematic",
     async (route) => {
@@ -271,42 +302,159 @@ test("dragging a part keeps it (and wires) at the drop position with no snap-bac
       await route.continue();
     },
   );
+}
 
-  // ── Drag part A straight down by 140 px. ──
-  const DROP_DY = 140;
-  await page.mouse.move(grabX, grabY);
+function regionAround(
+  scene: MoveScene,
+  dxPx: number,
+  dyPx: number,
+): { x: number; y: number; w: number; h: number } {
+  // Spans both pins of part A (pin span + margin), vertically tight enough
+  // (±35 px) that regions 140 px apart never overlap even after grid
+  // snapping (≤ half a grid step ≈ 25 px at this zoom).
+  const w = scene.pinSpanPx + 80;
+  const h = 70;
+  return {
+    x: scene.originCx + dxPx - w / 2,
+    y: scene.originCy + dyPx - h / 2,
+    w,
+    h,
+  };
+}
+
+async function dragBy(
+  page: Page,
+  fromX: number,
+  fromY: number,
+  dxPx: number,
+  dyPx: number,
+): Promise<void> {
+  await page.mouse.move(fromX, fromY);
   await page.mouse.down();
   for (let step = 1; step <= 7; step += 1) {
-    await page.mouse.move(grabX, grabY + (DROP_DY / 7) * step);
+    await page.mouse.move(
+      fromX + (dxPx / 7) * step,
+      fromY + (dyPx / 7) * step,
+    );
   }
   await page.mouse.up();
+}
+
+test("dragging a part keeps it (and wires) at the drop position with no snap-back flash", async ({
+  page,
+  request,
+}) => {
+  const scene = await seedAndOpenScene(
+    page,
+    request,
+    `Drag regression ${Date.now()}`,
+  );
+  await installRouteDelays(page);
+
+  // ── Drag part A straight down by 140 px, then move the cursor away. ──
+  const DROP_DY = 140;
+  await dragBy(page, scene.grabX, scene.grabY, 0, DROP_DY);
+  // Release ended the move: a sticky drag session would make the part chase
+  // this post-release cursor move and leave the drop region.
+  await page.mouse.move(scene.grabX + 250, scene.grabY - 120);
 
   // ── The part's pin dots must sit at the drop position in EVERY frame after
   //    release — a snap-back flash renders them at the original position
   //    while the async move commands land. ──
-  // Regions span both pins of part A (pin span + margin), vertically tight
-  // enough (±35 px) that old/new never overlap for a 140 px drop even after
-  // grid snapping (≤ half a grid step ≈ 25 px at this zoom).
-  const regionW = pinSpanPx + 80;
-  const regionH = 70;
-  const newRegion = {
-    x: originCx - regionW / 2,
-    y: originCy + DROP_DY - regionH / 2,
-    w: regionW,
-    h: regionH,
-  };
-  const oldRegion = {
-    x: originCx - regionW / 2,
-    y: originCy - regionH / 2,
-    w: regionW,
-    h: regionH,
-  };
+  const newRegion = regionAround(scene, 0, DROP_DY);
+  const oldRegion = regionAround(scene, 0, 0);
   for (let frame = 0; frame < 8; frame += 1) {
-    const shot = await canvas.screenshot();
+    const shot = await scene.canvas.screenshot();
     const atNew = await blueStats(page, shot, newRegion);
     const atOld = await blueStats(page, shot, oldRegion);
-    expect(atNew.count, `frame ${frame}: part missing at drop position`).toBeGreaterThan(5);
-    expect(atOld.count, `frame ${frame}: snap-back flash at origin`).toBeLessThan(5);
+    expect(
+      atNew.count,
+      `frame ${frame}: part missing at drop position`,
+    ).toBeGreaterThan(5);
+    expect(
+      atOld.count,
+      `frame ${frame}: snap-back flash at origin`,
+    ).toBeLessThan(5);
+    await page.waitForTimeout(60);
+  }
+});
+
+test("a plain click selects the part without moving it", async ({
+  page,
+  request,
+}) => {
+  const scene = await seedAndOpenScene(
+    page,
+    request,
+    `Click no-move ${Date.now()}`,
+  );
+
+  // Click part A's body with a sub-threshold wiggle (< DRAG_THRESHOLD_PX),
+  // then move the cursor far away. The part must stay exactly at its origin:
+  // no move commit, no cursor-chasing leftover session.
+  await page.mouse.move(scene.grabX, scene.grabY);
+  await page.mouse.down();
+  await page.mouse.move(scene.grabX + 2, scene.grabY + 1);
+  await page.mouse.up();
+  await page.mouse.move(scene.grabX + 220, scene.grabY + 160);
+
+  const originRegion = regionAround(scene, 0, 0);
+  for (let frame = 0; frame < 5; frame += 1) {
+    const shot = await scene.canvas.screenshot();
+    const atOrigin = await blueStats(page, shot, originRegion);
+    expect(
+      atOrigin.count,
+      `frame ${frame}: click moved the part away from its origin`,
+    ).toBeGreaterThan(5);
+    await page.waitForTimeout(60);
+  }
+});
+
+test("an immediate re-grab while the previous move is still saving stays consistent", async ({
+  page,
+  request,
+}) => {
+  const scene = await seedAndOpenScene(
+    page,
+    request,
+    `Re-grab mid-flight ${Date.now()}`,
+  );
+  await installRouteDelays(page);
+
+  // First drag: 140 px down. With the injected delays its move commands +
+  // projection refetch are still in flight while the second drag runs.
+  const DY = 140;
+  // Far enough right that the final pin dots can never fall inside the
+  // intermediate assertion region regardless of zoom (region half-width is
+  // pinSpan/2 + 40; the final left pin lands at DX − pinSpan/2).
+  const DX = Math.ceil(scene.pinSpanPx + 120);
+  await dragBy(page, scene.grabX, scene.grabY, 0, DY);
+  // Immediately re-grab at the part's NEW visual position and drag 180 px
+  // right. Pre-fix this seeded from the stale projection: the part teleported
+  // back to its origin and the second commit landed at origin+dx (losing the
+  // first move), stretching its wires to ghost endpoints.
+  await dragBy(page, scene.grabX, scene.grabY + DY, DX, 0);
+
+  const finalRegion = regionAround(scene, DX, DY);
+  const intermediateRegion = regionAround(scene, 0, DY);
+  const originRegion = regionAround(scene, 0, 0);
+  for (let frame = 0; frame < 10; frame += 1) {
+    const shot = await scene.canvas.screenshot();
+    const atFinal = await blueStats(page, shot, finalRegion);
+    const atIntermediate = await blueStats(page, shot, intermediateRegion);
+    const atOrigin = await blueStats(page, shot, originRegion);
+    expect(
+      atFinal.count,
+      `frame ${frame}: part missing at final position`,
+    ).toBeGreaterThan(5);
+    expect(
+      atIntermediate.count,
+      `frame ${frame}: part flashed back to the first drop position`,
+    ).toBeLessThan(5);
+    expect(
+      atOrigin.count,
+      `frame ${frame}: part teleported back to its origin`,
+    ).toBeLessThan(5);
     await page.waitForTimeout(60);
   }
 });
