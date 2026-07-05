@@ -3,7 +3,6 @@
 -- The AutoCopperRegistry lives in SQLite (not in-memory) because undo history
 -- survives restarts (designer_session_histories) and two DesignerStore instances
 -- share this DB.
-
 create table designer_capture_sessions (
   session_ulid text primary key,
   design_id text not null,
@@ -15,9 +14,10 @@ create table designer_capture_sessions (
   bytes_on_disk integer not null default 0,
   capped integer not null default 0
 );
+--> statement-breakpoint
 create index designer_capture_sessions_design_idx
   on designer_capture_sessions (design_id);
-
+--> statement-breakpoint
 create table designer_capture_autolayout_jobs (
   job_id text primary key,
   design_id text not null,
@@ -29,9 +29,10 @@ create table designer_capture_autolayout_jobs (
   result_summary_json text,
   preexisting_net_copper_json text not null default '{}'
 );
+--> statement-breakpoint
 create index designer_capture_autolayout_jobs_design_idx
   on designer_capture_autolayout_jobs (design_id);
-
+--> statement-breakpoint
 create table designer_capture_auto_copper (
   geometry_id text primary key,
   design_id text not null,
@@ -45,11 +46,13 @@ create table designer_capture_auto_copper (
   created_at text not null,
   updated_at text not null
 );
+--> statement-breakpoint
 create index designer_capture_auto_copper_design_net_idx
   on designer_capture_auto_copper (design_id, net_id);
+--> statement-breakpoint
 create index designer_capture_auto_copper_cmd_idx
   on designer_capture_auto_copper (created_by_command_id);
-
+--> statement-breakpoint
 create table designer_capture_upload_queue (
   id text primary key,
   kind text not null,
@@ -63,5 +66,6 @@ create table designer_capture_upload_queue (
   created_at text not null,
   updated_at text not null
 );
+--> statement-breakpoint
 create index designer_capture_upload_queue_status_idx
   on designer_capture_upload_queue (status, next_attempt_at);

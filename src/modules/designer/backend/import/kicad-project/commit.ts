@@ -36,6 +36,7 @@ import type {
 } from "../../../../../sdks/library";
 import { MODULE_SDK_TOKENS } from "../../../../../sdks";
 import type { CoreBackendModuleContext } from "../../../../../core/contracts/modules/backend-module";
+import { resolveCaptureRuntime } from "../../capture";
 import { commandLog, designHeads, pcbEntities } from "../../schema";
 import { createDefaultPcbBoardSettings } from "../../pcb/pcb-defaults";
 import { parseKicadSchematic } from "../../../../library/backend/infrastructure/parsers/kicad/kicad-schematic-parser";
@@ -246,6 +247,17 @@ export async function commitKicadProjectImport(
   const { schematic: schematicSummary, pcb: pcbSummary } = txResult;
 
   warnings.push(...schematicSummary.warnings, ...pcbSummary.warnings);
+
+  // Dataset capture (WP-D4): the importer bypasses dispatchCommand (it inserts
+  // entities directly + one synthetic commandLog row), so actor:"import" is
+  // recorded here — the only place with the data. Fail-isolated in the runtime.
+  resolveCaptureRuntime(ctx).onImportCommitted(designId, {
+    designName,
+    partsInserted: schematicSummary.partsInserted,
+    wiresInserted: schematicSummary.wiresInserted,
+    pcbTracesInserted: pcbSummary.tracesInserted,
+    pcbViasInserted: pcbSummary.viasInserted,
+  });
 
   // Track what could not be fully ingested. With the full pipeline in place,
   // we only mark `library_ingestion` / `schematic_symbols` deferred if the

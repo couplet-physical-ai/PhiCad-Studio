@@ -11,7 +11,7 @@
 // Copilot frames carry a loose `data` object and no timestamp; required
 // AiRunEvent data fields missing from the wire get honest defaults.
 
-import type { AiRunEvent } from "@openpcb/ai-core";
+import type { AiRunEvent, AiSourceRef, AiSourceRefKind } from "@openpcb/ai-core";
 import type {
   CopilotOnlyFrameType,
   CopilotSharedRunFrameType,
@@ -42,6 +42,56 @@ const SHARED_RUN_FRAME_TYPES: ReadonlySet<string> = new Set([
 
 function str(v: unknown, fallback = ""): string {
   return typeof v === "string" ? v : fallback;
+}
+
+const SOURCE_REF_KINDS: ReadonlySet<string> = new Set([
+  "design",
+  "schematic",
+  "pcb",
+  "net",
+  "part",
+  "library-component",
+  "symbol",
+  "footprint",
+  "file",
+  "tool",
+  "external",
+] satisfies AiSourceRefKind[]);
+
+// Copilot-side kinds without an AiSourceRefKind twin (e.g. record_issue's "doc").
+const SOURCE_KIND_ALIASES: Record<string, AiSourceRefKind> = {
+  doc: "file",
+  component: "library-component",
+};
+
+/** Coerce wire `data.sources` (S11: datasheet page citations et al) to AiSourceRef[].
+ * Items without a derivable id are dropped; unknown kinds fall back to "file". */
+export function toSourceRefs(v: unknown): AiSourceRef[] {
+  if (!Array.isArray(v)) return [];
+  const out: AiSourceRef[] = [];
+  for (const item of v) {
+    if (typeof item !== "object" || item === null) continue;
+    const r = item as Record<string, unknown>;
+    const id = str(r.id) || str(r.refId) || str(r.sha256);
+    if (!id) continue;
+    const rawKind = str(r.kind);
+    const kind: AiSourceRefKind = SOURCE_REF_KINDS.has(rawKind)
+      ? (rawKind as AiSourceRefKind)
+      : (SOURCE_KIND_ALIASES[rawKind] ?? "file");
+    const ref: AiSourceRef = {
+      id,
+      kind,
+      label: str(r.label) || str(r.path) || id,
+    };
+    if (typeof r.refId === "string") ref.refId = r.refId;
+    if (typeof r.path === "string") ref.path = r.path;
+    if (typeof r.excerpt === "string") ref.excerpt = r.excerpt;
+    if (r.metadata && typeof r.metadata === "object" && !Array.isArray(r.metadata)) {
+      ref.metadata = r.metadata as Record<string, unknown>;
+    }
+    out.push(ref);
+  }
+  return out;
 }
 
 /** Fill the AiRunEvent data shape for one shared frame type. */
@@ -76,9 +126,11 @@ function aiEventData(
         toolCallId: str(data.toolCallId),
         toolName: str(data.toolName),
         resultJson: str(data.resultJson, "{}"),
-        sources: [],
-        truncated: false,
-        warnings: [],
+        sources: toSourceRefs(data.sources),
+        truncated: data.truncated === true,
+        warnings: Array.isArray(data.warnings)
+          ? data.warnings.filter((w): w is string => typeof w === "string")
+          : [],
       };
     case "run.tool.failed":
       return {

@@ -2407,10 +2407,12 @@ export function registerRoutes(
     }
     const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
     const apiUrl = req.headers.get("x-cloud-api-url") ?? undefined;
-    const result = await store.dispatchCommand(designId, envelope, {
-      bearer,
-      apiUrl,
-    });
+    const result = await store.dispatchCommand(
+      designId,
+      envelope,
+      { bearer, apiUrl },
+      { actor: "user" },
+    );
     return success({ result });
   });
 

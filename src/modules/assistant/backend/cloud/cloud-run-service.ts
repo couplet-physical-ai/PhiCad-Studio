@@ -11,7 +11,7 @@
 // "cloud") plus a synthetic succeeded tool event so the existing proposal
 // cards render it.
 
-import type { AiRunEvent } from "@openpcb/ai-core";
+import type { AiRunEvent, AiSourceRef } from "@openpcb/ai-core";
 import type { CopilotProposalView, CopilotStreamFrame } from "@openpcb/contracts";
 import type { CoreBackendModuleContext } from "../../../../core/contracts/modules/backend-module";
 import type { TaskExecutionContext, TasksSDK } from "../../../../sdks";
@@ -169,6 +169,12 @@ export class CloudRunService {
     };
 
     const mirrored = new Set<string>();
+    // toolCallId → persisted tool-event dto, so SSE reconnect replays and status
+    // transitions reuse the same row (no duplicate ToolCards).
+    const toolEventsByCall = new Map<
+      string,
+      { id: string; argumentsJson: string }
+    >();
     let sawTerminal: "completed" | "failed" | "cancelled" | null = null;
     let failureReason = "";
 
@@ -182,6 +188,15 @@ export class CloudRunService {
             (event.data as { delta: string }).delta,
           );
         }
+        // Persist cloud tool events (S11): ToolCard/SourceChips render from the
+        // conversation store, which the local BYO path fills but cloud runs never
+        // did — datasheet page citations were invisible without this.
+        this.upsertCloudToolEvent(event, {
+          chatId,
+          taskId: taskCtx.task.id,
+          messageId: assistantMessageId,
+          toolEventsByCall,
+        });
         if (event.type === "run.completed") sawTerminal = "completed";
         if (event.type === "run.cancelled") sawTerminal = "cancelled";
         if (event.type === "run.failed") {
@@ -291,6 +306,66 @@ export class CloudRunService {
       ai: { cloudRunId: runId, mode: "cloud" },
     } as never);
     return { messageId: assistantMessageId, cloudRunId: runId };
+  }
+
+  /** Persist a cloud run's tool lifecycle into the conversation store (S11).
+   * Same rows the local BYO executor writes (run-service.ts) — trimmed: no
+   * tool-role transcript messages (cloud history lives server-side). */
+  private upsertCloudToolEvent(
+    event: AiRunEvent,
+    ctx: {
+      chatId: string;
+      taskId: string | null;
+      messageId: string | null;
+      toolEventsByCall: Map<string, { id: string; argumentsJson: string }>;
+    },
+  ): void {
+    if (
+      event.type !== "run.tool.requested" &&
+      event.type !== "run.tool.running" &&
+      event.type !== "run.tool.succeeded" &&
+      event.type !== "run.tool.failed"
+    ) {
+      return;
+    }
+    const data = event.data as {
+      toolCallId?: string;
+      toolName?: string;
+      argumentsJson?: string;
+      resultJson?: string;
+      sources?: AiSourceRef[];
+      errorMessage?: string;
+    };
+    const toolCallId = data.toolCallId ?? "";
+    if (!toolCallId) return;
+    const prior = ctx.toolEventsByCall.get(toolCallId);
+    const status =
+      event.type === "run.tool.requested"
+        ? ("requested" as const)
+        : event.type === "run.tool.running"
+          ? ("running" as const)
+          : event.type === "run.tool.succeeded"
+            ? ("succeeded" as const)
+            : ("failed" as const);
+    const argumentsJson = data.argumentsJson ?? prior?.argumentsJson ?? "{}";
+    const dto = this.options.conversation.upsertToolEvent({
+      id: prior?.id,
+      chatId: ctx.chatId,
+      taskId: ctx.taskId,
+      messageId: ctx.messageId,
+      toolCallId,
+      toolName: data.toolName ?? "",
+      status,
+      argumentsJson,
+      resultJson:
+        event.type === "run.tool.succeeded" ? (data.resultJson ?? "{}") : undefined,
+      errorJson:
+        event.type === "run.tool.failed"
+          ? JSON.stringify({ message: data.errorMessage ?? "tool failed" })
+          : undefined,
+      sources: event.type === "run.tool.succeeded" ? (data.sources ?? []) : undefined,
+    });
+    ctx.toolEventsByCall.set(toolCallId, { id: dto.id, argumentsJson });
   }
 
   /** Mirror one staged cloud proposal into the local store + a succeeded tool

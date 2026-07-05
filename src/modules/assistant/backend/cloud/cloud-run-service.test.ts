@@ -296,4 +296,64 @@ describe("assistant.cloud-chat executor", () => {
     h.taskCtx.task.payload.cloudCredsEnc = "AAAA";
     await expect(h.service.execute(h.taskCtx as never)).rejects.toThrow(/re-send/);
   });
+
+  // ── S11: cloud tool events persist into the conversation store ──────────────
+
+  const sha = "a".repeat(64);
+  const TOOL_FRAMES: CopilotStreamFrame[] = [
+    frame("run.started", 1, {}),
+    frame("run.tool.requested", 2, {
+      toolCallId: "tc_1", toolName: "copilot_datasheet_lookup",
+      argumentsJson: '{"query":"vdd max"}',
+    }),
+    frame("run.tool.running", 3, {
+      toolCallId: "tc_1", toolName: "copilot_datasheet_lookup",
+    }),
+    frame("run.tool.succeeded", 4, {
+      toolCallId: "tc_1", toolName: "copilot_datasheet_lookup",
+      sources: [{ id: `${sha}:p.12`, kind: "file", label: "STM32 DS", path: "p.12" }],
+      warnings: ["preparing"],
+    }),
+    frame("run.tool.requested", 5, {
+      toolCallId: "tc_2", toolName: "copilot_calculator",
+      argumentsJson: '{"expression":"1/0"}',
+    }),
+    frame("run.tool.failed", 6, {
+      toolCallId: "tc_2", toolName: "copilot_calculator", error: "division by zero",
+    }),
+    frame("run.completed", 7, {}),
+  ];
+
+  test("S11: tool lifecycle upserts one store row per toolCallId", async () => {
+    const h = makeHarness({ frames: TOOL_FRAMES });
+    await h.service.execute(h.taskCtx as never);
+
+    const tc1 = h.toolEvents.filter((e) => e.toolCallId === "tc_1");
+    expect(tc1).toHaveLength(3); // requested → running → succeeded
+    expect(tc1.map((e) => e.status)).toEqual(["requested", "running", "succeeded"]);
+    // Follow-up upserts reuse the row id from the first insert.
+    expect(tc1[0]!.id).toBeUndefined();
+    expect(tc1[1]!.id).toBe("evt_1");
+    expect(tc1[2]!.id).toBe("evt_1");
+    // argumentsJson carried forward from the requested frame.
+    expect(tc1[2]!.argumentsJson).toBe('{"query":"vdd max"}');
+  });
+
+  test("S11: succeeded carries sources; failed carries errorJson", async () => {
+    const h = makeHarness({ frames: TOOL_FRAMES });
+    await h.service.execute(h.taskCtx as never);
+
+    const succeeded = h.toolEvents.find(
+      (e) => e.toolCallId === "tc_1" && e.status === "succeeded",
+    )!;
+    const sources = succeeded.sources as Array<{ id: string; path?: string }>;
+    expect(sources).toHaveLength(1);
+    expect(sources[0]!.id).toBe(`${sha}:p.12`);
+    expect(sources[0]!.path).toBe("p.12");
+
+    const failed = h.toolEvents.find(
+      (e) => e.toolCallId === "tc_2" && e.status === "failed",
+    )!;
+    expect(String(failed.errorJson)).toContain("division by zero");
+  });
 });

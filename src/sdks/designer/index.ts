@@ -193,6 +193,19 @@ export type {
 export type { DesignerInvalidatedEvent } from "./events";
 export { placementMirrorX, exportBundleName } from "./pcb-helpers";
 
+/**
+ * Optional dataset-capture attribution for a dispatched command (WP-D4).
+ * The command envelope has no actor field and session ids are fixed per
+ * surface, so origin is only knowable at the call site.
+ */
+export interface DesignerDispatchCaptureMeta {
+  actor: "user" | "assistant" | "autolayout_apply" | "import";
+  jobId?: string;
+  appliedCandidateId?: string;
+  /** Links the commands of one apply/proposal loop (the batch surrogate). */
+  groupId?: string;
+}
+
 export interface DesignerSDK {
   createDesign(
     input?: CreateDesignerDesignInput,
@@ -216,6 +229,7 @@ export interface DesignerSDK {
   dispatchCommand(
     designId: string,
     envelope: DesignerCommandEnvelope,
+    capture?: DesignerDispatchCaptureMeta,
   ): Promise<DesignerDispatchResult>;
   getHistory(
     designId: string,

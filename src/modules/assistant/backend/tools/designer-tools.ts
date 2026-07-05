@@ -3578,14 +3578,18 @@ export async function applySchematicProposalOperations(input: {
   let stoppedAtOperationId: string | undefined;
 
   const dispatch = (command: DesignerCommandEnvelope["command"]) =>
-    input.designer.dispatchCommand(input.designId, {
-      commandId: crypto.randomUUID(),
-      sessionId: AI_DESIGNER_SESSION_ID,
-      aggregateId: input.designId,
-      baseRevision,
-      issuedAt: Date.now(),
-      command,
-    });
+    input.designer.dispatchCommand(
+      input.designId,
+      {
+        commandId: crypto.randomUUID(),
+        sessionId: AI_DESIGNER_SESSION_ID,
+        aggregateId: input.designId,
+        baseRevision,
+        issuedAt: Date.now(),
+        command,
+      },
+      { actor: "assistant" },
+    );
 
   for (const operation of input.envelope.operations) {
     const revisionBefore = baseRevision;
@@ -3805,6 +3809,7 @@ export async function applyDesignerPlaceComponentsProposal(input: {
     const result = await input.designer.dispatchCommand(
       input.designId,
       envelope,
+      { actor: "assistant" },
     );
     results.push(result);
     if (result.ok !== true) {
@@ -3850,6 +3855,7 @@ export async function applyDesignerPlaceComponentsProposal(input: {
       const updateResult = await input.designer.dispatchCommand(
         input.designId,
         updateEnvelope,
+        { actor: "assistant" },
       );
       results.push(updateResult);
       if (updateResult.ok !== true) {

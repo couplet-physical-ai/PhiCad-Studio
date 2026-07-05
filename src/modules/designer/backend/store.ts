@@ -32,6 +32,8 @@ import {
   type LibraryTagStat,
 } from "../../../sdks";
 import { MODULE_SDK_TOKENS } from "../../../sdks";
+import { resolveCaptureRuntime } from "./capture";
+import type { DispatchCaptureMeta } from "./capture/types";
 import { executeDesignerCommand } from "./command-executor";
 import {
   linkDesignToCloud as linkToCloud,
@@ -168,6 +170,7 @@ export interface DesignerStore {
     designId: string,
     envelope: DesignerCommandEnvelope,
     cloud?: { bearer?: string; apiUrl?: string },
+    captureMeta?: DispatchCaptureMeta,
   ): Promise<DesignerDispatchResult>;
   linkDesignToCloud(
     designId: string,
@@ -206,6 +209,9 @@ export function createDesignerStore(
   ctx: CoreBackendModuleContext,
 ): DesignerStore {
   const db = getDb(ctx.db);
+  // Process-wide singleton: both store instances (sdk.ts / routes.ts) feed one
+  // capture log + registry. No-op when the dataset.capture flag is off.
+  const capture = resolveCaptureRuntime(ctx);
   const sessionHistories = new Map<
     string,
     CommandHistory<DesignerCommand, DesignerWorldComponent>
@@ -557,7 +563,7 @@ export function createDesignerStore(
       return library.listTags(options);
     },
 
-    async dispatchCommand(designId, envelope, cloud) {
+    async dispatchCommand(designId, envelope, cloud, captureMeta) {
       const existingLog = db
         .select()
         .from(commandLog)
@@ -812,6 +818,17 @@ export function createDesignerStore(
           persistSessionHistory(designId, envelope.sessionId);
         }
 
+        // Dataset capture (WP-D4): verbatim envelope + result + derived tags,
+        // and AutoCopperRegistry maintenance. Fail-isolated inside the runtime.
+        capture.onCommandApplied({
+          designId,
+          envelope,
+          result,
+          meta: captureMeta,
+          forwardPatches: pendingHistory?.forwardPatches ?? [],
+          inversePatches: pendingHistory?.inversePatches ?? [],
+        });
+
         // Cloud mirror — fire-and-forget; never blocks local writes.
         if (result.ok && cloud?.bearer && cloud?.apiUrl) {
           void mirrorCommand(db, ctx.logger, {
@@ -866,6 +883,15 @@ export function createDesignerStore(
       }
 
       persistSessionHistory(designId, sessionId);
+      capture.onHistoryReplay({
+        designId,
+        editorSessionId: sessionId,
+        direction: "undo",
+        commandId: entry.envelope.commandId,
+        revision,
+        forwardPatches: entry.forwardPatches,
+        inversePatches: entry.inversePatches,
+      });
       return {
         ok: true,
         revision,
@@ -886,6 +912,15 @@ export function createDesignerStore(
       }
 
       persistSessionHistory(designId, sessionId);
+      capture.onHistoryReplay({
+        designId,
+        editorSessionId: sessionId,
+        direction: "redo",
+        commandId: entry.envelope.commandId,
+        revision,
+        forwardPatches: entry.forwardPatches,
+        inversePatches: entry.inversePatches,
+      });
       return {
         ok: true,
         revision,
