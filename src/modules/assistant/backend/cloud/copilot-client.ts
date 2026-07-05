@@ -15,6 +15,7 @@ import type {
   CreateCopilotRunRequest,
   CreateCopilotRunResponse,
   PatchCopilotPlanRequest,
+  ResumeCopilotRunRequest,
 } from "@openpcb/contracts";
 
 export interface CopilotClientContext {
@@ -86,6 +87,15 @@ export function approvePlan(
   runId: string,
 ): Promise<{ status: string }> {
   return request(ctx, "POST", `/v1/copilot/runs/${runId}/plan/approve`, {});
+}
+
+/** Release a run parked at a plan checkpoint (S7, `awaiting_input`). */
+export function resumeRun(
+  ctx: CopilotClientContext,
+  runId: string,
+  req: ResumeCopilotRunRequest = {},
+): Promise<{ status: string }> {
+  return request(ctx, "POST", `/v1/copilot/runs/${runId}/resume`, req);
 }
 
 export function listProposals(

@@ -48,6 +48,7 @@ import type {
   ActiveRunState,
   ActiveRunStatus,
 } from "./components/AssistantRunStatusCard";
+import { CopilotPlanCard } from "./components/CopilotPlanCard";
 import { useAssistantStream } from "./hooks/useAssistantStream";
 import { isNearBottom, useScrollAnchor } from "./hooks/useScrollAnchor";
 
@@ -187,6 +188,10 @@ export function DesignerChatDock({
   const [activeRunsByChat, setActiveRunsByChat] = useState<
     Record<string, ActiveRunState>
   >({});
+  // S7: cloud run + plan-refetch trigger per chat (set from {_copilotFrame}s).
+  const [cloudRunsByChat, setCloudRunsByChat] = useState<
+    Record<string, { cloudRunId: string; refreshKey: number }>
+  >({});
   const [messagesPage, setMessagesPage] = useState({
     oldestCursor: null as string | null,
     hasMore: false,
@@ -200,6 +205,18 @@ export function DesignerChatDock({
   const selectedRun = selectedChatId
     ? activeRunsByChat[selectedChatId]
     : undefined;
+  const selectedCloudRun = selectedChatId
+    ? cloudRunsByChat[selectedChatId]
+    : undefined;
+  const cloudActionHeaders = useMemo(() => {
+    if (!session || !cloudCfg.copilotUrl) return null;
+    const headers: Record<string, string> = {
+      "x-cloud-bearer": session.access_token,
+      "x-cloud-copilot-url": cloudCfg.copilotUrl,
+    };
+    if (cloudCfg.apiUrl) headers["x-cloud-api-url"] = cloudCfg.apiUrl;
+    return headers;
+  }, [session, cloudCfg]);
   const selectedProvider =
     providers.find((provider) => provider.id === providerId) ?? null;
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
@@ -362,6 +379,20 @@ export function DesignerChatDock({
         status: mapped.status,
         currentStage: mapped.stage,
         lastError: mapped.error,
+      });
+    },
+    onCopilotFrame: (ctx, frame) => {
+      // Any copilot-only frame both identifies the cloud run and invalidates
+      // the plan view (plan created/updated/checkpoint, approval park).
+      setCloudRunsByChat((prev) => {
+        const current = prev[ctx.chatId];
+        return {
+          ...prev,
+          [ctx.chatId]: {
+            cloudRunId: frame.runId,
+            refreshKey: (current?.refreshKey ?? 0) + 1,
+          },
+        };
       });
     },
     onAiEvent: (ctx) => {
@@ -916,6 +947,18 @@ export function DesignerChatDock({
             ));
           })()
         )}
+        {selectedChatId && selectedCloudRun && cloudActionHeaders && assistantBase ? (
+          <div className="p-2">
+            <CopilotPlanCard
+              assistantBase={assistantBase}
+              chatId={selectedChatId}
+              cloudRunId={selectedCloudRun.cloudRunId}
+              refreshKey={selectedCloudRun.refreshKey}
+              cloudHeaders={cloudActionHeaders}
+              onError={setError}
+            />
+          </div>
+        ) : null}
       </div>
       <div className="shrink-0 border-t border-slate-200 p-2.5 dark:border-slate-800">
         <ChatComposer

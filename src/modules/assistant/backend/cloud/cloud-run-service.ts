@@ -2,8 +2,9 @@
 // cloud-copilot service instead of the local BYO provider.
 //
 // Flow: decrypt per-task cloud credentials → sync gate (push snapshot when the
-// cloud copy is behind) → create an `agent` run (approvePlan=false; the plan
-// card UI is S7) → stream frames with Last-Event-ID resume until terminal.
+// cloud copy is behind) → create an `agent` run (approvePlan=true — the plan
+// card approves/resumes, S7) → stream frames with Last-Event-ID resume until
+// terminal.
 // Shared `run.*` frames re-emit through the same `{_aiEvent}` task-chunk path
 // the local runs use (useAssistantStream unchanged); `copilot.proposal.created`
 // mirrors the cloud proposal into the local write-proposal store (origin
@@ -124,7 +125,7 @@ export class CloudRunService {
       designId: link.cloudDesignId,
       kind: "agent",
       goal: payload.goal,
-      approvePlan: false, // plan approval UI is S7
+      approvePlan: true, // S7: the plan card renders/approves the parked plan
     });
     const runId = created.runId;
 
@@ -160,8 +161,14 @@ export class CloudRunService {
         emitAiEvent(event);
         return;
       }
-      // copilot-only frames
+      // copilot-only frames: always forward raw for the plan card / future UI
+      // (S7 — useAssistantStream parses {_copilotFrame} and refetches the plan);
+      // the switch below adds side effects (proposal mirror, transcript text).
       const f = mapped.frame;
+      taskCtx.emitChunk({
+        kind: "json",
+        content: JSON.stringify({ _copilotFrame: f }),
+      });
       switch (f.type) {
         case "copilot.proposal.created": {
           const cloudProposalId = String(f.data.id ?? "");
@@ -188,19 +195,21 @@ export class CloudRunService {
           return;
         }
         case "run.awaiting.approval": {
-          // approvePlan=false, so this only appears if the cloud policy changes.
           emitText(
-            "\n\n⚠️ The cloud run is waiting for plan approval, which this app " +
-              "cannot grant yet (coming with the plan UI). Stop the run or approve it elsewhere.\n\n",
+            "\n\n⏸ The plan is waiting for your approval — review it in the plan card.\n\n",
+          );
+          return;
+        }
+        case "copilot.plan.checkpoint": {
+          const title = typeof f.data.title === "string" ? f.data.title : "checkpoint";
+          emitText(
+            `\n\n⏸ Checkpoint after “${title}” — the run is paused for your guidance. ` +
+              "Resume it from the plan card.\n\n",
           );
           return;
         }
         default:
-          // copilot.task.updated — forward raw for future UI; harmless to older clients.
-          taskCtx.emitChunk({
-            kind: "json",
-            content: JSON.stringify({ _copilotFrame: f }),
-          });
+        // copilot.task.updated — raw forward above is enough.
       }
     };
 

@@ -192,6 +192,31 @@ describe("assistant.cloud-chat executor", () => {
     expect(evtResult.id).toBe("local_prop_1"); // card matches the LOCAL record
   });
 
+  test("copilot-only frames forward as {_copilotFrame}; checkpoint emits pause text", async () => {
+    const h = makeHarness({
+      frames: [
+        frame("run.started", 1, {}),
+        frame("copilot.plan.created", 2, { tasks: [{ title: "Inspect" }] }),
+        frame("copilot.plan.checkpoint", 3, {
+          planRevision: 2, taskId: "task_9", title: "Review placement",
+        }),
+        frame("run.completed", 4, {}),
+      ],
+    });
+    await h.service.execute(h.taskCtx as never);
+
+    const copilotFrames = h.chunks
+      .filter((c) => c.kind === "json")
+      .map((c) => JSON.parse(c.content) as { _copilotFrame?: { type: string } })
+      .flatMap((p) => (p._copilotFrame ? [p._copilotFrame.type] : []));
+    expect(copilotFrames).toContain("copilot.plan.created");
+    expect(copilotFrames).toContain("copilot.plan.checkpoint");
+
+    const text = h.appended.join("");
+    expect(text).toContain("Checkpoint after “Review placement”");
+    expect(text).toContain("plan card");
+  });
+
   test("cloud run failure fails the task with the reason", async () => {
     const h = makeHarness({
       frames: [

@@ -3,10 +3,10 @@
 // The 11 `run.*` frames are string-identical to `AiRunEventType` and map onto
 // `AiRunEvent` (so the S6 cloud-chat executor re-emits them through the same
 // `{_aiEvent}` task-chunk path the local BYO runs use — `useAssistantStream`
-// unchanged). The 5 copilot-only frames (`run.awaiting.approval`,
+// unchanged). The 6 copilot-only frames (`run.awaiting.approval`,
 // `copilot.task.updated`, `copilot.proposal.created`, `copilot.plan.created/
-// updated`) have NO AiRunEventType equivalent and come back on a discriminated
-// `copilot` branch for dedicated handling (proposal mirroring, plan UI).
+// updated/checkpoint`) have NO AiRunEventType equivalent and come back on a
+// discriminated `copilot` branch for dedicated handling (proposal mirroring, plan UI).
 //
 // Copilot frames carry a loose `data` object and no timestamp; required
 // AiRunEvent data fields missing from the wire get honest defaults.

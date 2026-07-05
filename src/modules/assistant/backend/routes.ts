@@ -11,6 +11,7 @@ import type {
   SubmitAssistantMessageInput,
 } from "../../../sdks/assistant";
 import { getAssistantService } from "./assistant-service";
+import { CopilotHttpError } from "./cloud/copilot-client";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -48,6 +49,19 @@ function cloudCredsFromHeaders(req: Request): {
   const copilotUrl = req.headers.get("x-cloud-copilot-url") ?? "";
   if (!bearer || !copilotUrl) return null;
   return { bearer, apiUrl, copilotUrl };
+}
+
+/** S7: pass copilot HTTP errors (esp. 409 plan-revision CAS) through with their
+ * original status so the plan card can react, instead of a generic 500. */
+async function proxyCopilot<T>(fn: () => Promise<T>): Promise<Response> {
+  try {
+    return json(await fn());
+  } catch (err) {
+    if (err instanceof CopilotHttpError) {
+      return json({ error: err.body || err.message }, err.status);
+    }
+    throw err;
+  }
 }
 
 function normalizeChatTitle(title: unknown): string {
@@ -217,6 +231,58 @@ export function registerRoutes(
       ),
     );
   });
+  // S7: cloud-plan proxy (plan card). Cloud-only — creds required (400 if absent).
+  router.get("/chats/:id/cloud-runs/:runId/plan", (ctx) => {
+    const id = chatId(ctx);
+    requireChat(id);
+    return proxyCopilot(() =>
+      getAssistantService().getCloudPlan(
+        id,
+        ctx.params.getOrThrow("runId"),
+        cloudCredsFromHeaders(ctx.req),
+      ),
+    );
+  });
+  router.patch("/chats/:id/cloud-runs/:runId/plan", async (ctx) => {
+    const id = chatId(ctx);
+    requireChat(id);
+    const req = await body<Parameters<
+      ReturnType<typeof getAssistantService>["patchCloudPlan"]
+    >[2]>(ctx.req);
+    return proxyCopilot(() =>
+      getAssistantService().patchCloudPlan(
+        id,
+        ctx.params.getOrThrow("runId"),
+        req,
+        cloudCredsFromHeaders(ctx.req),
+      ),
+    );
+  });
+  router.post("/chats/:id/cloud-runs/:runId/plan/approve", (ctx) => {
+    const id = chatId(ctx);
+    requireChat(id);
+    return proxyCopilot(() =>
+      getAssistantService().approveCloudPlan(
+        id,
+        ctx.params.getOrThrow("runId"),
+        cloudCredsFromHeaders(ctx.req),
+      ),
+    );
+  });
+  router.post("/chats/:id/cloud-runs/:runId/resume", async (ctx) => {
+    const id = chatId(ctx);
+    requireChat(id);
+    const req = await body<{ message?: string | null }>(ctx.req).catch(() => ({}));
+    return proxyCopilot(() =>
+      getAssistantService().resumeCloudRun(
+        id,
+        ctx.params.getOrThrow("runId"),
+        req,
+        cloudCredsFromHeaders(ctx.req),
+      ),
+    );
+  });
+
   router.get("/chats/:id/write-policy/session-allow", (ctx) => {
     const id = chatId(ctx);
     requireChat(id);

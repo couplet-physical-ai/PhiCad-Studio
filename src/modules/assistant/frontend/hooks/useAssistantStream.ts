@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AiRunEvent } from "@openpcb/ai-core";
+import type { CopilotStreamFrame } from "@openpcb/contracts";
 import type { Task, TaskEvent } from "../../../../sdks/tasks";
 
 export type StreamStatus =
@@ -20,6 +21,8 @@ interface UseAssistantStreamOptions {
   backendUrl: string | null | undefined;
   onChunkText?: (ctx: StreamContext, delta: string) => void;
   onAiEvent?: (ctx: StreamContext, event: AiRunEvent) => void;
+  /** Copilot-only cloud frames ({_copilotFrame}) — plan card triggers (S7). */
+  onCopilotFrame?: (ctx: StreamContext, frame: CopilotStreamFrame) => void;
   onTaskEvent?: (ctx: StreamContext, event: TaskEvent) => void;
   onTerminal?: (
     ctx: StreamContext,
@@ -45,8 +48,14 @@ interface ParsedChunkData {
  * Text deltas (kind:'text') fire onChunkText.
  */
 export function useAssistantStream(options: UseAssistantStreamOptions) {
-  const { backendUrl, onChunkText, onAiEvent, onTaskEvent, onTerminal } =
-    options;
+  const {
+    backendUrl,
+    onChunkText,
+    onAiEvent,
+    onCopilotFrame,
+    onTaskEvent,
+    onTerminal,
+  } = options;
   const [state, setState] = useState<AssistantStreamState>({
     status: "idle",
     events: [],
@@ -56,10 +65,17 @@ export function useAssistantStream(options: UseAssistantStreamOptions) {
   const handlersRef = useRef({
     onChunkText,
     onAiEvent,
+    onCopilotFrame,
     onTaskEvent,
     onTerminal,
   });
-  handlersRef.current = { onChunkText, onAiEvent, onTaskEvent, onTerminal };
+  handlersRef.current = {
+    onChunkText,
+    onAiEvent,
+    onCopilotFrame,
+    onTaskEvent,
+    onTerminal,
+  };
   const retryTimersRef = useRef<number[]>([]);
 
   const close = useCallback(() => {
@@ -156,6 +172,7 @@ export function useAssistantStream(options: UseAssistantStreamOptions) {
             try {
               const parsed = JSON.parse(chunk.content) as {
                 _aiEvent?: AiRunEvent;
+                _copilotFrame?: CopilotStreamFrame;
               };
               if (parsed._aiEvent) {
                 setState((prev) => ({
@@ -163,6 +180,8 @@ export function useAssistantStream(options: UseAssistantStreamOptions) {
                   events: [...prev.events, parsed._aiEvent!],
                 }));
                 handlersRef.current.onAiEvent?.(ctx, parsed._aiEvent);
+              } else if (parsed._copilotFrame) {
+                handlersRef.current.onCopilotFrame?.(ctx, parsed._copilotFrame);
               }
             } catch {
               // ignore non-AiRunEvent json

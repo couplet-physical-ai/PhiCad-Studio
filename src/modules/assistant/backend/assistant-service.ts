@@ -28,7 +28,14 @@ import {
 import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { ConversationStore } from "./conversation-store";
 import { CloudRunService } from "./cloud/cloud-run-service";
-import { postApplied, rejectProposal } from "./cloud/copilot-client";
+import {
+  approvePlan,
+  getPlan,
+  patchPlan,
+  postApplied,
+  rejectProposal,
+  resumeRun,
+} from "./cloud/copilot-client";
 import {
   sealCloudCredentials,
   type CloudCredentials,
@@ -445,6 +452,58 @@ export class AssistantService {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+  }
+
+  /** S7: cloud-plan proxy. Unlike proposal outcome sync (best-effort), plan
+   * actions are cloud-only — missing creds is a hard error, not a skip. */
+  private requireCloudCtx(cloudCreds?: CloudCredentials | null): {
+    copilotUrl: string;
+    bearer: string;
+  } {
+    if (!cloudCreds) {
+      throw new ValidationError(
+        "Cloud credentials required (x-cloud-bearer / x-cloud-copilot-url)",
+      );
+    }
+    return { copilotUrl: cloudCreds.copilotUrl, bearer: cloudCreds.bearer };
+  }
+
+  getCloudPlan(
+    chatId: string,
+    runId: string,
+    cloudCreds?: CloudCredentials | null,
+  ): ReturnType<typeof getPlan> {
+    this.assertValidChatId(chatId);
+    return getPlan(this.requireCloudCtx(cloudCreds), runId);
+  }
+
+  patchCloudPlan(
+    chatId: string,
+    runId: string,
+    req: Parameters<typeof patchPlan>[2],
+    cloudCreds?: CloudCredentials | null,
+  ): ReturnType<typeof patchPlan> {
+    this.assertValidChatId(chatId);
+    return patchPlan(this.requireCloudCtx(cloudCreds), runId, req);
+  }
+
+  approveCloudPlan(
+    chatId: string,
+    runId: string,
+    cloudCreds?: CloudCredentials | null,
+  ): Promise<{ status: string }> {
+    this.assertValidChatId(chatId);
+    return approvePlan(this.requireCloudCtx(cloudCreds), runId);
+  }
+
+  resumeCloudRun(
+    chatId: string,
+    runId: string,
+    req: Parameters<typeof resumeRun>[2],
+    cloudCreds?: CloudCredentials | null,
+  ): Promise<{ status: string }> {
+    this.assertValidChatId(chatId);
+    return resumeRun(this.requireCloudCtx(cloudCreds), runId, req);
   }
 
   listSessionWriteAllowances(chatId: string): AssistantSessionWriteAllowance[] {
