@@ -28,8 +28,9 @@ function randomPart(): number[] {
 export function ulid(now: number = Date.now()): string {
   if (now === lastTime) {
     for (let i = lastRandom.length - 1; i >= 0; i--) {
-      if (lastRandom[i] < 31) {
-        lastRandom[i]++;
+      const digit = lastRandom[i] ?? 0;
+      if (digit < 31) {
+        lastRandom[i] = digit + 1;
         break;
       }
       lastRandom[i] = 0;

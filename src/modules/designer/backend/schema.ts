@@ -391,3 +391,100 @@ export const commentOutbox = sqliteTable(
     ),
   }),
 );
+
+// --- Dataset capture (WP-D4, migration 0017) ---------------------------------
+
+export const captureSessions = sqliteTable(
+  "designer_capture_sessions",
+  {
+    sessionUlid: text("session_ulid").primaryKey(),
+    designId: text("design_id").notNull(),
+    startedAt: text("started_at").notNull(),
+    endedAt: text("ended_at"),
+    logDir: text("log_dir").notNull(),
+    seq: integer("seq").notNull().default(0),
+    commandsSinceSnapshot: integer("commands_since_snapshot")
+      .notNull()
+      .default(0),
+    bytesOnDisk: integer("bytes_on_disk").notNull().default(0),
+    capped: integer("capped").notNull().default(0),
+  },
+  (table) => ({
+    designIdIdx: index("designer_capture_sessions_design_idx").on(
+      table.designId,
+    ),
+  }),
+);
+
+export const captureAutolayoutJobs = sqliteTable(
+  "designer_capture_autolayout_jobs",
+  {
+    jobId: text("job_id").primaryKey(),
+    designId: text("design_id").notNull(),
+    appliedCandidateId: text("applied_candidate_id"),
+    captureSessionUlid: text("capture_session_ulid").notNull(),
+    appliedAt: text("applied_at").notNull(),
+    snapshotHash: text("snapshot_hash"),
+    engineVersion: text("engine_version"),
+    resultSummaryJson: text("result_summary_json"),
+    preexistingNetCopperJson: text("preexisting_net_copper_json")
+      .notNull()
+      .default("{}"),
+  },
+  (table) => ({
+    designIdIdx: index("designer_capture_autolayout_jobs_design_idx").on(
+      table.designId,
+    ),
+  }),
+);
+
+export const captureAutoCopper = sqliteTable(
+  "designer_capture_auto_copper",
+  {
+    geometryId: text("geometry_id").primaryKey(),
+    designId: text("design_id").notNull(),
+    kind: text("kind").notNull(), // 'trace' | 'via'
+    netId: text("net_id"),
+    jobId: text("job_id").notNull(),
+    appliedCandidateId: text("applied_candidate_id"),
+    createdByCommandId: text("created_by_command_id").notNull(),
+    // 'active' | 'modified' | 'deleted' | 'undone'
+    status: text("status").notNull().default("active"),
+    touchesJson: text("touches_json").notNull().default("[]"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => ({
+    designNetIdx: index("designer_capture_auto_copper_design_net_idx").on(
+      table.designId,
+      table.netId,
+    ),
+    cmdIdx: index("designer_capture_auto_copper_cmd_idx").on(
+      table.createdByCommandId,
+    ),
+  }),
+);
+
+export const captureUploadQueue = sqliteTable(
+  "designer_capture_upload_queue",
+  {
+    id: text("id").primaryKey(), // ULID
+    kind: text("kind").notNull(), // 'events' | 'board'
+    payloadPath: text("payload_path").notNull(),
+    designId: text("design_id"),
+    sessionUlid: text("session_ulid"),
+    // 'pending' | 'inflight' | 'done' | 'failed'
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at"),
+    lastError: text("last_error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => ({
+    statusIdx: index("designer_capture_upload_queue_status_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+  }),
+);
