@@ -72,3 +72,30 @@ src/modules/designer/
 - Trace modes: `manhattan-90` | `manhattan-45`
 - Copper layers: `F.Cu` | `B.Cu`
 - Command log provides idempotency (duplicate `commandId` rejected)
+
+## DATASET CAPTURE (WP-D4, `backend/capture/`)
+
+- Gated by the `dataset.capture` feature flag: default OFF in dev/test, ON in packaged
+  builds, override `OPENPCB_FEATURE_DATASET_CAPTURE`. When off every hook is a no-op.
+- One `CaptureRuntime` singleton (`resolveCaptureRuntime`) — TWO DesignerStore instances
+  exist (sdk.ts + routes.ts); registry state lives in SQLite for the same reason.
+- Session log: per (process, design) session, JSONL segments under
+  `OPENPCB_CAPTURE_DIR ?? <db-dir>/capture`, zstd on rotation, 200 MB/session cap →
+  `capture_truncated` marker then stop (never drop-oldest; `seq` continuity matters).
+  Appends are buffered and flushed on a 250 ms timer — a hard crash may lose the tail
+  (acceptable for telemetry).
+- There is NO CommandBatch type: entries are per-envelope; apply loops share a `groupId`.
+  Actor attribution is the optional `capture` param on `dispatchCommand` (envelope has no
+  actor field and AI shares the UI session id). Import bypasses dispatch → its own hook.
+- AutoCopperRegistry: geometry ids come from history forward/inverse patches (NOT
+  `createdEntityId` — `pcb_add_trace_via` drops the trace id). Undo of a creating command
+  ⇒ `undone`; redo restores (ids are stable across undo→redo). Touches are per-command
+  and removed/re-added by history replay — never reconstructed by diffing.
+- PerNetOutcome at export: accepted (explicit) | modified | ripped | rerouted, from
+  registry + live projection copper vs preexisting-at-apply ids.
+- Upload queue mirrors the comment-outbox pattern; endpoint/token via
+  `OPENPCB_DATASET_INGEST_URL` / `OPENPCB_DATASET_INGEST_TOKEN`; at-least-once with
+  ULID idempotency. Milestone snapshot hashes are LOCAL dedup only — canonical board
+  identity is computed at ingest (M3), never here.
+- M5 acceptance follow-up: measure real session-log sizes once beta users exist
+  (rotation caps were sized from estimates).
