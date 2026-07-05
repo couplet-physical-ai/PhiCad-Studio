@@ -89,6 +89,21 @@ export function approvePlan(
   return request(ctx, "POST", `/v1/copilot/runs/${runId}/plan/approve`, {});
 }
 
+/** S8: push the desktop-built BoardSnapshot before an agent run (layout tools
+ * read the last-synced snapshot; `PUT /v1/copilot/designs/:id/board-snapshot`). */
+export function putBoardSnapshot(
+  ctx: CopilotClientContext,
+  cloudDesignId: string,
+  body: { revision: number; snapshot: unknown },
+): Promise<{ designId: string; revision: number; snapshotHash: string }> {
+  return request(
+    ctx,
+    "PUT",
+    `/v1/copilot/designs/${cloudDesignId}/board-snapshot`,
+    body,
+  );
+}
+
 /** Release a run parked at a plan checkpoint (S7, `awaiting_input`). */
 export function resumeRun(
   ctx: CopilotClientContext,

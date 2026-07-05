@@ -76,13 +76,19 @@ export interface SchematicProposalEnvelope {
     | "designer_schematic_edits"
     | "designer_schematic_wires"
     | "designer_schematic_updates"
-    | "designer_schematic_deletions";
+    | "designer_schematic_deletions"
+    | "designer_pcb_place_batch"
+    | "designer_pcb_route_batch";
   toolName:
     | "designer_propose_schematic_edits"
     | "designer_propose_schematic_wires"
     | "designer_propose_schematic_updates"
     | "designer_propose_schematic_deletions"
-    | "designer_arrange_schematic";
+    | "designer_arrange_schematic"
+    // S8: cloud-copilot layout batches mirrored via the cloud proposal path
+    | "cloud_copilot"
+    | "copilot_run_placement"
+    | "copilot_run_routing";
   /** Idempotency key from the model (Track D); dedup re-runs by design + key. */
   actionId?: string;
   title: string;
@@ -1722,7 +1728,9 @@ export function makeDesignerGetSchematicConnectivityTool(
               ? "GND"
               : primitive.kind === "pwr"
                 ? primitive.railText
-                : primitive.portalText,
+                : primitive.kind === "net_portal"
+                  ? primitive.portalText
+                  : "JUNCTION",
           positionNm: primitive.positionNm,
         })),
         nets: input.includeNets === false ? undefined : nets,

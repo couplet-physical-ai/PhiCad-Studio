@@ -18,9 +18,11 @@ import type { TaskExecutionContext, TasksSDK } from "../../../../sdks";
 import { MODULE_SDK_TOKENS, type DesignerSDK } from "../../../../sdks";
 import type { ContextResolver } from "../context-resolver";
 import type { ConversationStore } from "../conversation-store";
+import { isFeatureEnabled } from "../../../../core/contracts/feature-flags/backend";
 import {
   createRun,
   listProposals,
+  putBoardSnapshot,
   stopRun,
   streamRun,
   type CopilotClientContext,
@@ -47,6 +49,7 @@ export interface CopilotApi {
   ) => Promise<StreamRunResult>;
   listProposals: typeof listProposals;
   stopRun: typeof stopRun;
+  putBoardSnapshot: typeof putBoardSnapshot;
 }
 
 export interface CloudRunServiceOptions {
@@ -60,7 +63,13 @@ export class CloudRunService {
   private readonly api: CopilotApi;
 
   constructor(private readonly options: CloudRunServiceOptions) {
-    this.api = options.api ?? { createRun, streamRun, listProposals, stopRun };
+    this.api = options.api ?? {
+      createRun,
+      streamRun,
+      listProposals,
+      stopRun,
+      putBoardSnapshot,
+    };
     const tasks = options.ctx.sdk.get<TasksSDK>(MODULE_SDK_TOKENS.TASKS);
     if (!tasks) throw new Error("TasksSDK not registered");
     tasks.registerExecutor("assistant.cloud-chat", {
@@ -114,11 +123,33 @@ export class CloudRunService {
       );
     }
     // Sync gate: the agent must read what the user sees.
+    let cloudRevision = link.lastSyncedRevision;
     if (creds.apiUrl) {
-      await designer.pushCloudSnapshot(designId, {
+      const pushed = await designer.pushCloudSnapshot(designId, {
         bearer: creds.bearer,
         apiUrl: creds.apiUrl,
       });
+      cloudRevision = pushed.revision;
+    }
+    // S8: board-snapshot push so the cloud layout tools can place/route. Best-
+    // effort — a schematic-only design (or flag off) just skips; the tools then
+    // honestly report "no board snapshot synced". revision must match the CLOUD
+    // design revision (the copilot staleness check compares against it).
+    if (isFeatureEnabled("cloud.autolayout")) {
+      try {
+        const build = await designer.buildBoardSnapshot(designId);
+        if (build && (build.snapshot.placements?.length ?? 0) > 0) {
+          await this.api.putBoardSnapshot(cctx, link.cloudDesignId, {
+            revision: cloudRevision,
+            snapshot: build.snapshot,
+          });
+        }
+      } catch (err) {
+        this.options.ctx.logger.warn("board-snapshot push failed", {
+          designId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     const created = await this.api.createRun(cctx, {

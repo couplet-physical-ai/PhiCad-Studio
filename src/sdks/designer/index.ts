@@ -276,6 +276,12 @@ export interface DesignerSDK {
     designId: string,
     ctx: { bearer: string; apiUrl: string },
   ): Promise<{ pushed: boolean; revision: number; cloudDesignId: string }>;
+  /**
+   * S8: build a cloud BoardSnapshot from the design's PCB projection (pure,
+   * no network — the assistant cloud-chat executor pushes the result to
+   * cloud-copilot at run start). Null when the design has no PCB projection.
+   */
+  buildBoardSnapshot(designId: string): Promise<DesignerBoardSnapshotBuild | null>;
 }
 
 /** Cloud link summary surfaced through the SDK (subset of designer_cloud_link). */
@@ -283,6 +289,12 @@ export interface DesignerCloudLinkInfo {
   cloudDesignId: string;
   cloudWorkspaceId: string;
   lastSyncedRevision: number;
+}
+
+/** Result of DesignerSDK.buildBoardSnapshot (S8). */
+export interface DesignerBoardSnapshotBuild {
+  snapshot: import("./autoroute").BoardSnapshot;
+  warnings: string[];
 }
 
 // Cloud auto-router wire contracts (BoardSnapshot / RouteResultEnvelope / ProgressFrame).

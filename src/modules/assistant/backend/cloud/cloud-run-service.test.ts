@@ -30,7 +30,11 @@ const HAPPY_FRAMES: CopilotStreamFrame[] = [
 
 interface Harness {
   service: CloudRunService;
-  api: CopilotApi & { stopped: string[]; created: unknown[] };
+  api: CopilotApi & {
+    stopped: string[];
+    created: unknown[];
+    boardSnapshots: Array<{ cloudDesignId: string; revision: number }>;
+  };
   chunks: Array<{ kind: string; content: string }>;
   appended: string[];
   proposals: Array<Record<string, unknown>>;
@@ -47,6 +51,8 @@ function makeHarness(opts: {
   frames?: CopilotStreamFrame[];
   abort?: AbortController;
   link?: { cloudDesignId: string; cloudWorkspaceId: string; lastSyncedRevision: number } | null;
+  /** S8: null = schematic-only design (no PCB projection). */
+  boardSnapshot?: { placements: unknown[] } | null;
 } = {}): Harness {
   process.env.OPENPCB_DB_PATH = path.join(
     mkdtempSync(path.join(os.tmpdir(), "cloud-run-")), "data.sqlite");
@@ -64,9 +70,18 @@ function makeHarness(opts: {
   const api = {
     created: [] as unknown[],
     stopped: [] as string[],
+    boardSnapshots: [] as Array<{ cloudDesignId: string; revision: number }>,
     createRun: async (_ctx: unknown, req: unknown) => {
       api.created.push(req);
       return { runId: "crun_1", status: "queued" as const };
+    },
+    putBoardSnapshot: async (
+      _ctx: unknown,
+      cloudDesignId: string,
+      body: { revision: number; snapshot: unknown },
+    ) => {
+      api.boardSnapshots.push({ cloudDesignId, revision: body.revision });
+      return { designId: cloudDesignId, revision: body.revision, snapshotHash: "h" };
     },
     streamRun: async (_ctx: unknown, _runId: string, o: {
       onFrame: (f: CopilotStreamFrame) => void | Promise<void>;
@@ -106,6 +121,14 @@ function makeHarness(opts: {
         h.pushes.push("push");
         return { pushed: true, revision: 3, cloudDesignId: "dsg_cloud" };
       },
+      buildBoardSnapshot: async () =>
+        opts.boardSnapshot === undefined
+          ? { snapshot: { schemaVersion: "1.0", placements: [{ id: "p1" }] },
+              warnings: [] }
+          : opts.boardSnapshot === null
+            ? null
+            : { snapshot: { schemaVersion: "1.0", ...opts.boardSnapshot },
+                warnings: [] },
     }],
   ]);
 
@@ -190,6 +213,26 @@ describe("assistant.cloud-chat executor", () => {
       id: string; kind: string;
     };
     expect(evtResult.id).toBe("local_prop_1"); // card matches the LOCAL record
+  });
+
+  test("S8: board snapshot pushed at run start with the post-sync cloud revision", async () => {
+    const h = makeHarness();
+    await h.service.execute(h.taskCtx as never);
+    expect(h.api.boardSnapshots).toEqual([
+      { cloudDesignId: "dsg_cloud", revision: 3 }, // pushCloudSnapshot returned 3
+    ]);
+  });
+
+  test("S8: schematic-only design (no PCB) skips the board-snapshot push", async () => {
+    const h = makeHarness({ boardSnapshot: null });
+    await h.service.execute(h.taskCtx as never);
+    expect(h.api.boardSnapshots).toEqual([]);
+  });
+
+  test("S8: empty placements skip the push (nothing to place/route)", async () => {
+    const h = makeHarness({ boardSnapshot: { placements: [] } });
+    await h.service.execute(h.taskCtx as never);
+    expect(h.api.boardSnapshots).toEqual([]);
   });
 
   test("copilot-only frames forward as {_copilotFrame}; checkpoint emits pause text", async () => {

@@ -41,6 +41,9 @@ export async function applyAssistantWriteProposal(
   ) {
     return applyDesignerSchematicEditsProposal(input);
   }
+  if (kind === "designer_pcb_place_batch" || kind === "designer_pcb_route_batch") {
+    return applyDesignerPcbBatchProposal(input);
+  }
   if (kind !== "designer_place_components") {
     throw new Error(`Unsupported proposal kind: ${kind}`);
   }
@@ -55,6 +58,22 @@ export async function applyAssistantWriteProposal(
 
 export function applyFailureResult(err: unknown): unknown | null {
   return isAssistantProposalApplyError(err) ? err.applyResult : null;
+}
+
+/** S8: cloud auto-layout batches (pcb_move/rotate/flip, pcb_add_trace/via). The
+ * generic op dispatcher already handles them — operation.payload is a real
+ * DesignerCommand, so dispatch runs the same command executor (incl. fab
+ * validation) as the manual autoroute/autoplace apply routes. After a
+ * successful/partial apply, DRC re-runs so the desktop's stored report reflects
+ * the new copper (desktop stays DRC authority). */
+async function applyDesignerPcbBatchProposal(
+  input: ApplyAssistantWriteProposalInput,
+): Promise<SchematicApplyResult> {
+  const result = await applyDesignerSchematicEditsProposal(input);
+  if (result.status !== "failed") {
+    await input.designer.runDrc(input.record.designId);
+  }
+  return result;
 }
 
 async function applyDesignerSchematicEditsProposal(

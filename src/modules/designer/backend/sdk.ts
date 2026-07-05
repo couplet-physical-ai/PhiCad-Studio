@@ -4,6 +4,7 @@ import { MODULE_SDK_TOKENS } from "../../../sdks";
 import type { DesignerSDK } from "../../../sdks/designer";
 import type { LibrarySDK } from "../../../sdks/library";
 import { pushCloudSnapshot, readLinkPublic } from "./cloud-sync";
+import { buildBoardSnapshot as buildBoardSnapshotFromProjection } from "./pcb/board-snapshot";
 import { runDrc } from "./drc/drc-engine";
 import { runErc } from "./erc/erc-engine";
 import {
@@ -103,5 +104,10 @@ export function buildDesignerSdk(ctx: CoreBackendModuleContext): DesignerSDK {
     },
     pushCloudSnapshot: (designId, cloudCtx) =>
       pushCloudSnapshot(rawDb, designId, cloudCtx),
+    buildBoardSnapshot: async (designId) => {
+      const projection = await store.getPcbProjection(designId);
+      if (!projection) return null;
+      return buildBoardSnapshotFromProjection(projection);
+    },
   };
 }
