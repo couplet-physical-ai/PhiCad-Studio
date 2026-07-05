@@ -2,6 +2,7 @@ import type { ModuleDefinition } from "../../../core/contracts/modules/backend-m
 import { MODULE_SDK_TOKENS } from "../../../sdks";
 import { MentionRegistry } from "../../../core/backend/mentions";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { resolveCaptureRuntime } from "./capture";
 import { registerRoutes } from "./routes";
 import { buildDesignerSdk } from "./sdk";
 import { DesignMentionProvider } from "./providers/mention-provider";
@@ -17,6 +18,14 @@ export const definition: ModuleDefinition = {
     const db = ctx.db.db as BetterSQLite3Database<Record<string, unknown>>;
     const mentionProvider = new DesignMentionProvider(db);
     MentionRegistry.get().register(mentionProvider);
+
+    // Dataset capture (WP-D4): finalize open session-log segments on shutdown.
+    const capture = resolveCaptureRuntime(ctx);
+    if (capture.enabled) {
+      const flush = () => capture.endAll();
+      process.once("SIGTERM", flush);
+      process.once("beforeExit", flush);
+    }
   },
 
   async registerSdk(ctx) {

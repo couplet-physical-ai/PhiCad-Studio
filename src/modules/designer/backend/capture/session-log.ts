@@ -29,6 +29,8 @@ export interface SessionLogWriterOptions {
   segmentMaxBytes: number;
   sessionCapBytes: number;
   initialSeq?: number;
+  /** Fired with the compressed segment's path after each rotation (upload hook). */
+  onSegmentRotated?: (segmentPath: string) => void;
 }
 
 export type AppendResult =
@@ -157,11 +159,13 @@ export class SessionLogWriter {
       return;
     }
     const compressed = compressSegment(data);
-    writeFileSync(this.segmentPath(this.segmentIndex) + segmentExtension(), compressed);
+    const segmentPath = this.segmentPath(this.segmentIndex) + segmentExtension();
+    writeFileSync(segmentPath, compressed);
     unlinkSync(raw);
     this.compressedBytes += compressed.byteLength;
     this.activeRawBytes = 0;
     this.segmentIndex++;
+    this.options.onSegmentRotated?.(segmentPath);
   }
 
   /** Final flush + rotation (session end / shutdown). */

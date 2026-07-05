@@ -35,6 +35,7 @@ import { storeMilestoneSnapshot } from "./snapshots";
 import { deriveTags } from "./tags";
 import type { DispatchCaptureMeta, SessionLogEntry } from "./types";
 import { ulid } from "./ulid";
+import { CaptureUploader } from "./uploader";
 
 type Db = BetterSQLite3Database<Record<string, unknown>>;
 
@@ -79,14 +80,18 @@ export class CaptureRuntime {
   private snapshotProvider: SnapshotProvider | null = null;
   private copperProvider: ((designId: string) => Promise<LiveCopper | null>) | null = null;
 
+  readonly uploader: CaptureUploader;
+
   constructor(ctx: CoreBackendModuleContext, config = resolveCaptureConfig()) {
     this.config = config;
     this.enabled = config.enabled;
     this.db = ctx.db.db as Db;
     this.logger = ctx.logger;
+    this.uploader = new CaptureUploader(this.db, config, ctx.logger);
     if (this.enabled) {
       this.flushTimer = setInterval(() => this.flushAll(), FLUSH_INTERVAL_MS);
       this.flushTimer.unref?.();
+      this.uploader.start();
     }
   }
 
@@ -101,6 +106,13 @@ export class CaptureRuntime {
       sessionUlid,
       segmentMaxBytes: this.config.segmentMaxBytes,
       sessionCapBytes: this.config.sessionCapBytes,
+      onSegmentRotated: (segmentPath) => {
+        try {
+          this.uploader.enqueue("events", segmentPath, designId, sessionUlid);
+        } catch (error) {
+          this.logger.warn?.("capture: segment enqueue failed", { error: String(error) });
+        }
+      },
     });
     this.db
       .insert(captureSessions)
@@ -149,6 +161,14 @@ export class CaptureRuntime {
       snapshot: { sha256: stored.sha256, trigger, path: stored.path },
     });
     session.commandsSinceSnapshot = 0;
+    if (stored.written) {
+      this.uploader.enqueue("board", stored.path, designId, session.sessionUlid);
+    }
+  }
+
+  /** Deterministic drain for tests / shutdown; timer-driven in normal runs. */
+  async drainUploadsOnce(): Promise<void> {
+    await this.uploader.drainOnce();
   }
 
   /** Project-open proxy: first design read per capture session. */
@@ -381,6 +401,7 @@ export class CaptureRuntime {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
     }
+    this.uploader.stop();
   }
 }
 
