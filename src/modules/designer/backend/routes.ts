@@ -89,6 +89,9 @@ import type {
   DesignerCommentSurface,
   DesignerCommentThread,
 } from "../../../sdks/designer";
+import { resolveCaptureRuntime } from "./capture";
+import type { DesignerStore } from "./store";
+import { ulid } from "./capture/ulid";
 import { buildDesignerSdk } from "./sdk";
 import { createDesignerStore } from "./store";
 import { createCommentStore } from "./comments/comment-store";
@@ -428,10 +431,27 @@ function parseHistoryBody(body: unknown): { sessionId: string } {
 
 // Cherry-picked auto-router ops to apply. Each op.payload is re-validated by
 // parseCommandEnvelope before dispatch, so this only checks the envelope shape.
+interface ApplyCaptureFields {
+  jobId?: string;
+  appliedCandidateId?: string;
+  /** RoutePayloadSummary — persisted verbatim for dataset capture (WP-D4). */
+  resultSummary?: unknown;
+}
+
+function parseApplyCaptureFields(record: Record<string, unknown>): ApplyCaptureFields {
+  const fields: ApplyCaptureFields = {};
+  const jobId = asString(record.jobId);
+  if (jobId) fields.jobId = jobId;
+  const appliedCandidateId = asString(record.appliedCandidateId);
+  if (appliedCandidateId) fields.appliedCandidateId = appliedCandidateId;
+  if (record.resultSummary !== undefined) fields.resultSummary = record.resultSummary;
+  return fields;
+}
+
 function parseAutorouteApplyBody(body: unknown): {
   operations: RouteOperation[];
   sessionId: string;
-} {
+} & ApplyCaptureFields {
   const record = asRecord(body);
   if (!record) {
     throw new ValidationError("Request body must be an object");
@@ -443,7 +463,11 @@ function parseAutorouteApplyBody(body: unknown): {
   if (!Array.isArray(record.operations)) {
     throw new ValidationError("operations must be an array");
   }
-  return { operations: record.operations as RouteOperation[], sessionId };
+  return {
+    operations: record.operations as RouteOperation[],
+    sessionId,
+    ...parseApplyCaptureFields(record),
+  };
 }
 
 // Cherry-picked auto-place ops to apply. Each op.payload (a move/rotate/flip placement
@@ -452,7 +476,7 @@ function parseAutorouteApplyBody(body: unknown): {
 function parseAutoplaceApplyBody(body: unknown): {
   operations: PlaceOperation[];
   sessionId: string;
-} {
+} & ApplyCaptureFields {
   const record = asRecord(body);
   if (!record) {
     throw new ValidationError("Request body must be an object");
@@ -464,7 +488,11 @@ function parseAutoplaceApplyBody(body: unknown): {
   if (!Array.isArray(record.operations)) {
     throw new ValidationError("operations must be an array");
   }
-  return { operations: record.operations as PlaceOperation[], sessionId };
+  return {
+    operations: record.operations as PlaceOperation[],
+    sessionId,
+    ...parseApplyCaptureFields(record),
+  };
 }
 
 function parsePlacePartCommand(
@@ -2070,11 +2098,39 @@ function parseCommandEnvelope(body: unknown): DesignerCommandEnvelope {
   };
 }
 
+/** Pre-apply snapshot of each targeted net's existing copper ids (WP-D4):
+ *  the outcome derivation needs to distinguish auto copper from copper that
+ *  existed before the apply, without diffing snapshots. */
+async function collectPreexistingNetCopper(
+  store: DesignerStore,
+  designId: string,
+  payloads: unknown[],
+): Promise<Record<string, string[]>> {
+  const netIds = new Set<string>();
+  for (const payload of payloads) {
+    const netId = (payload as { netId?: unknown } | null)?.netId;
+    if (typeof netId === "string") netIds.add(netId);
+  }
+  if (netIds.size === 0) return {};
+  const projection = await store.getPcbProjection(designId);
+  if (!projection) return {};
+  const byNet: Record<string, string[]> = {};
+  for (const netId of netIds) byNet[netId] = [];
+  for (const trace of projection.traces) {
+    if (trace.netId && byNet[trace.netId]) byNet[trace.netId]!.push(trace.id);
+  }
+  for (const via of projection.vias) {
+    if (via.netId && byNet[via.netId]) byNet[via.netId]!.push(via.id);
+  }
+  return byNet;
+}
+
 export function registerRoutes(
   router: ModuleRouterHandle,
   ctx: CoreBackendModuleContext,
 ): void {
   const store = createDesignerStore(ctx);
+  const capture = resolveCaptureRuntime(ctx);
   const commentStore = createCommentStore({
     db: (ctx.db as { db: BetterSQLite3Database<Record<string, unknown>> }).db,
   });
@@ -2498,9 +2554,23 @@ export function registerRoutes(
         const designId = params.getOrThrow("designId");
         const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
         const apiUrl = req.headers.get("x-cloud-api-url") ?? undefined;
-        const { operations, sessionId } = parseAutorouteApplyBody(
-          await parseJsonBody<unknown>(req),
-        );
+        const { operations, sessionId, jobId, appliedCandidateId, resultSummary } =
+          parseAutorouteApplyBody(await parseJsonBody<unknown>(req));
+        // Dataset capture (WP-D4): attribute this apply. Old clients omit jobId;
+        // capture still works under a synthetic id.
+        const captureJobId = jobId ?? `job:unknown-${ulid()}`;
+        const captureGroupId = ulid();
+        capture.onAutolayoutApplyStarted({
+          designId,
+          jobId: captureJobId,
+          appliedCandidateId: appliedCandidateId ?? null,
+          resultSummary,
+          preexistingNetCopper: await collectPreexistingNetCopper(
+            store,
+            designId,
+            operations.map((op) => op.payload),
+          ),
+        });
         let appliedCount = 0;
         const failures: Array<{ opId: string; code: string }> = [];
         for (const op of operations) {
@@ -2512,16 +2582,32 @@ export function registerRoutes(
             baseRevision: null,
             command: op.payload,
           });
-          const result = await store.dispatchCommand(designId, envelope, {
-            bearer,
-            apiUrl,
-          });
+          const result = await store.dispatchCommand(
+            designId,
+            envelope,
+            {
+              bearer,
+              apiUrl,
+            },
+            {
+              actor: "autolayout_apply",
+              jobId: captureJobId,
+              appliedCandidateId,
+              groupId: captureGroupId,
+            },
+          );
           // dispatchCommand returns a discriminated result; a rejected command
           // (e.g. an invalid trace path) is `ok:false`, not a throw — count only
           // genuinely-applied ops so the UI never reports a false success.
           if (result.ok) appliedCount += 1;
           else failures.push({ opId: op.id, code: result.code });
         }
+        capture.onAutolayoutApplied({
+          designId,
+          jobId: captureJobId,
+          appliedCandidateId: appliedCandidateId ?? null,
+          groupId: captureGroupId,
+        });
         const projection = await store.getPcbProjection(designId);
         const view = projection?.board.viewState;
         const drc = projection
@@ -2608,9 +2694,10 @@ export function registerRoutes(
         const designId = params.getOrThrow("designId");
         const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
         const apiUrl = req.headers.get("x-cloud-api-url") ?? undefined;
-        const { operations, sessionId } = parseAutoplaceApplyBody(
-          await parseJsonBody<unknown>(req),
-        );
+        const { operations, sessionId, jobId, appliedCandidateId } =
+          parseAutoplaceApplyBody(await parseJsonBody<unknown>(req));
+        const placeCaptureJobId = jobId ?? `job:unknown-${ulid()}`;
+        const placeCaptureGroupId = ulid();
         let appliedCount = 0;
         const failures: Array<{ opId: string; code: string }> = [];
         for (const op of operations) {
@@ -2632,10 +2719,20 @@ export function registerRoutes(
             failures.push({ opId: op.id, code: "invalid_command" });
             continue;
           }
-          const result = await store.dispatchCommand(designId, envelope, {
-            bearer,
-            apiUrl,
-          });
+          const result = await store.dispatchCommand(
+            designId,
+            envelope,
+            {
+              bearer,
+              apiUrl,
+            },
+            {
+              actor: "autolayout_apply",
+              jobId: placeCaptureJobId,
+              appliedCandidateId,
+              groupId: placeCaptureGroupId,
+            },
+          );
           if (result.ok) appliedCount += 1;
           else failures.push({ opId: op.id, code: result.code });
         }

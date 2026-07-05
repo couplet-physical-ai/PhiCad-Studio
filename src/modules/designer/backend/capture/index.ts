@@ -24,6 +24,7 @@ import {
   isRegisteredAutoCopper,
   onHistoryReplay as registryOnHistoryReplay,
   recordTouches,
+  registerAutolayoutJob,
   registerCreatedGeometry,
 } from "./auto-copper-registry";
 import { resolveCaptureConfig, type CaptureConfig } from "./config";
@@ -182,6 +183,59 @@ export class CaptureRuntime {
       });
     } catch (error) {
       this.logger.warn?.("capture: onHistoryReplay failed", { error: String(error) });
+    }
+  }
+
+  /** Before the apply loop: registers the job row (attribution anchor). */
+  onAutolayoutApplyStarted(input: {
+    designId: string;
+    jobId: string;
+    appliedCandidateId: string | null;
+    resultSummary: unknown;
+    preexistingNetCopper: Record<string, string[]>;
+  }): void {
+    if (!this.enabled) return;
+    try {
+      const summary = input.resultSummary as
+        | { determinism?: { snapshotHash?: string; engineVersion?: string } }
+        | null
+        | undefined;
+      registerAutolayoutJob(this.db, {
+        jobId: input.jobId,
+        designId: input.designId,
+        appliedCandidateId: input.appliedCandidateId,
+        captureSessionUlid: this.session(input.designId).sessionUlid,
+        snapshotHash: summary?.determinism?.snapshotHash ?? null,
+        engineVersion: summary?.determinism?.engineVersion ?? null,
+        resultSummaryJson:
+          input.resultSummary === undefined ? null : JSON.stringify(input.resultSummary),
+        preexistingNetCopper: input.preexistingNetCopper,
+      });
+    } catch (error) {
+      this.logger.warn?.("capture: onAutolayoutApplyStarted failed", {
+        error: String(error),
+      });
+    }
+  }
+
+  /** After the apply loop: one summary entry linking the group. */
+  onAutolayoutApplied(input: {
+    designId: string;
+    jobId: string;
+    appliedCandidateId: string | null;
+    groupId: string;
+  }): void {
+    if (!this.enabled) return;
+    try {
+      this.append(input.designId, {
+        kind: "autolayout_applied",
+        actor: "autolayout_apply",
+        jobId: input.jobId,
+        appliedCandidateId: input.appliedCandidateId ?? undefined,
+        groupId: input.groupId,
+      });
+    } catch (error) {
+      this.logger.warn?.("capture: onAutolayoutApplied failed", { error: String(error) });
     }
   }
 

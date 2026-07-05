@@ -697,6 +697,13 @@ export function createDesignerApi(params: {
       designId: string,
       operations: RouteOperation[],
       sessionId: string,
+      // Dataset-capture attribution (WP-D4): job/candidate identity + the
+      // otherwise-dropped RoutePayloadSummary, persisted server-side.
+      captureFields?: {
+        jobId?: string;
+        appliedCandidateId?: string;
+        resultSummary?: unknown;
+      },
     ): Promise<{
       appliedCount: number;
       failures: Array<{ opId: string; code: string }>;
@@ -715,7 +722,7 @@ export function createDesignerApi(params: {
         {
           method: "POST",
           headers: applyCloudHeaders({ "content-type": "application/json" }),
-          body: JSON.stringify({ operations, sessionId }),
+          body: JSON.stringify({ operations, sessionId, ...captureFields }),
         },
       );
     },
@@ -766,6 +773,7 @@ export function createDesignerApi(params: {
       designId: string,
       operations: PlaceOperation[],
       sessionId: string,
+      captureFields?: { jobId?: string; appliedCandidateId?: string },
     ): Promise<{
       appliedCount: number;
       failures: Array<{ opId: string; code: string }>;
@@ -784,7 +792,7 @@ export function createDesignerApi(params: {
         {
           method: "POST",
           headers: applyCloudHeaders({ "content-type": "application/json" }),
-          body: JSON.stringify({ operations, sessionId }),
+          body: JSON.stringify({ operations, sessionId, ...captureFields }),
         },
       );
     },

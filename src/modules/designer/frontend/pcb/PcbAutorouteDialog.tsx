@@ -220,10 +220,18 @@ export function PcbAutorouteDialog({
     if (!result || selectedOps.length === 0) return;
     setPhase("applying");
     try {
+      // "designer-pcb-session" (not a throwaway id) so applied ops land in the
+      // user's undo stack — an apply is undoable like any manual edit. The
+      // capture fields attribute the copper to this job/candidate (WP-D4).
       const { appliedCount, failures, drc } = await api.applyAutorouteOps(
         designId,
         selectedOps,
-        crypto.randomUUID(),
+        "designer-pcb-session",
+        {
+          jobId: jobId ?? undefined,
+          appliedCandidateId: result.id,
+          resultSummary: result.payload,
+        },
       );
       setApplied({
         count: appliedCount,

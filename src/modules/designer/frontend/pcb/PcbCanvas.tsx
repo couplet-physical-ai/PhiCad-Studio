@@ -493,6 +493,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   // are held locally and the user drags/rotates/flips to adjust before Accept (see hook).
   const placePreview = usePcbPlacePreview();
   const previewActive = placePreview.active;
+  // Dataset-capture attribution (WP-D4): candidate id of the previewed envelope.
+  const placeEnvelopeIdRef = useRef<string | null>(null);
   const [placePreviewPayload, setPlacePreviewPayload] =
     useState<PlacePayloadSummary | null>(null);
   const [placeApplying, setPlaceApplying] = useState(false);
@@ -526,6 +528,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         envelope.operations,
       );
       setPlacePreviewPayload(envelope.payload);
+      placeEnvelopeIdRef.current = envelope.id;
       setPlaceAppliedNote(null);
       // The autoplace dialog auto-hides now that the preview is active (its
       // `open` is gated on `!previewActive`); the ghost preview bar takes over.
@@ -556,10 +559,13 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     }
     setPlaceApplying(true);
     try {
+      // "designer-pcb-session" so applied placements are user-undoable; the
+      // capture fields attribute them for the dataset (WP-D4).
       const { appliedCount, failures, drc } = await placeApi.applyAutoplaceOps(
         designId,
         ops,
-        crypto.randomUUID(),
+        "designer-pcb-session",
+        { appliedCandidateId: placeEnvelopeIdRef.current ?? undefined },
       );
       await workspace.refresh();
       const failed = failures?.length ?? 0;

@@ -83,7 +83,13 @@ export function classifyCopperPatches(
         kind: copper.kind,
         netId: netIdFromComponent(patch.component),
       };
-      if (inversePatches.some((p) => p.kind === "entity.delete")) {
+      // Inverse of a set on a NEW entity is component.remove (or entity.delete);
+      // inverse of a modify is component.set carrying the previous payload.
+      if (
+        inversePatches.some(
+          (p) => p.kind === "entity.delete" || p.kind === "component.remove",
+        )
+      ) {
         result.created.push(ref);
       } else {
         result.modified.push(ref);
