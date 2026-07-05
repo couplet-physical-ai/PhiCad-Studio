@@ -9,6 +9,7 @@ import { isFeatureEnabled } from "../feature-flags";
 
 const DEV_FLAG: FeatureFlagDef = { availability: "dev", description: "x" };
 const ALL_FLAG: FeatureFlagDef = { availability: "all", description: "x" };
+const PROD_FLAG: FeatureFlagDef = { availability: "prod", description: "x" };
 
 describe("evaluateFeatureFlag", () => {
   test("dev flag follows isDev", () => {
@@ -20,12 +21,23 @@ describe("evaluateFeatureFlag", () => {
     expect(evaluateFeatureFlag(ALL_FLAG, { isDev: false })).toBe(true);
   });
 
+  test("prod flag is the inverse of isDev", () => {
+    expect(evaluateFeatureFlag(PROD_FLAG, { isDev: true })).toBe(false);
+    expect(evaluateFeatureFlag(PROD_FLAG, { isDev: false })).toBe(true);
+  });
+
   test("override wins over availability", () => {
     expect(
       evaluateFeatureFlag(DEV_FLAG, { isDev: false, override: true }),
     ).toBe(true);
     expect(
       evaluateFeatureFlag(ALL_FLAG, { isDev: true, override: false }),
+    ).toBe(false);
+    expect(
+      evaluateFeatureFlag(PROD_FLAG, { isDev: true, override: true }),
+    ).toBe(true);
+    expect(
+      evaluateFeatureFlag(PROD_FLAG, { isDev: false, override: false }),
     ).toBe(false);
   });
 });

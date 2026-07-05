@@ -17,11 +17,12 @@
 import type { ModuleAvailability } from "../modules/manifest";
 
 /**
- * Reuses the module-manifest vocabulary:
+ * Reuses the module-manifest vocabulary, plus one flag-only value:
  * - "all": shipped to production (always enabled).
  * - "dev": dev-only (enabled when the runtime is not a production build).
+ * - "prod": production-only (enabled ONLY in packaged builds; dev/test default off).
  */
-export type FeatureAvailability = ModuleAvailability;
+export type FeatureAvailability = ModuleAvailability | "prod";
 
 export interface FeatureFlagDef {
   /** Human-readable description of what the flag gates. */
@@ -78,6 +79,11 @@ export const FEATURE_FLAGS = {
     description:
       "Cloud Copilot chat mode (agent runs on the cloud-copilot service; proposals mirrored locally)",
   },
+  "dataset.capture": {
+    availability: "prod",
+    description:
+      "Full command-log session capture + dataset upload (internal training data; default OFF in dev/test builds, ON in packaged builds)",
+  },
 } satisfies Record<string, FeatureFlagDef>;
 
 export type FeatureFlagName = keyof typeof FEATURE_FLAGS;
@@ -87,14 +93,17 @@ export type FeatureFlagName = keyof typeof FEATURE_FLAGS;
  *
  * Precedence: an explicit `override` (from an env var) always wins, so a flag
  * can be force-enabled (QA in a release build) or force-disabled in any build.
- * Otherwise "all" flags are always on and "dev" flags follow `isDev`.
+ * Otherwise "all" flags are always on, "dev" flags follow `isDev`, and "prod"
+ * flags are the inverse (packaged builds only).
  */
 export function evaluateFeatureFlag(
   def: FeatureFlagDef,
   ctx: { isDev: boolean; override?: boolean },
 ): boolean {
   if (ctx.override !== undefined) return ctx.override;
-  return def.availability === "all" ? true : ctx.isDev;
+  if (def.availability === "all") return true;
+  if (def.availability === "prod") return !ctx.isDev;
+  return ctx.isDev;
 }
 
 /**
