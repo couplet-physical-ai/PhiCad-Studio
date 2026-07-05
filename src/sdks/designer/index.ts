@@ -260,6 +260,29 @@ export interface DesignerSDK {
   commitKicadProject(
     request: KicadProjectCommitRequest,
   ): Promise<KicadProjectCommitResult>;
+  /**
+   * S6: read the design's cloud link (null when not linked). Exposes the
+   * cloud identity + last synced revision so cross-module callers (assistant
+   * cloud-chat) can run the sync gate without touching designer internals.
+   */
+  getCloudLink(designId: string): Promise<DesignerCloudLinkInfo | null>;
+  /**
+   * S6 sync gate: push the current projection to the cloud when the cloud
+   * copy is behind (desktop-authoritative `POST /v1/designs/:id/snapshot`).
+   * No-op when revisions already match. Throws when the design is unlinked
+   * or the cloud rejects the reseed (revision regression).
+   */
+  pushCloudSnapshot(
+    designId: string,
+    ctx: { bearer: string; apiUrl: string },
+  ): Promise<{ pushed: boolean; revision: number; cloudDesignId: string }>;
+}
+
+/** Cloud link summary surfaced through the SDK (subset of designer_cloud_link). */
+export interface DesignerCloudLinkInfo {
+  cloudDesignId: string;
+  cloudWorkspaceId: string;
+  lastSyncedRevision: number;
 }
 
 // Cloud auto-router wire contracts (BoardSnapshot / RouteResultEnvelope / ProgressFrame).

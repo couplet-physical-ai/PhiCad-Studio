@@ -22,10 +22,15 @@ function makeStore(): { store: ConversationStore; db: Database } {
     tool_name TEXT, title TEXT, summary TEXT, risk_level TEXT,
     operations_json TEXT, sources_json TEXT, warnings_json TEXT, envelope_json TEXT,
     action_id TEXT,
+    origin TEXT NOT NULL DEFAULT 'local',
+    cloud_run_id TEXT, cloud_proposal_id TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`);
   db.run(
     `CREATE UNIQUE INDEX idx_action ON assistant_write_proposal(design_id, action_id) WHERE action_id IS NOT NULL`,
+  );
+  db.run(
+    `CREATE UNIQUE INDEX idx_cloud ON assistant_write_proposal(design_id, cloud_proposal_id) WHERE cloud_proposal_id IS NOT NULL`,
   );
   const ctx = {
     db: {

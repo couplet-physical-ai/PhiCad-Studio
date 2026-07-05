@@ -95,6 +95,26 @@ export function listProposals(
   return request(ctx, "GET", `/v1/copilot/runs/${runId}/proposals`);
 }
 
+export function stopRun(
+  ctx: CopilotClientContext,
+  runId: string,
+): Promise<{ status: string }> {
+  return request(ctx, "POST", `/v1/copilot/runs/${runId}/stop`, {});
+}
+
+export function rejectProposal(
+  ctx: CopilotClientContext,
+  runId: string,
+  proposalId: string,
+): Promise<{ status: string }> {
+  return request(
+    ctx,
+    "POST",
+    `/v1/copilot/runs/${runId}/proposals/${proposalId}/reject`,
+    {},
+  );
+}
+
 /** Idempotent applied-callback after a local proposal apply (S6 approve path). */
 export function postApplied(
   ctx: CopilotClientContext,

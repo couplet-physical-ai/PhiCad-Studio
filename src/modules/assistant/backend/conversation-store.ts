@@ -188,6 +188,9 @@ function rowToWriteProposal(
     proposal,
     envelope,
     applyResult: decodeJson(row.apply_result_json, null),
+    origin: row.origin === "cloud" ? ("cloud" as const) : ("local" as const),
+    cloudRunId: row.cloud_run_id ? String(row.cloud_run_id) : null,
+    cloudProposalId: row.cloud_proposal_id ? String(row.cloud_proposal_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -243,6 +246,10 @@ export interface CreateWriteProposalInput {
   operations?: AssistantWriteOperationLike[];
   sources?: AiSourceRef[];
   warnings?: string[];
+  /** S6 cloud chat: proposals mirrored from a cloud-copilot run. */
+  origin?: "local" | "cloud";
+  cloudRunId?: string | null;
+  cloudProposalId?: string | null;
 }
 
 export interface ListMessagesOptions {
@@ -619,9 +626,10 @@ export class ConversationStore {
     const warnings = input.warnings ?? envelope?.warnings ?? [];
     const actionId =
       (envelope as { actionId?: string } | null)?.actionId ?? null;
+    const cloudProposalId = input.cloudProposalId ?? null;
     try {
       this.rawSql(
-        "INSERT INTO assistant_write_proposal (id,chat_id,tool_event_id,kind,status,design_id,base_revision,proposal_json,apply_result_json,tool_name,title,summary,risk_level,operations_json,sources_json,warnings_json,envelope_json,action_id,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO assistant_write_proposal (id,chat_id,tool_event_id,kind,status,design_id,base_revision,proposal_json,apply_result_json,tool_name,title,summary,risk_level,operations_json,sources_json,warnings_json,envelope_json,action_id,origin,cloud_run_id,cloud_proposal_id,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
           proposalId,
           input.chatId,
@@ -641,6 +649,9 @@ export class ConversationStore {
           encode(warnings),
           envelope ? encode(envelope) : null,
           actionId,
+          input.origin ?? "local",
+          input.cloudRunId ?? null,
+          cloudProposalId,
           timestamp,
           timestamp,
         ],
@@ -649,14 +660,32 @@ export class ConversationStore {
       // F6: a concurrent submit already inserted a proposal for the same
       // (design_id, action_id) — the UNIQUE index rejects this one. Return the
       // existing proposal so the caller reuses it instead of duplicating writes.
-      const existing =
-        actionId && /unique|constraint/i.test(String(err))
-          ? this.getWriteProposalByActionId(input.designId, actionId)
-          : null;
+      // Same story for a re-streamed cloud proposal (design_id, cloud_proposal_id).
+      const isUnique = /unique|constraint/i.test(String(err));
+      const existing = isUnique
+        ? (actionId
+            ? this.getWriteProposalByActionId(input.designId, actionId)
+            : null) ??
+          (cloudProposalId
+            ? this.getWriteProposalByCloudId(input.designId, cloudProposalId)
+            : null)
+        : null;
       if (existing) return existing;
       throw err;
     }
     return this.getWriteProposal(input.chatId, proposalId)!;
+  }
+
+  /** S6: look up a mirrored proposal by its cloud identity (dedupes SSE redelivery). */
+  getWriteProposalByCloudId(
+    designId: string,
+    cloudProposalId: string,
+  ): AssistantWriteProposalDto | null {
+    const row = this.rawSql(
+      "SELECT * FROM assistant_write_proposal WHERE design_id=? AND cloud_proposal_id=? LIMIT 1",
+      [designId, cloudProposalId],
+    )[0];
+    return row ? rowToWriteProposal(row) : null;
   }
 
   /** F6: look up a proposal by its idempotency key (design + action_id). */

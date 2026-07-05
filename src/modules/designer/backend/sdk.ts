@@ -1,7 +1,9 @@
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { CoreBackendModuleContext } from "../../../core/contracts/modules/backend-module";
 import { MODULE_SDK_TOKENS } from "../../../sdks";
 import type { DesignerSDK } from "../../../sdks/designer";
 import type { LibrarySDK } from "../../../sdks/library";
+import { pushCloudSnapshot, readLinkPublic } from "./cloud-sync";
 import { runDrc } from "./drc/drc-engine";
 import { runErc } from "./erc/erc-engine";
 import {
@@ -10,8 +12,13 @@ import {
 } from "./import/kicad-project/commit";
 import { createDesignerStore } from "./store";
 
+type DbClient = BetterSQLite3Database<Record<string, unknown>>;
+
 export function buildDesignerSdk(ctx: CoreBackendModuleContext): DesignerSDK {
   const store = createDesignerStore(ctx);
+  // Same module-db unwrap the store uses (store.ts getDb) — cloud-sync helpers
+  // take the raw drizzle client.
+  const rawDb = (ctx.db as unknown as { db: DbClient }).db;
 
   // Match a KiCad lib_id ("LibraryName:PartName") against the OpenPCB library.
   // Strict match: requires a component tagged with the exact `kicad-lib-id:<libId>`
@@ -85,5 +92,16 @@ export function buildDesignerSdk(ctx: CoreBackendModuleContext): DesignerSDK {
         archiveBytes: request.archiveBytes,
         libraryComponentLookup,
       }),
+    getCloudLink: async (designId) => {
+      const link = readLinkPublic(rawDb, designId);
+      if (!link) return null;
+      return {
+        cloudDesignId: link.cloudDesignId,
+        cloudWorkspaceId: link.workspaceId,
+        lastSyncedRevision: link.lastSyncedRevision,
+      };
+    },
+    pushCloudSnapshot: (designId, cloudCtx) =>
+      pushCloudSnapshot(rawDb, designId, cloudCtx),
   };
 }

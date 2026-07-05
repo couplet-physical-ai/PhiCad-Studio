@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactElement } from "react";
-import { ExternalLink } from "lucide-react";
+import { Cloud, ExternalLink } from "lucide-react";
 import type { AssistantWriteProposalDto } from "../../../../sdks/assistant";
 import { useNavigationStore } from "../../../../core/frontend/src/stores/navigation-store";
+import { useAuth } from "../../../../core/frontend/src/cloud/AuthProvider";
+import { readCloudConfig } from "../../../../core/frontend/src/cloud/config";
 
 type GenericRiskLevel = "low" | "medium" | "high" | "destructive" | string;
 
@@ -61,6 +63,19 @@ export function GenericProposalCard({
   const [localStatus, setLocalStatus] = useState(proposal.status);
   const navigateToModule = useNavigationStore((s) => s.navigateToModule);
   const designId = proposal.designId || null;
+  const isCloud = proposal.origin === "cloud";
+  const { session } = useAuth();
+  // S6: cloud-origin proposals forward per-request creds so the backend can
+  // loop the outcome back to the copilot run (skipped gracefully when absent).
+  function cloudHeaders(): Record<string, string> {
+    if (!isCloud || !session) return {};
+    const cfg = readCloudConfig();
+    return {
+      "x-cloud-bearer": session.access_token,
+      "x-cloud-api-url": cfg.apiUrl,
+      "x-cloud-copilot-url": cfg.copilotUrl,
+    };
+  }
   useEffect(() => {
     setLocalStatus(proposal.status);
   }, [proposal.status]);
@@ -98,7 +113,7 @@ export function GenericProposalCard({
         `${assistantBaseUrl}/chats/${proposal.chatId}/write-proposals/${proposal.id}/apply`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...cloudHeaders() },
           body: JSON.stringify({ allowPartial: confirmPartial }),
         },
       );
@@ -171,7 +186,7 @@ export function GenericProposalCard({
     try {
       const response = await fetch(
         `${assistantBaseUrl}/chats/${proposal.chatId}/write-proposals/${proposal.id}/reject`,
-        { method: "POST" },
+        { method: "POST", headers: cloudHeaders() },
       );
       if (!response.ok) throw new Error("Reject failed");
       setLocalStatus("rejected");
@@ -222,6 +237,15 @@ export function GenericProposalCard({
           {localStatus}
         </span>
         <span className={riskClass(risk)}>{risk}</span>
+        {isCloud ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-sky-900/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-700 dark:bg-sky-400/10 dark:text-sky-300"
+            title="Proposed by Cloud Copilot"
+          >
+            <Cloud className="h-3 w-3" />
+            cloud
+          </span>
+        ) : null}
         {designId ? (
           <button
             type="button"

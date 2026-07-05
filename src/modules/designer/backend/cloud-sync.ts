@@ -408,3 +408,43 @@ export function readLinkPublic(
     lastError: row.lastError,
   };
 }
+
+/**
+ * S6 sync gate: push the design's CURRENT projection to the cloud when the
+ * cloud copy is behind (`lastSyncedRevision` ≠ local revision), so a
+ * cloud-copilot run reads what the user sees. Uses the desktop-authoritative
+ * `POST /v1/designs/:id/snapshot` reseed (regression → 409, equal → no-op).
+ */
+export async function pushCloudSnapshot(
+  db: DbClient,
+  designId: string,
+  ctx: { bearer: string; apiUrl: string },
+): Promise<{ pushed: boolean; revision: number; cloudDesignId: string }> {
+  const link = readLink(db, designId);
+  if (!link) {
+    throw new Error("design is not linked to the cloud — link it first");
+  }
+  const projection = loadSchematicProjection(db, designId);
+  const revision = projection?.revision ?? 0;
+  if (revision === link.lastSyncedRevision) {
+    return { pushed: false, revision, cloudDesignId: link.cloudDesignId };
+  }
+  const res = await fetch(
+    `${ctx.apiUrl}/v1/designs/${link.cloudDesignId}/snapshot`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ctx.bearer}`,
+      },
+      body: JSON.stringify({ revision, projection: projection ?? {} }),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    await recordSyncOutcome(db, designId, false, revision, `snapshot ${res.status}`);
+    throw new Error(`cloud snapshot push failed: ${res.status} ${detail.slice(0, 200)}`);
+  }
+  await recordSyncOutcome(db, designId, true, revision);
+  return { pushed: true, revision, cloudDesignId: link.cloudDesignId };
+}

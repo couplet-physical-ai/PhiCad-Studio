@@ -35,6 +35,21 @@ function requireChat(id: string): void {
     throw new NotFoundError(`Chat not found: ${id}`);
 }
 
+/** S6: per-request cloud credentials (never stored raw — see token-crypto.ts).
+ * Mirrors the designer convention (x-cloud-bearer / x-cloud-api-url) plus the
+ * copilot service URL. Returns null unless all of bearer+copilotUrl present. */
+function cloudCredsFromHeaders(req: Request): {
+  bearer: string;
+  apiUrl: string;
+  copilotUrl: string;
+} | null {
+  const bearer = req.headers.get("x-cloud-bearer") ?? "";
+  const apiUrl = req.headers.get("x-cloud-api-url") ?? "";
+  const copilotUrl = req.headers.get("x-cloud-copilot-url") ?? "";
+  if (!bearer || !copilotUrl) return null;
+  return { bearer, apiUrl, copilotUrl };
+}
+
 function normalizeChatTitle(title: unknown): string {
   if (typeof title !== "string")
     throw new ValidationError("Chat title is required");
@@ -147,6 +162,7 @@ export function registerRoutes(
       await getAssistantService().submitMessage(
         chatId(ctx),
         await body<SubmitAssistantMessageInput>(ctx.req),
+        cloudCredsFromHeaders(ctx.req),
       ),
       201,
     ),
@@ -186,6 +202,7 @@ export function registerRoutes(
         id,
         ctx.params.getOrThrow("proposalId"),
         await body<{ allowPartial?: boolean }>(ctx.req).catch(() => ({})),
+        cloudCredsFromHeaders(ctx.req),
       ),
     );
   });
@@ -196,6 +213,7 @@ export function registerRoutes(
       getAssistantService().rejectWriteProposal(
         id,
         ctx.params.getOrThrow("proposalId"),
+        cloudCredsFromHeaders(ctx.req),
       ),
     );
   });

@@ -20,6 +20,9 @@ import { ChatComposer } from "./components/ChatComposer";
 import type { MentionReference } from "./types/mention";
 import { contextBudgetKb } from "./components/chat-format";
 import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
+import { useAuth } from "../../../core/frontend/src/cloud/AuthProvider";
+import { readCloudConfig } from "../../../core/frontend/src/cloud/config";
+import { useFeatureFlag } from "../../../core/frontend/src/feature-flags";
 
 const QUICK_ACTIONS = [
   "Wire the schematic",
@@ -170,6 +173,15 @@ export function DesignerChatDock({
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // S6 cloud chat mode: offered only when the flag is on, a copilot URL is
+  // configured, and the user has a cloud session (bearer to forward).
+  const cloudCopilotFlag = useFeatureFlag("cloud.copilot");
+  const { session } = useAuth();
+  const cloudCfg = useMemo(() => readCloudConfig(), []);
+  const cloudModeAvailable =
+    cloudCopilotFlag && Boolean(cloudCfg.copilotUrl) && Boolean(session);
+  const [chatMode, setChatMode] = useState<"local" | "cloud">("local");
+  const effectiveMode = cloudModeAvailable ? chatMode : "local";
   const [menuOpen, setMenuOpen] = useState(false);
   const [toolCount, setToolCount] = useState<number | null>(null);
   const [activeRunsByChat, setActiveRunsByChat] = useState<
@@ -568,16 +580,28 @@ export function DesignerChatDock({
     setError(null);
     try {
       const chatId = await ensureDesignChat();
+      const cloudMode = effectiveMode === "cloud";
+      const submitHeaders: Record<string, string> = {
+        "content-type": "application/json",
+      };
+      if (cloudMode && session) {
+        // Per-request cloud creds (never stored by the backend raw — the task
+        // payload carries them AES-GCM sealed; see backend cloud/token-crypto).
+        submitHeaders["x-cloud-bearer"] = session.access_token;
+        submitHeaders["x-cloud-api-url"] = cloudCfg.apiUrl;
+        submitHeaders["x-cloud-copilot-url"] = cloudCfg.copilotUrl;
+      }
       const result = await api<SubmitAssistantMessageResult>(
         `${assistantBase}/chats/${chatId}/messages`,
         {
           method: "POST",
-          headers: headers(),
+          headers: submitHeaders,
           body: JSON.stringify({
             content,
             providerConfigId: providerId,
             model,
             promptPresetId,
+            ...(cloudMode ? { mode: "cloud" as const } : {}),
           }),
         },
       );
@@ -759,6 +783,33 @@ export function DesignerChatDock({
           </button>
         </div>
         <div className="mt-2 flex items-center gap-2">
+          {cloudModeAvailable ? (
+            <div
+              className="inline-flex shrink-0 overflow-hidden rounded-control border border-slate-200 text-[10px] dark:border-slate-700"
+              role="group"
+              aria-label="Chat mode"
+            >
+              {(["local", "cloud"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setChatMode(m)}
+                  className={
+                    effectiveMode === m
+                      ? "bg-slate-200 px-2 py-1 font-medium text-slate-900 dark:bg-slate-700 dark:text-slate-100"
+                      : "px-2 py-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-900"
+                  }
+                  title={
+                    m === "cloud"
+                      ? "Run on Cloud Copilot (agent runs in the cloud; proposals mirror here)"
+                      : "Run locally with your own provider"
+                  }
+                >
+                  {m === "cloud" ? "Cloud" : "Local"}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <ModelSelectorPill
             providers={providers}
             providerId={providerId}

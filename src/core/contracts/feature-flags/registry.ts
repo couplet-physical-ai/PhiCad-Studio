@@ -73,6 +73,11 @@ export const FEATURE_FLAGS = {
     availability: "dev",
     description: "Cloud assistant provider presets (OpenAI / OpenRouter)",
   },
+  "cloud.copilot": {
+    availability: "dev",
+    description:
+      "Cloud Copilot chat mode (agent runs on the cloud-copilot service; proposals mirrored locally)",
+  },
 } satisfies Record<string, FeatureFlagDef>;
 
 export type FeatureFlagName = keyof typeof FEATURE_FLAGS;

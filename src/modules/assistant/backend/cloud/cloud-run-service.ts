@@ -1,0 +1,353 @@
+// S6: the `assistant.cloud-chat` task executor — runs a chat turn on the
+// cloud-copilot service instead of the local BYO provider.
+//
+// Flow: decrypt per-task cloud credentials → sync gate (push snapshot when the
+// cloud copy is behind) → create an `agent` run (approvePlan=false; the plan
+// card UI is S7) → stream frames with Last-Event-ID resume until terminal.
+// Shared `run.*` frames re-emit through the same `{_aiEvent}` task-chunk path
+// the local runs use (useAssistantStream unchanged); `copilot.proposal.created`
+// mirrors the cloud proposal into the local write-proposal store (origin
+// "cloud") plus a synthetic succeeded tool event so the existing proposal
+// cards render it.
+
+import type { AiRunEvent } from "@openpcb/ai-core";
+import type { CopilotProposalView, CopilotStreamFrame } from "@openpcb/contracts";
+import type { CoreBackendModuleContext } from "../../../../core/contracts/modules/backend-module";
+import type { TaskExecutionContext, TasksSDK } from "../../../../sdks";
+import { MODULE_SDK_TOKENS, type DesignerSDK } from "../../../../sdks";
+import type { ContextResolver } from "../context-resolver";
+import type { ConversationStore } from "../conversation-store";
+import {
+  createRun,
+  listProposals,
+  stopRun,
+  streamRun,
+  type CopilotClientContext,
+  type StreamRunOptions,
+  type StreamRunResult,
+} from "./copilot-client";
+import { mapFrame } from "./frame-mapper";
+import { openCloudCredentials } from "./token-crypto";
+
+export interface CloudChatPayload {
+  chatId: string;
+  assistantMessageId: string;
+  goal: string;
+  cloudCredsEnc: string;
+}
+
+/** Injectable copilot API surface (tests feed fixture frames). */
+export interface CopilotApi {
+  createRun: typeof createRun;
+  streamRun: (
+    ctx: CopilotClientContext,
+    runId: string,
+    opts: StreamRunOptions,
+  ) => Promise<StreamRunResult>;
+  listProposals: typeof listProposals;
+  stopRun: typeof stopRun;
+}
+
+export interface CloudRunServiceOptions {
+  ctx: CoreBackendModuleContext;
+  conversation: ConversationStore;
+  contextResolver: ContextResolver;
+  api?: CopilotApi;
+}
+
+export class CloudRunService {
+  private readonly api: CopilotApi;
+
+  constructor(private readonly options: CloudRunServiceOptions) {
+    this.api = options.api ?? { createRun, streamRun, listProposals, stopRun };
+    const tasks = options.ctx.sdk.get<TasksSDK>(MODULE_SDK_TOKENS.TASKS);
+    if (!tasks) throw new Error("TasksSDK not registered");
+    tasks.registerExecutor("assistant.cloud-chat", {
+      execute: (taskCtx) =>
+        this.execute(taskCtx as TaskExecutionContext<CloudChatPayload>),
+    });
+  }
+
+  private designer(): DesignerSDK {
+    const sdk = this.options.ctx.sdk.get<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+    if (!sdk) throw new Error("DesignerSDK not registered");
+    return sdk;
+  }
+
+  private boundDesignId(chatId: string): string | null {
+    const primary = this.options.contextResolver.getPrimaryDesign(chatId);
+    return primary && primary.status === "active" ? primary.refId : null;
+  }
+
+  async execute(
+    taskCtx: TaskExecutionContext<CloudChatPayload>,
+  ): Promise<{ messageId: string; cloudRunId: string }> {
+    const { conversation } = this.options;
+    const payload = taskCtx.task.payload;
+    const { chatId, assistantMessageId } = payload;
+
+    let creds;
+    try {
+      creds = openCloudCredentials(payload.cloudCredsEnc);
+    } catch {
+      throw new Error(
+        "Cloud credentials unavailable (expired or unreadable) — re-send the message.",
+      );
+    }
+    const cctx: CopilotClientContext = {
+      copilotUrl: creds.copilotUrl,
+      bearer: creds.bearer,
+    };
+
+    await this.options.contextResolver.refreshBindingHealth(chatId);
+    const designId = this.boundDesignId(chatId);
+    if (!designId) {
+      throw new Error("Cloud Copilot needs a design bound to this chat.");
+    }
+
+    const designer = this.designer();
+    const link = await designer.getCloudLink(designId);
+    if (!link) {
+      throw new Error(
+        "This design is not linked to the cloud — link it (cloud sync) first.",
+      );
+    }
+    // Sync gate: the agent must read what the user sees.
+    if (creds.apiUrl) {
+      await designer.pushCloudSnapshot(designId, {
+        bearer: creds.bearer,
+        apiUrl: creds.apiUrl,
+      });
+    }
+
+    const created = await this.api.createRun(cctx, {
+      designId: link.cloudDesignId,
+      kind: "agent",
+      goal: payload.goal,
+      approvePlan: false, // plan approval UI is S7
+    });
+    const runId = created.runId;
+
+    const emitAiEvent = (event: AiRunEvent): void => {
+      taskCtx.emitChunk({ kind: "json", content: JSON.stringify({ _aiEvent: event }) });
+    };
+    const emitText = (text: string): void => {
+      conversation.appendMessageContent(assistantMessageId, text);
+      taskCtx.emitChunk({ kind: "text", content: text });
+    };
+
+    const mirrored = new Set<string>();
+    let sawTerminal: "completed" | "failed" | "cancelled" | null = null;
+    let failureReason = "";
+
+    const onFrame = async (frame: CopilotStreamFrame): Promise<void> => {
+      const mapped = mapFrame(frame);
+      if (mapped.kind === "ai") {
+        const event = mapped.event;
+        if (event.type === "run.message.delta") {
+          conversation.appendMessageContent(
+            assistantMessageId,
+            (event.data as { delta: string }).delta,
+          );
+        }
+        if (event.type === "run.completed") sawTerminal = "completed";
+        if (event.type === "run.cancelled") sawTerminal = "cancelled";
+        if (event.type === "run.failed") {
+          sawTerminal = "failed";
+          failureReason =
+            (event.data as { errorMessage?: string }).errorMessage ?? "run failed";
+        }
+        emitAiEvent(event);
+        return;
+      }
+      // copilot-only frames
+      const f = mapped.frame;
+      switch (f.type) {
+        case "copilot.proposal.created": {
+          const cloudProposalId = String(f.data.id ?? "");
+          if (!cloudProposalId || mirrored.has(cloudProposalId)) return;
+          mirrored.add(cloudProposalId);
+          await this.mirrorProposal(taskCtx, cctx, runId, {
+            chatId,
+            assistantMessageId,
+            designId,
+            cloudProposalId,
+          });
+          return;
+        }
+        case "copilot.plan.created":
+        case "copilot.plan.updated": {
+          const tasks = (f.data.tasks ?? []) as Array<{ title?: string }>;
+          if (tasks.length > 0) {
+            emitText(
+              `\n\n**Plan** (${f.type === "copilot.plan.created" ? "created" : "updated"}):\n` +
+                tasks.map((t, i) => `${i + 1}. ${t.title ?? "step"}`).join("\n") +
+                "\n\n",
+            );
+          }
+          return;
+        }
+        case "run.awaiting.approval": {
+          // approvePlan=false, so this only appears if the cloud policy changes.
+          emitText(
+            "\n\n⚠️ The cloud run is waiting for plan approval, which this app " +
+              "cannot grant yet (coming with the plan UI). Stop the run or approve it elsewhere.\n\n",
+          );
+          return;
+        }
+        default:
+          // copilot.task.updated — forward raw for future UI; harmless to older clients.
+          taskCtx.emitChunk({
+            kind: "json",
+            content: JSON.stringify({ _copilotFrame: f }),
+          });
+      }
+    };
+
+    let lastEventId: string | null = null;
+    let attempts = 0;
+    while (!sawTerminal) {
+      if (taskCtx.signal.aborted) break;
+      try {
+        const res = await this.api.streamRun(cctx, runId, {
+          lastEventId,
+          signal: taskCtx.signal,
+          onFrame,
+        });
+        lastEventId = res.lastEventId;
+        if (!res.terminal && !taskCtx.signal.aborted) {
+          attempts += 1;
+          if (attempts > 20) throw new Error("cloud stream kept disconnecting");
+          await new Promise((r) => setTimeout(r, Math.min(1000 * attempts, 5000)));
+        }
+      } catch (err) {
+        if (taskCtx.signal.aborted) break;
+        attempts += 1;
+        if (attempts > 20) throw err;
+        await new Promise((r) => setTimeout(r, Math.min(1000 * attempts, 5000)));
+      }
+    }
+
+    if (taskCtx.signal.aborted && !sawTerminal) {
+      // Best-effort cancel; the copilot run keeps its own lifecycle.
+      try {
+        await this.api.stopRun(cctx, runId);
+      } catch {
+        /* run may already be terminal */
+      }
+      emitAiEvent({
+        type: "run.cancelled",
+        runId,
+        timestamp: new Date().toISOString(),
+        data: { reason: "stopped from desktop" },
+      } as AiRunEvent);
+      return { messageId: assistantMessageId, cloudRunId: runId };
+    }
+
+    if (sawTerminal === "failed") {
+      throw new Error(`Cloud run failed: ${failureReason}`);
+    }
+    conversation.setMessageMetadata(assistantMessageId, {
+      ai: { cloudRunId: runId, mode: "cloud" },
+    } as never);
+    return { messageId: assistantMessageId, cloudRunId: runId };
+  }
+
+  /** Mirror one staged cloud proposal into the local store + a succeeded tool
+   * event so the existing proposal cards pick it up. */
+  private async mirrorProposal(
+    taskCtx: TaskExecutionContext<CloudChatPayload>,
+    cctx: CopilotClientContext,
+    runId: string,
+    ids: {
+      chatId: string;
+      assistantMessageId: string;
+      designId: string;
+      cloudProposalId: string;
+    },
+  ): Promise<void> {
+    let view: CopilotProposalView | undefined;
+    try {
+      const { proposals } = await this.api.listProposals(cctx, runId);
+      view = proposals.find((p) => p.id === ids.cloudProposalId);
+    } catch {
+      view = undefined;
+    }
+    if (!view) return; // frame without a fetchable proposal — nothing to mirror
+
+    // Copilot builds its envelopes to the assistant contract (operations carry
+    // real designer command payloads), so the local apply path can execute them
+    // directly — but the proposals API returns a view, so reassemble the
+    // envelope shape applyDesignerSchematicEditsProposal expects. designId is
+    // the LOCAL design: the desktop applies to what the user is editing.
+    const envelope = {
+      id: view.id,
+      kind: view.kind,
+      toolName: "cloud_copilot",
+      title: view.title ?? "Cloud Copilot proposal",
+      summary: view.summary ?? "",
+      riskLevel: view.riskLevel,
+      designId: ids.designId,
+      baseRevision: view.baseRevision,
+      operations: (view.operations ?? []) as never[],
+      payload: {},
+      sources: (view.sources ?? []) as never[],
+      warnings: [],
+    };
+    const record = this.options.conversation.createWriteProposal({
+      chatId: ids.chatId,
+      kind: view.kind,
+      designId: ids.designId,
+      baseRevision: view.baseRevision,
+      proposal: view,
+      envelope: envelope as never,
+      toolName: "cloud_copilot",
+      title: envelope.title,
+      summary: view.summary ?? null,
+      riskLevel: view.riskLevel,
+      operations: envelope.operations,
+      origin: "cloud",
+      cloudRunId: runId,
+      cloudProposalId: view.id,
+    });
+
+    // The proposal cards derive from succeeded tool events whose resultJson
+    // carries {id, kind, designId} matching a write-proposal record.
+    const event = this.options.conversation.upsertToolEvent({
+      chatId: ids.chatId,
+      taskId: taskCtx.task.id,
+      messageId: ids.assistantMessageId,
+      toolCallId: `cloud_${view.id}`,
+      toolName: "cloud_copilot",
+      status: "succeeded",
+      argumentsJson: JSON.stringify({ cloudRunId: runId }),
+      resultJson: JSON.stringify({
+        id: record.id,
+        kind: record.kind,
+        designId: ids.designId,
+        baseRevision: record.baseRevision,
+        title: record.title,
+        summary: record.summary,
+      }),
+    });
+    taskCtx.emitChunk({
+      kind: "json",
+      content: JSON.stringify({
+        _aiEvent: {
+          type: "run.tool.succeeded",
+          runId,
+          timestamp: new Date().toISOString(),
+          data: {
+            toolCallId: event.toolCallId,
+            toolName: "cloud_copilot",
+            resultJson: event.resultJson ?? "{}",
+            sources: [],
+            truncated: false,
+            warnings: [],
+            summary: record.title ?? "Cloud proposal staged",
+          },
+        } satisfies AiRunEvent,
+      }),
+    });
+  }
+}

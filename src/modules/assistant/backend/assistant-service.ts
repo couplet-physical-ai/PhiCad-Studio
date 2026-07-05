@@ -25,7 +25,14 @@ import {
   type TasksSDK,
   type DesignerSDK,
 } from "../../../sdks";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { ConversationStore } from "./conversation-store";
+import { CloudRunService } from "./cloud/cloud-run-service";
+import { postApplied, rejectProposal } from "./cloud/copilot-client";
+import {
+  sealCloudCredentials,
+  type CloudCredentials,
+} from "./cloud/token-crypto";
 import {
   ProviderStore,
   type InternalProviderConfig,
@@ -96,6 +103,14 @@ export class AssistantService {
           },
         }),
     });
+    // S6: cloud chat mode — registers the assistant.cloud-chat executor.
+    if (isFeatureEnabled("cloud.copilot")) {
+      new CloudRunService({
+        ctx,
+        conversation: this.conversation,
+        contextResolver: this.contextResolver,
+      });
+    }
   }
 
   // ─── chats ────────────────────────────────────────────────────────────
@@ -156,6 +171,7 @@ export class AssistantService {
   async submitMessage(
     chatId: string,
     input: SubmitAssistantMessageInput,
+    cloudCreds?: CloudCredentials | null,
   ): Promise<SubmitAssistantMessageResult> {
     this.assertValidChatId(chatId);
     if (!input.content?.trim())
@@ -163,15 +179,29 @@ export class AssistantService {
     let chat = this.conversation.getChat(chatId);
     if (!chat) throw new NotFoundError(`Chat not found: ${chatId}`);
 
-    const providerConfigId = input.providerConfigId ?? chat.providerConfigId;
-    const provider = this.requireUsableProvider(providerConfigId);
+    const cloudMode = input.mode === "cloud";
+    if (cloudMode && !isFeatureEnabled("cloud.copilot")) {
+      throw new ValidationError("Cloud Copilot mode is not enabled");
+    }
+    if (cloudMode && !cloudCreds) {
+      throw new ValidationError(
+        "Cloud Copilot mode needs cloud credentials (sign in to cloud first)",
+      );
+    }
+
+    // Cloud mode talks to the copilot service — no local provider involved.
+    const provider = cloudMode
+      ? null
+      : this.requireUsableProvider(input.providerConfigId ?? chat.providerConfigId);
     const model = input.model ?? chat.model;
     const promptPresetId = input.promptPresetId ?? chat.promptPresetId;
-    chat = this.conversation.updateChat(chatId, {
-      providerConfigId: provider.id,
-      model,
-      promptPresetId,
-    });
+    if (provider) {
+      chat = this.conversation.updateChat(chatId, {
+        providerConfigId: provider.id,
+        model,
+        promptPresetId,
+      });
+    }
 
     const userMessage = this.conversation.createMessage({
       chatId,
@@ -186,18 +216,32 @@ export class AssistantService {
       role: "assistant",
       content: "",
     });
-    const result = await this.tasks.createTask({
-      type: "assistant.chat",
-      queueKey: "assistant",
-      payload: {
-        chatId,
-        assistantMessageId: assistantMessage.id,
-        providerConfigId: provider.id,
-        model,
-      },
-      correlation: { scopeId: chatId },
-      tags: ["assistant", provider.id],
-    });
+    const result = cloudMode
+      ? await this.tasks.createTask({
+          type: "assistant.cloud-chat",
+          queueKey: "assistant",
+          payload: {
+            chatId,
+            assistantMessageId: assistantMessage.id,
+            goal: input.content,
+            // AES-GCM sealed {bearer, apiUrl, copilotUrl} — see token-crypto.ts.
+            cloudCredsEnc: sealCloudCredentials(cloudCreds!),
+          },
+          correlation: { scopeId: chatId },
+          tags: ["assistant", "cloud-copilot"],
+        })
+      : await this.tasks.createTask({
+          type: "assistant.chat",
+          queueKey: "assistant",
+          payload: {
+            chatId,
+            assistantMessageId: assistantMessage.id,
+            providerConfigId: provider!.id,
+            model,
+          },
+          correlation: { scopeId: chatId },
+          tags: ["assistant", provider!.id],
+        });
     this.conversation.setMessageTask(assistantMessage.id, result.task.id);
 
     return {
@@ -301,6 +345,7 @@ export class AssistantService {
     chatId: string,
     proposalId: string,
     input: { allowPartial?: boolean } = {},
+    cloudCreds?: CloudCredentials | null,
   ): Promise<AssistantPlacementApplyResult | SchematicApplyResult> {
     this.assertValidChatId(chatId);
     const record = this.conversation.getWriteProposal(chatId, proposalId);
@@ -324,6 +369,9 @@ export class AssistantService {
         proposalStatus,
         result,
       );
+      if (proposalStatus !== "failed") {
+        this.notifyCloudProposal(record, "applied", cloudCreds);
+      }
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -349,6 +397,7 @@ export class AssistantService {
   rejectWriteProposal(
     chatId: string,
     proposalId: string,
+    cloudCreds?: CloudCredentials | null,
   ): AssistantWriteProposalDto {
     this.assertValidChatId(chatId);
     const record = this.conversation.getWriteProposal(chatId, proposalId);
@@ -357,11 +406,45 @@ export class AssistantService {
     if (record.status !== "pending") {
       throw new ValidationError(`Write proposal is already ${record.status}`);
     }
-    return this.conversation.updateWriteProposalStatus(
+    const updated = this.conversation.updateWriteProposalStatus(
       chatId,
       proposalId,
       "rejected",
     );
+    this.notifyCloudProposal(record, "rejected", cloudCreds);
+    return updated;
+  }
+
+  /** S6: loop a local approve/reject back to the cloud-copilot run. Best-effort
+   * fire-and-forget — the desktop stays authoritative; the copilot side is
+   * idempotent. Skipped (with a log) when the request carried no cloud creds. */
+  private notifyCloudProposal(
+    record: AssistantWriteProposalDto,
+    outcome: "applied" | "rejected",
+    cloudCreds?: CloudCredentials | null,
+  ): void {
+    if (record.origin !== "cloud" || !record.cloudRunId || !record.cloudProposalId) {
+      return;
+    }
+    if (!cloudCreds) {
+      this.ctx.logger.warn("cloud proposal outcome not synced (no cloud creds)", {
+        proposalId: record.id,
+        outcome,
+      });
+      return;
+    }
+    const cctx = { copilotUrl: cloudCreds.copilotUrl, bearer: cloudCreds.bearer };
+    const call =
+      outcome === "applied"
+        ? postApplied(cctx, record.cloudRunId, record.cloudProposalId, {})
+        : rejectProposal(cctx, record.cloudRunId, record.cloudProposalId);
+    void call.catch((err) => {
+      this.ctx.logger.warn("cloud proposal outcome callback failed", {
+        proposalId: record.id,
+        outcome,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   listSessionWriteAllowances(chatId: string): AssistantSessionWriteAllowance[] {
