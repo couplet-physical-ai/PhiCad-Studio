@@ -161,6 +161,16 @@ export interface RouteOptions {
    * recommended production accuracy/latency default).
    */
   portfolio?: number;
+  /**
+   * [P5] Route budget mode — "legacy" (per-search caps, multiplied per
+   * net × rip-up pass) or "job" (one shared work pool with per-net
+   * escalation). Absent = service default; both fields are hash-projected
+   * out at defaults service-side, so omitting them is byte-identical to
+   * pre-P5 behavior.
+   */
+  budgetMode?: "legacy" | "job" | null;
+  /** [P5] Total job work pool (expansions) — only read when budgetMode="job". */
+  jobBudget?: number | null;
 }
 
 /** Cost-term weights for cloud-auto-place (scale-normalized terms). */

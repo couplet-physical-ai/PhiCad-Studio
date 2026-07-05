@@ -6,7 +6,7 @@ generated artifact — it is not derived from anything in this repo.
 - **Source repo:** `OpenPCB-app/cloud-auto-layout` (locally:
   `cloud-workspace/cloud-auto-layout`)
 - **Source path:** `contracts/BoardSnapshot.schema.json`
-- **Vendored at commit:** `ba7c83b`
+- **Vendored at commit:** `a4d2e88`
 - **Emitted by:** `uv run python -m scripts.emit_contracts` (service repo) —
   regenerated there after any `app/contracts/*` Pydantic model change.
 

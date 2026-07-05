@@ -213,6 +213,8 @@ export interface RouteOptions {
   netOrder?: string[] | null;
   progressEveryNNets?: number;
   portfolio?: number;
+  budgetMode?: "legacy" | "job" | null;
+  jobBudget?: number | null;
 }
 
 export interface Stackup {

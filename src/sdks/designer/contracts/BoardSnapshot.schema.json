@@ -980,6 +980,36 @@
           "default": 1,
           "title": "Portfolio",
           "type": "integer"
+        },
+        "budgetMode": {
+          "anyOf": [
+            {
+              "enum": [
+                "legacy",
+                "job"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budgetmode"
+        },
+        "jobBudget": {
+          "anyOf": [
+            {
+              "maximum": 50000000,
+              "minimum": 100000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Jobbudget"
         }
       },
       "title": "RouteOptions",
