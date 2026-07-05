@@ -66,3 +66,6 @@ verify-*.png
 # src/modules/library/backend/builtins/kicad-assets/)
 data/footprints/kicad-footprints-master-*.pretty/
 data/footprints/kicad-footprints-master-*.zip
+
+# graphify knowledge-graph output (generated)
+graphify-out/

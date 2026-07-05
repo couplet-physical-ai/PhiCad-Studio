@@ -1,0 +1,38 @@
+# graphify already merges .gitignore (dev-data/, bin/, electron/out/, *.opclib,
+# *.sqlite, .env, etc.) and hardcodes node_modules/dist/build/coverage/target/
+# .git/etc as skip-dirs. Only add entries here that aren't already covered.
+
+# Generated and dependency content (redundant with defaults/.gitignore, kept
+# explicit for clarity/robustness)
+node_modules/
+dist/
+build/
+coverage/
+test-results/
+playwright-report/
+graphify-out/
+
+# Generated files
+*.tsbuildinfo
+*.map
+*.min.js
+*.min.css
+
+# Bun lockfile - not in graphify's hardcoded lockfile skip list (only npm/yarn/
+# pnpm/cargo/poetry/gemfile/composer/go are skipped by filename)
+bun.lock
+
+# Committed binary example-project archives (data/*.zip) - zero text-extraction
+# value, not covered by .gitignore (these are tracked fixtures, not build output)
+data/*.zip
+
+# Media - not text-extractable; icons/screenshots carry no architectural signal
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.mp4
+*.mov
+*.webm
