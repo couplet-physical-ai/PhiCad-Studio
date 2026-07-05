@@ -28,6 +28,7 @@ import {
   registerCreatedGeometry,
 } from "./auto-copper-registry";
 import { resolveCaptureConfig, type CaptureConfig } from "./config";
+import { derivePerNetOutcomes, type LiveCopper } from "./outcomes";
 import { classifyCopperPatches } from "./patch-classifier";
 import { SessionLogWriter } from "./session-log";
 import { storeMilestoneSnapshot } from "./snapshots";
@@ -76,6 +77,7 @@ export class CaptureRuntime {
   private readonly sessions = new Map<string, CaptureSession>();
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private snapshotProvider: SnapshotProvider | null = null;
+  private copperProvider: ((designId: string) => Promise<LiveCopper | null>) | null = null;
 
   constructor(ctx: CoreBackendModuleContext, config = resolveCaptureConfig()) {
     this.config = config;
@@ -125,6 +127,11 @@ export class CaptureRuntime {
     this.snapshotProvider = provider;
   }
 
+  /** Live copper ids per net — outcome derivation input (never snapshot diffs). */
+  setCopperProvider(provider: (designId: string) => Promise<LiveCopper | null>): void {
+    this.copperProvider = provider;
+  }
+
   /** Build + store a milestone snapshot, then log its entry. Fail-isolated. */
   private async takeSnapshot(
     designId: string,
@@ -159,11 +166,22 @@ export class CaptureRuntime {
     }
   }
 
-  /** Export milestone: snapshot; PerNetOutcome derivation hooks in alongside. */
+  /** Export milestone: snapshot + PerNetOutcome derivation (spec §6). */
   async onExport(designId: string): Promise<void> {
     if (!this.enabled) return;
     try {
       await this.takeSnapshot(designId, "export");
+      const live = (await this.copperProvider?.(designId)) ?? { traces: [], vias: [] };
+      const session = this.session(designId);
+      for (const outcome of derivePerNetOutcomes(this.db, designId, live)) {
+        session.writer.append({
+          kind: "per_net_outcome",
+          actor: "system",
+          jobId: outcome.jobId,
+          appliedCandidateId: outcome.appliedCandidateId ?? undefined,
+          outcome,
+        });
+      }
     } catch (error) {
       this.logger.warn?.("capture: onExport failed", { error: String(error) });
     }

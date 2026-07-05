@@ -2135,6 +2135,14 @@ export function registerRoutes(
     const projection = await store.getPcbProjection(designId);
     return projection ? buildBoardSnapshot(projection).snapshot : null;
   });
+  capture.setCopperProvider(async (designId) => {
+    const projection = await store.getPcbProjection(designId);
+    if (!projection) return null;
+    return {
+      traces: projection.traces.map((t) => ({ id: t.id, netId: t.netId })),
+      vias: projection.vias.map((v) => ({ id: v.id, netId: v.netId })),
+    };
+  });
   const commentStore = createCommentStore({
     db: (ctx.db as { db: BetterSQLite3Database<Record<string, unknown>> }).db,
   });
