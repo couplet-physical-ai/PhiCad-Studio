@@ -2131,6 +2131,10 @@ export function registerRoutes(
 ): void {
   const store = createDesignerStore(ctx);
   const capture = resolveCaptureRuntime(ctx);
+  capture.setSnapshotProvider(async (designId) => {
+    const projection = await store.getPcbProjection(designId);
+    return projection ? buildBoardSnapshot(projection).snapshot : null;
+  });
   const commentStore = createCommentStore({
     db: (ctx.db as { db: BetterSQLite3Database<Record<string, unknown>> }).db,
   });
@@ -2163,6 +2167,10 @@ export function registerRoutes(
     if (!design) {
       throw new NotFoundError(`Design '${designId}' not found`);
     }
+    // Dataset capture (WP-D4): project-open proxy — there is no explicit open
+    // event; the first design read per capture session takes the milestone
+    // snapshot. Fire-and-forget, fail-isolated inside the runtime.
+    capture.onDesignOpened(designId);
     return success({ design });
   });
 
@@ -2386,6 +2394,10 @@ export function registerRoutes(
       const options = parseExportOptions(rawBody);
 
       const bundle = buildExportBundle(pcb, schematic, options, overrides);
+
+      // Dataset capture (WP-D4): export is a milestone — snapshot + per-net
+      // outcome derivation for every applied auto-layout job.
+      await capture.onExport(designId);
 
       // `?format=zip` returns ZIP bytes; `?format=summary` returns a light
       // manifest (names + sizes + preflight warnings, no file text) for the

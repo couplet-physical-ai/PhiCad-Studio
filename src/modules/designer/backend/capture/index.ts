@@ -30,6 +30,7 @@ import {
 import { resolveCaptureConfig, type CaptureConfig } from "./config";
 import { classifyCopperPatches } from "./patch-classifier";
 import { SessionLogWriter } from "./session-log";
+import { storeMilestoneSnapshot } from "./snapshots";
 import { deriveTags } from "./tags";
 import type { DispatchCaptureMeta, SessionLogEntry } from "./types";
 import { ulid } from "./ulid";
@@ -40,7 +41,11 @@ interface CaptureSession {
   sessionUlid: string;
   writer: SessionLogWriter;
   commandsSinceSnapshot: number;
+  openSnapshotTaken: boolean;
 }
+
+/** Supplies board snapshots for milestone capture without importing the store. */
+export type SnapshotProvider = (designId: string) => Promise<unknown | null>;
 
 export interface CommandAppliedInput {
   designId: string;
@@ -70,6 +75,7 @@ export class CaptureRuntime {
   private readonly logger: CoreBackendModuleContext["logger"];
   private readonly sessions = new Map<string, CaptureSession>();
   private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private snapshotProvider: SnapshotProvider | null = null;
 
   constructor(ctx: CoreBackendModuleContext, config = resolveCaptureConfig()) {
     this.config = config;
@@ -103,10 +109,64 @@ export class CaptureRuntime {
         logDir: writer.dir,
       })
       .run();
-    const session: CaptureSession = { sessionUlid, writer, commandsSinceSnapshot: 0 };
+    const session: CaptureSession = {
+      sessionUlid,
+      writer,
+      commandsSinceSnapshot: 0,
+      openSnapshotTaken: false,
+    };
     this.sessions.set(designId, session);
     writer.append({ kind: "session_start", actor: "system" });
     return session;
+  }
+
+  /** Registered by createDesignerStore (both instances; identical behavior). */
+  setSnapshotProvider(provider: SnapshotProvider): void {
+    this.snapshotProvider = provider;
+  }
+
+  /** Build + store a milestone snapshot, then log its entry. Fail-isolated. */
+  private async takeSnapshot(
+    designId: string,
+    trigger: "project_open" | "autolayout_applied" | "export" | "every_n_commands"
+      | "session_end" | "import",
+  ): Promise<void> {
+    if (!this.snapshotProvider) return;
+    const snapshot = await this.snapshotProvider(designId);
+    if (!snapshot) return;
+    const session = this.session(designId);
+    const stored = storeMilestoneSnapshot(session.writer.dir, snapshot);
+    session.writer.append({
+      kind: "milestone_snapshot",
+      actor: "system",
+      snapshot: { sha256: stored.sha256, trigger, path: stored.path },
+    });
+    session.commandsSinceSnapshot = 0;
+  }
+
+  /** Project-open proxy: first design read per capture session. */
+  onDesignOpened(designId: string): void {
+    if (!this.enabled) return;
+    try {
+      const session = this.session(designId);
+      if (session.openSnapshotTaken) return;
+      session.openSnapshotTaken = true;
+      void this.takeSnapshot(designId, "project_open").catch((error) => {
+        this.logger.warn?.("capture: open snapshot failed", { error: String(error) });
+      });
+    } catch (error) {
+      this.logger.warn?.("capture: onDesignOpened failed", { error: String(error) });
+    }
+  }
+
+  /** Export milestone: snapshot; PerNetOutcome derivation hooks in alongside. */
+  async onExport(designId: string): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      await this.takeSnapshot(designId, "export");
+    } catch (error) {
+      this.logger.warn?.("capture: onExport failed", { error: String(error) });
+    }
   }
 
   private append(
@@ -158,6 +218,14 @@ export class CaptureRuntime {
         ...(tagError ? { tagError } : {}),
       });
       session.commandsSinceSnapshot += 1;
+      if (session.commandsSinceSnapshot >= this.config.snapshotEveryNCommands) {
+        session.commandsSinceSnapshot = 0;
+        void this.takeSnapshot(designId, "every_n_commands").catch((error) => {
+          this.logger.warn?.("capture: periodic snapshot failed", {
+            error: String(error),
+          });
+        });
+      }
     } catch (error) {
       this.logger.warn?.("capture: onCommandApplied failed", { error: String(error) });
     }
@@ -234,6 +302,9 @@ export class CaptureRuntime {
         appliedCandidateId: input.appliedCandidateId ?? undefined,
         groupId: input.groupId,
       });
+      void this.takeSnapshot(input.designId, "autolayout_applied").catch((error) => {
+        this.logger.warn?.("capture: apply snapshot failed", { error: String(error) });
+      });
     } catch (error) {
       this.logger.warn?.("capture: onAutolayoutApplied failed", { error: String(error) });
     }
@@ -243,6 +314,9 @@ export class CaptureRuntime {
     if (!this.enabled) return;
     try {
       this.append(designId, { kind: "import", actor: "import", importSummary: summary });
+      void this.takeSnapshot(designId, "import").catch((error) => {
+        this.logger.warn?.("capture: import snapshot failed", { error: String(error) });
+      });
     } catch (error) {
       this.logger.warn?.("capture: onImportCommitted failed", { error: String(error) });
     }
