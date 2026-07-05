@@ -43,7 +43,12 @@ export function primitiveAsPin(primitive: DesignerPrimitive): DesignerPin {
 }
 
 function isPrimitiveKind(value: string): value is DesignerPrimitiveKind {
-  return value === "gnd" || value === "pwr" || value === "net_portal";
+  return (
+    value === "gnd" ||
+    value === "pwr" ||
+    value === "net_portal" ||
+    value === "junction"
+  );
 }
 
 function mapPrimitiveRow(row: PrimitiveRow): DesignerPrimitive | null {
@@ -63,6 +68,9 @@ function mapPrimitiveRow(row: PrimitiveRow): DesignerPrimitive | null {
   };
   if (row.kind === "gnd") {
     return { ...base, kind: "gnd" };
+  }
+  if (row.kind === "junction") {
+    return { ...base, kind: "junction" };
   }
   if (row.kind === "pwr") {
     const railText = asString(payload.railText) ?? "";
@@ -89,7 +97,8 @@ export function loadPrimitives(
 export function serializePrimitivePayload(
   primitive: DesignerPrimitive,
 ): string {
-  if (primitive.kind === "gnd") return JSON.stringify({});
+  if (primitive.kind === "gnd" || primitive.kind === "junction")
+    return JSON.stringify({});
   if (primitive.kind === "pwr")
     return JSON.stringify({ railText: primitive.railText });
   return JSON.stringify({ portalText: primitive.portalText });
@@ -152,6 +161,7 @@ export function asPrimitiveFromPayload(
     rotationDeg: Number.isFinite(rotationDeg) ? rotationDeg : 0,
   };
   if (kind === "gnd") return { ...base, kind: "gnd" };
+  if (kind === "junction") return { ...base, kind: "junction" };
   if (kind === "pwr") {
     const railText = asString(record.railText) ?? "";
     return { ...base, kind: "pwr", railText };

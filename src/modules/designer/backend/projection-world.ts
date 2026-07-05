@@ -29,6 +29,7 @@ import type {
   PcbVia,
 } from "../../../sdks";
 import { normalizeRotationDeg } from "./commands/place-part";
+import { pointStrictlyInsideOrthogonalSegment } from "./routing/manhattan";
 import { asPrimitiveFromPayload, insertPrimitiveRow } from "./primitive-store";
 import {
   designHeads,
@@ -507,49 +508,159 @@ export function deriveNetsAndJunctions(
   primitives: DesignerPrimitive[] = [],
 ): NetDerivationResult {
   const unionFind = new UnionFind();
-  // Count wire segment-ends ("stubs") meeting at each point. A junction dot is
-  // shown where >= 3 stubs coincide (T, cross, or a branch tapping a wire — even
-  // a collinear branch). A single corner or a straight pass-through vertex has
-  // exactly 2 stubs and is not a junction; clean paths never carry redundant
-  // collinear vertices (simplifyCollinearPath removes them).
-  const incidentCount = new Map<string, number>();
+
+  // ── Connectivity policy (audit §4.1 + §4.9, fixed rule) ─────────────────
+  // Point-like things (pins, labels, primitive connection points) live on
+  // COORDINATE nodes `pt:<x>:<y>` — anything point-like at the same spot is
+  // connected (stacked pins, label on a pin, …).
+  // Wire vertices live on PER-WIRE INSTANCE nodes `w:<wireId>:<idx>` — two
+  // wires sharing a vertex coordinate do NOT implicitly connect (pass-through,
+  // §4.9). Connection across wires happens only through:
+  //   T-TOUCH — a terminus (wire end, pin, or primitive pin) landing on
+  //   another wire's vertex or strictly inside one of its segments (§4.1),
+  //   or a wire endpoint's declared source/target pin id.
+  const ptNode = (point: { x: number; y: number }) => `pt:${pointKey(point)}`;
+  const wNode = (wireId: string, idx: number) => `w:${wireId}:${idx}`;
+
   const pinKeyById = new Map<string, string>();
+  // Pin-like coordinates (pins + primitive connection points): connect to wire
+  // interiors. Labels stay vertex-exact (current behavior preserved).
+  const pinCoords = new Map<string, { x: number; y: number }>();
+  const labelCoords = new Map<string, { x: number; y: number }>();
 
   for (const part of parts) {
     for (const pin of part.pins) {
-      const key = pointKey(pin.worldPositionNm);
-      pinKeyById.set(pin.id, key);
-      unionFind.add(key);
+      const node = ptNode(pin.worldPositionNm);
+      pinKeyById.set(pin.id, node);
+      unionFind.add(node);
+      pinCoords.set(node, pin.worldPositionNm);
     }
   }
-  for (const label of labels) unionFind.add(pointKey(label.positionNm));
+  for (const label of labels) {
+    const node = ptNode(label.positionNm);
+    unionFind.add(node);
+    labelCoords.set(node, label.positionNm);
+  }
   for (const prim of primitives) {
-    const key = pointKey(prim.positionNm);
+    const node = ptNode(prim.positionNm);
     // Synthetic primitive pin id `primitive:<id>` so wires that terminate
     // on a primitive's connection point are unioned into the same net as
     // the primitive itself.
-    pinKeyById.set(`primitive:${prim.id}`, key);
-    unionFind.add(key);
+    pinKeyById.set(`primitive:${prim.id}`, node);
+    unionFind.add(node);
+    pinCoords.set(node, prim.positionNm);
   }
 
+  // Count wire segment-ends ("stubs") meeting at each coordinate, and wire
+  // termini per coordinate — both feed the junction-dot rule below.
+  const incidentCount = new Map<string, number>();
+  const terminusCount = new Map<string, number>();
+  const vertexByCoord = new Map<
+    string,
+    Array<{ wireId: string; idx: number }>
+  >();
+  const termini: Array<{
+    wireId: string;
+    idx: number;
+    point: { x: number; y: number };
+  }> = [];
+
   for (const wire of wires) {
-    for (const point of wire.pointsNm) unionFind.add(pointKey(point));
-    for (let index = 1; index < wire.pointsNm.length; index += 1) {
-      const prev = wire.pointsNm[index - 1];
-      const curr = wire.pointsNm[index];
+    const pts = wire.pointsNm;
+    for (let idx = 0; idx < pts.length; idx += 1) {
+      const point = pts[idx];
+      if (!point) continue;
+      unionFind.add(wNode(wire.id, idx));
+      const coord = pointKey(point);
+      const list = vertexByCoord.get(coord) ?? [];
+      list.push({ wireId: wire.id, idx });
+      vertexByCoord.set(coord, list);
+    }
+    for (let index = 1; index < pts.length; index += 1) {
+      const prev = pts[index - 1];
+      const curr = pts[index];
       if (!prev || !curr) continue;
+      unionFind.union(wNode(wire.id, index - 1), wNode(wire.id, index));
       const prevKey = pointKey(prev);
       const currKey = pointKey(curr);
-      unionFind.union(prevKey, currKey);
       incidentCount.set(prevKey, (incidentCount.get(prevKey) ?? 0) + 1);
       incidentCount.set(currKey, (incidentCount.get(currKey) ?? 0) + 1);
     }
-    const first = wire.pointsNm[0];
-    const last = wire.pointsNm[wire.pointsNm.length - 1];
+    const first = pts[0];
+    const last = pts[pts.length - 1];
     const sourceKey = pinKeyById.get(wire.sourcePinId);
     const targetKey = pinKeyById.get(wire.targetPinId);
-    if (sourceKey && first) unionFind.union(sourceKey, pointKey(first));
-    if (targetKey && last) unionFind.union(targetKey, pointKey(last));
+    if (sourceKey && first) unionFind.union(sourceKey, wNode(wire.id, 0));
+    if (targetKey && last)
+      unionFind.union(targetKey, wNode(wire.id, pts.length - 1));
+    if (first) {
+      termini.push({ wireId: wire.id, idx: 0, point: first });
+      const key = pointKey(first);
+      terminusCount.set(key, (terminusCount.get(key) ?? 0) + 1);
+    }
+    if (last && pts.length > 1) {
+      termini.push({ wireId: wire.id, idx: pts.length - 1, point: last });
+      const key = pointKey(last);
+      terminusCount.set(key, (terminusCount.get(key) ?? 0) + 1);
+    }
+  }
+
+  // Wires passing strictly through a coordinate (no vertex there) — each such
+  // wire contributes 2 branches at that point and is a T-touch target.
+  const passThroughSegments = (
+    point: { x: number; y: number },
+    excludeWireId?: string,
+  ): Array<{ wireId: string; segStartIdx: number }> => {
+    const hits: Array<{ wireId: string; segStartIdx: number }> = [];
+    for (const wire of wires) {
+      if (wire.id === excludeWireId) continue;
+      const pts = wire.pointsNm;
+      for (let i = 1; i < pts.length; i += 1) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        if (!a || !b) continue;
+        if (pointStrictlyInsideOrthogonalSegment(point, a, b)) {
+          hits.push({ wireId: wire.id, segStartIdx: i - 1 });
+        }
+      }
+    }
+    return hits;
+  };
+
+  // T-TOUCH unions for wire termini: pt-nodes at the same coordinate, other
+  // wires' vertices at the same coordinate, and other wires' segment
+  // interiors containing the terminus (§4.1).
+  for (const terminus of termini) {
+    const coord = pointKey(terminus.point);
+    const node = wNode(terminus.wireId, terminus.idx);
+    const pt = `pt:${coord}`;
+    if (pinCoords.has(pt) || labelCoords.has(pt)) unionFind.union(node, pt);
+    for (const vertex of vertexByCoord.get(coord) ?? []) {
+      if (vertex.wireId === terminus.wireId) continue;
+      unionFind.union(node, wNode(vertex.wireId, vertex.idx));
+    }
+    for (const hit of passThroughSegments(terminus.point, terminus.wireId)) {
+      unionFind.union(node, wNode(hit.wireId, hit.segStartIdx));
+    }
+  }
+
+  // T-TOUCH unions for pin-like points: any wire vertex at the coordinate
+  // (preserves the previous pin-on-vertex behavior) and any wire segment
+  // strictly containing the point (§4.1). Labels keep vertex-exact semantics.
+  for (const [pt, point] of pinCoords) {
+    const coord = pointKey(point);
+    for (const vertex of vertexByCoord.get(coord) ?? []) {
+      unionFind.union(pt, wNode(vertex.wireId, vertex.idx));
+    }
+    for (const hit of passThroughSegments(point)) {
+      unionFind.union(pt, wNode(hit.wireId, hit.segStartIdx));
+    }
+  }
+  for (const [pt, point] of labelCoords) {
+    const coord = pointKey(point);
+    for (const vertex of vertexByCoord.get(coord) ?? []) {
+      unionFind.union(pt, wNode(vertex.wireId, vertex.idx));
+    }
   }
 
   // Global named-net union: every primitive that names a net merges with all
@@ -557,7 +668,8 @@ export function deriveNetsAndJunctions(
   // (canonical "GND"), PWR rails (railText) and net portals (portalText) in ONE
   // namespace, so e.g. a pwr("+5V") and a net_portal("+5V") form a single net.
   // The grouping key is case-insensitive (VCC == vcc); display names are still
-  // taken from the original primitive text downstream.
+  // taken from the original primitive text downstream. Junction nodes name
+  // nothing.
   const keysByNetName = new Map<string, string[]>();
   for (const prim of primitives) {
     let netName: string | null = null;
@@ -568,7 +680,7 @@ export function deriveNetsAndJunctions(
     if (!netName) continue;
     const groupKey = netName.toUpperCase();
     const arr = keysByNetName.get(groupKey) ?? [];
-    arr.push(pointKey(prim.positionNm));
+    arr.push(ptNode(prim.positionNm));
     keysByNetName.set(groupKey, arr);
   }
   for (const keys of keysByNetName.values()) {
@@ -617,21 +729,20 @@ export function deriveNetsAndJunctions(
   // `erc/erc-engine.ts`).
   for (const part of parts)
     for (const pin of part.pins)
-      ensureNet(unionFind.find(pointKey(pin.worldPositionNm))).pinIds.add(
+      ensureNet(unionFind.find(ptNode(pin.worldPositionNm))).pinIds.add(
         pin.id,
       );
   for (const wire of wires) {
-    const anchor = wire.pointsNm[0];
-    if (anchor)
-      ensureNet(unionFind.find(pointKey(anchor))).wireIds.add(wire.id);
+    if (wire.pointsNm.length > 0)
+      ensureNet(unionFind.find(wNode(wire.id, 0))).wireIds.add(wire.id);
   }
   for (const label of labels) {
-    const net = ensureNet(unionFind.find(pointKey(label.positionNm)));
+    const net = ensureNet(unionFind.find(ptNode(label.positionNm)));
     net.labelIds.add(label.id);
     if (label.text.trim()) net.names.add(label.text.trim());
   }
   for (const prim of primitives) {
-    const net = ensureNet(unionFind.find(pointKey(prim.positionNm)));
+    const net = ensureNet(unionFind.find(ptNode(prim.positionNm)));
     net.primitiveIds.add(prim.id);
     if (prim.kind === "gnd") {
       net.gndCount += 1;
@@ -695,9 +806,32 @@ export function deriveNetsAndJunctions(
       };
     });
 
-  const junctions = [...incidentCount.entries()]
-    .filter(([, count]) => count >= 3)
-    .map(([key]) => parsePointKey(key))
+  // ── Junction dots ────────────────────────────────────────────────────────
+  // A dot marks a CONNECTION-forming meeting, matching the union rules above:
+  //   • a wire terminus at P with ≥3 total branches (T-touch, 3-way joins), or
+  //   • a pin-like point at P with ≥2 wire branches (pin tapping a wire).
+  // branches(P) = incident segment-ends + 2 per wire passing strictly through.
+  // A 4-way shared-vertex crossing has 4 branches but no terminus/pin → NO dot
+  // (pass-through, §4.9); a corner has 2 branches → no dot; two wire ends
+  // meeting have 2 branches, 2 termini → no dot.
+  const dotCoords = new Set<string>();
+  for (const [coord, count] of terminusCount) {
+    if (count < 1) continue;
+    const point = parsePointKey(coord);
+    const branches =
+      (incidentCount.get(coord) ?? 0) + 2 * passThroughSegments(point).length;
+    if (branches >= 3) dotCoords.add(coord);
+  }
+  for (const [, point] of pinCoords) {
+    const coord = pointKey(point);
+    if (dotCoords.has(coord)) continue;
+    const branches =
+      (incidentCount.get(coord) ?? 0) + 2 * passThroughSegments(point).length;
+    if (branches >= 2) dotCoords.add(coord);
+  }
+
+  const junctions = [...dotCoords]
+    .map((key) => parsePointKey(key))
     .map((point) => ({ xNm: point.x, yNm: point.y }))
     .sort((a, b) => (a.xNm === b.xNm ? a.yNm - b.yNm : a.xNm - b.xNm));
 
@@ -812,6 +946,7 @@ export function replaceSchematicProjection(
         sourcePinId: wire.sourcePinId,
         targetPinId: wire.targetPinId,
         pointsJson: JSON.stringify(wire.pointsNm),
+        routeStatus: wire.routeStatus ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
       })

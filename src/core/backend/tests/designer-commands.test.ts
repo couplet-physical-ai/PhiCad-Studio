@@ -8,6 +8,7 @@ import { DiagnosticsStore } from "../diagnostics/diagnostics-store";
 import { createHttpServer } from "../http/create-http-server";
 import { ModuleRuntime } from "../modules/module-loader";
 import { ModuleRouterRegistry } from "../router/module-registry";
+import { MentionRegistry } from "../mentions";
 import { getKicadFixtureDir } from "./helpers/kicad-fixtures";
 
 function isolateTestDb(testLabel: string): void {
@@ -20,6 +21,9 @@ function isolateTestDb(testLabel: string): void {
 }
 
 async function createRuntimeAndServer() {
+  // The library module registers @mention providers on activate; the real boot
+  // (runtime.ts) calls this before bootstrap. Idempotent — safe per test.
+  MentionRegistry.init();
   const repoRoot = path.resolve(import.meta.dir, "../../..");
   const moduleRegistry = new ModuleRouterRegistry();
   const moduleRuntime = new ModuleRuntime({
@@ -765,6 +769,335 @@ describe("designer commands hardening", () => {
     expect(afterDelete?.wires.length).toBe(0);
   });
 
+  test("move re-route: pin-to-pin wires avoid obstacles, waypointed wires keep interior points", async () => {
+    isolateTestDb("designer-hardening-move-reroute");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Move reroute" });
+    const dispatch = async (
+      baseRevision: number,
+      command: DesignerCommandEnvelope["command"],
+    ) => {
+      const result = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "move-reroute",
+        aggregateId: design.id,
+        baseRevision,
+        issuedAt: Date.now(),
+        command,
+      });
+      expect(result.ok).toBe(true);
+      return result;
+    };
+
+    const placeA = await dispatch(0, {
+      type: "place_part",
+      componentId,
+      positionNm: { x: 0, y: 0 },
+    });
+    await dispatch(1, {
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 0 },
+    });
+
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const partA = placed?.parts[0];
+    const partB = placed?.parts[1];
+    const aRight = partA?.pins[1]; // (2mm, 0)
+    const aLeft = partA?.pins[0]; // (-2mm, 0)
+    const bLeft = partB?.pins[0]; // (18mm, 0)
+    const bRight = partB?.pins[1]; // (22mm, 0)
+    if (!partA || !aRight || !aLeft || !bLeft || !bRight || !placeA.ok) {
+      throw new Error("Expected two placed parts with pins");
+    }
+
+    // Pin-to-pin wire without waypoints → auto-routed (straight, 2 points).
+    const autoWire = await dispatch(2, {
+      type: "create_wire",
+      sourcePinId: aRight.id,
+      targetPinId: bLeft.id,
+    });
+    // Waypointed wire with a deliberate jog through (x, 8mm).
+    await dispatch(3, {
+      type: "create_wire",
+      sourcePinId: aLeft.id,
+      targetPinId: bRight.id,
+      pointsNm: [
+        { ...aLeft.worldPositionNm },
+        { x: aLeft.worldPositionNm.x, y: 8_000_000 },
+        { x: bRight.worldPositionNm.x, y: 8_000_000 },
+        { ...bRight.worldPositionNm },
+      ],
+    });
+
+    // Blocker part sitting on the straight wire's line.
+    await dispatch(4, {
+      type: "place_part",
+      componentId,
+      positionNm: { x: 10_000_000, y: 0 },
+    });
+    // Nudge part A up 1 mm — the straight wire must re-route AROUND the
+    // blocker; the waypointed wire must keep its interior jog verbatim.
+    if (!placeA.createdEntityId) throw new Error("Expected part A id");
+    await dispatch(5, {
+      type: "move_part",
+      partId: placeA.createdEntityId,
+      positionNm: { x: 0, y: 1_000_000 },
+    });
+
+    const after = await designerSdk.getSchematicProjection(design.id);
+    if (!autoWire.ok || !autoWire.createdEntityId) {
+      throw new Error("Expected auto wire id");
+    }
+    const rerouted = after?.wires.find(
+      (wire) => wire.id === autoWire.createdEntityId,
+    );
+    if (!rerouted) throw new Error("Expected rerouted wire");
+    // Endpoints follow the moved pin.
+    expect(rerouted.pointsNm[0]).toEqual({ x: 2_000_000, y: 1_000_000 });
+    expect(rerouted.pointsNm[rerouted.pointsNm.length - 1]).toEqual({
+      x: 18_000_000,
+      y: 0,
+    });
+    // Blocker pin bbox (8mm..12mm, y=0) inflated by the router margin
+    // (1.27mm) — no rerouted segment may cross its strict interior.
+    const rect = {
+      minX: 8_000_000 - 1_270_000,
+      minY: -1_270_000,
+      maxX: 12_000_000 + 1_270_000,
+      maxY: 1_270_000,
+    };
+    const hitsRect = (a: { x: number; y: number }, b: typeof a): boolean => {
+      if (a.y === b.y) {
+        if (!(rect.minY < a.y && a.y < rect.maxY)) return false;
+        const lo = Math.min(a.x, b.x);
+        const hi = Math.max(a.x, b.x);
+        return Math.max(lo, rect.minX) < Math.min(hi, rect.maxX);
+      }
+      if (a.x === b.x) {
+        if (!(rect.minX < a.x && a.x < rect.maxX)) return false;
+        const lo = Math.min(a.y, b.y);
+        const hi = Math.max(a.y, b.y);
+        return Math.max(lo, rect.minY) < Math.min(hi, rect.maxY);
+      }
+      return false;
+    };
+    for (let i = 1; i < rerouted.pointsNm.length; i += 1) {
+      expect(hitsRect(rerouted.pointsNm[i - 1]!, rerouted.pointsNm[i]!)).toBe(
+        false,
+      );
+    }
+
+    const waypointed = after?.wires.find(
+      (wire) => wire.id !== autoWire.createdEntityId,
+    );
+    if (!waypointed) throw new Error("Expected waypointed wire");
+    // Interior jog preserved verbatim; endpoint follows the moved pin.
+    expect(
+      waypointed.pointsNm.some(
+        (p) => p.x === -2_000_000 && p.y === 8_000_000,
+      ),
+    ).toBe(true);
+    expect(
+      waypointed.pointsNm.some((p) => p.x === 22_000_000 && p.y === 8_000_000),
+    ).toBe(true);
+    expect(waypointed.pointsNm[0]).toEqual({ x: -2_000_000, y: 1_000_000 });
+  });
+
+  test("auto-route with no clean escape persists routeStatus 'colliding' and survives undo/redo", async () => {
+    isolateTestDb("designer-hardening-colliding-flag");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Colliding flag" });
+    let revision = 0;
+    const dispatch = async (command: DesignerCommandEnvelope["command"]) => {
+      const result = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "colliding",
+        aggregateId: design.id,
+        baseRevision: revision,
+        issuedAt: Date.now(),
+        command,
+      });
+      expect(result.ok).toBe(true);
+      revision += 1;
+      return result;
+    };
+
+    const placeA = await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 0, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 0 },
+    });
+    // Wall ring around part B: horizontal walls above/below, rotated walls
+    // left/right — inflated pin bboxes overlap at the corners, sealing the box.
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 4_000_000 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: -4_000_000 },
+    });
+    const left = await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 16_000_000, y: 0 },
+    });
+    if (!left.ok || !left.createdEntityId) throw new Error("left wall id");
+    await dispatch({
+      type: "rotate_part",
+      partId: left.createdEntityId,
+      rotationDeg: 90,
+    });
+    const right = await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 24_000_000, y: 0 },
+    });
+    if (!right.ok || !right.createdEntityId) throw new Error("right wall id");
+    await dispatch({
+      type: "rotate_part",
+      partId: right.createdEntityId,
+      rotationDeg: 90,
+    });
+
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const pinA = placed?.parts[0]?.pins[1]; // (2mm, 0)
+    const pinB = placed?.parts[1]?.pins[0]; // (18mm, 0) — inside the ring
+    if (!pinA || !pinB || !placeA.ok) throw new Error("Expected pins");
+
+    const wire = await dispatch({
+      type: "create_wire",
+      sourcePinId: pinA.id,
+      targetPinId: pinB.id,
+    });
+    if (!wire.ok || !wire.createdEntityId) throw new Error("Expected wire id");
+
+    const after = await designerSdk.getSchematicProjection(design.id);
+    const created = after?.wires.find((w) => w.id === wire.createdEntityId);
+    expect(created?.routeStatus).toBe("colliding");
+
+    // Undo removes the wire, redo restores it WITH the diagnostic flag.
+    const undo = await designerSdk.undo(design.id, "colliding");
+    expect(undo.ok).toBe(true);
+    const afterUndo = await designerSdk.getSchematicProjection(design.id);
+    expect(afterUndo?.wires.length).toBe(0);
+
+    const redo = await designerSdk.redo(design.id, "colliding");
+    expect(redo.ok).toBe(true);
+    const afterRedo = await designerSdk.getSchematicProjection(design.id);
+    const restored = afterRedo?.wires.find(
+      (w) => w.id === wire.createdEntityId,
+    );
+    expect(restored?.routeStatus).toBe("colliding");
+  });
+
+  test("rejects a duplicate wire between the same two pins (either orientation)", async () => {
+    isolateTestDb("designer-hardening-duplicate-wire");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Duplicate wire" });
+    for (const [index, x] of [0, 8_000_000].entries()) {
+      const placed = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "dup-wire",
+        aggregateId: design.id,
+        baseRevision: index,
+        issuedAt: Date.now(),
+        command: { type: "place_part", componentId, positionNm: { x, y: 0 } },
+      });
+      expect(placed.ok).toBe(true);
+    }
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const pinA = placed?.parts[0]?.pins[0];
+    const pinA2 = placed?.parts[0]?.pins[1];
+    const pinB = placed?.parts[1]?.pins[0];
+    if (!pinA || !pinA2 || !pinB) throw new Error("Expected pins");
+
+    const first = await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "dup-wire",
+      aggregateId: design.id,
+      baseRevision: 2,
+      issuedAt: Date.now(),
+      command: {
+        type: "create_wire",
+        sourcePinId: pinA.id,
+        targetPinId: pinB.id,
+      },
+    });
+    expect(first.ok).toBe(true);
+
+    const sameOrientation = await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "dup-wire",
+      aggregateId: design.id,
+      baseRevision: 3,
+      issuedAt: Date.now(),
+      command: {
+        type: "create_wire",
+        sourcePinId: pinA.id,
+        targetPinId: pinB.id,
+      },
+    });
+    expect(sameOrientation.ok).toBe(false);
+    if (!sameOrientation.ok) {
+      expect(sameOrientation.code).toBe("INVALID_WIRE_PATH");
+    }
+
+    const reversed = await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "dup-wire",
+      aggregateId: design.id,
+      baseRevision: 3,
+      issuedAt: Date.now(),
+      command: {
+        type: "create_wire",
+        sourcePinId: pinB.id,
+        targetPinId: pinA.id,
+      },
+    });
+    expect(reversed.ok).toBe(false);
+
+    const distinctPair = await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "dup-wire",
+      aggregateId: design.id,
+      baseRevision: 3,
+      issuedAt: Date.now(),
+      command: {
+        type: "create_wire",
+        sourcePinId: pinA2.id,
+        targetPinId: pinB.id,
+      },
+    });
+    expect(distinctPair.ok).toBe(true);
+
+    const projection = await designerSdk.getSchematicProjection(design.id);
+    expect(projection?.wires.length).toBe(2);
+  });
+
   test("creates wire junction from pin to existing wire", async () => {
     isolateTestDb("designer-hardening-wire-junction");
     const { moduleRuntime, server } = await createRuntimeAndServer();
@@ -841,21 +1174,249 @@ describe("designer commands hardening", () => {
     });
     expect(createJunction.ok).toBe(true);
 
+    // The tap splits the wire in two at a junction node + adds the branch.
     const afterJunction = await designerSdk.getSchematicProjection(design.id);
-    expect(afterJunction?.wires.length).toBe(2);
+    expect(afterJunction?.wires.length).toBe(3);
     expect(afterJunction?.junctions).toContainEqual({ xNm: 4_000_000, yNm: 0 });
+    const junctionNode = afterJunction?.primitives.find(
+      (p) => p.kind === "junction",
+    );
+    expect(junctionNode?.positionNm).toEqual({ x: 4_000_000, y: 0 });
     expect(afterJunction?.nets.length).toBeGreaterThan(0);
-    expect(afterJunction?.nets.some((net) => net.wireIds.length === 2)).toBe(
+    expect(afterJunction?.nets.some((net) => net.wireIds.length === 3)).toBe(
       true,
     );
     const anchorWire = afterJunction?.wires.find(
       (wire) => wire.id === createWire.createdEntityId,
     );
+    expect(anchorWire?.targetPinId).toBe(`primitive:${junctionNode?.id}`);
     expect(
-      anchorWire?.pointsNm.some(
-        (point) => point.x === 4_000_000 && point.y === 0,
-      ),
-    ).toBe(true);
+      anchorWire?.pointsNm[anchorWire.pointsNm.length - 1],
+    ).toEqual({ x: 4_000_000, y: 0 });
+  });
+
+  test("junction split: two disjoint halves + branch, undoable, draggable, cascade-deletable", async () => {
+    isolateTestDb("designer-hardening-junction-split");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Junction split" });
+    let revision = 0;
+    const dispatch = async (command: DesignerCommandEnvelope["command"]) => {
+      const result = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "junction-split",
+        aggregateId: design.id,
+        baseRevision: revision,
+        issuedAt: Date.now(),
+        command,
+      });
+      expect(result.ok).toBe(true);
+      revision += 1;
+      return result;
+    };
+
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 0, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 10_000_000, y: 6_000_000 },
+    });
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const pinA = placed?.parts[0]?.pins[1]; // (2mm, 0)
+    const pinB = placed?.parts[1]?.pins[0]; // (18mm, 0)
+    const branchPin = placed?.parts[2]?.pins[0]; // (8mm, 6mm)
+    if (!pinA || !pinB || !branchPin) throw new Error("Expected pins");
+
+    const wire = await dispatch({
+      type: "create_wire",
+      sourcePinId: pinA.id,
+      targetPinId: pinB.id,
+    });
+    if (!wire.ok || !wire.createdEntityId) throw new Error("Expected wire id");
+
+    await dispatch({
+      type: "create_wire_junction",
+      sourcePinId: branchPin.id,
+      wireId: wire.createdEntityId,
+      targetPointNm: { x: 10_000_000, y: 0 },
+    });
+
+    const after = await designerSdk.getSchematicProjection(design.id);
+    const junction = after?.primitives.find((p) => p.kind === "junction");
+    if (!junction) throw new Error("Expected junction node");
+    const junctionPinId = `primitive:${junction.id}`;
+    expect(junction.positionNm).toEqual({ x: 10_000_000, y: 0 });
+    expect(after?.wires.length).toBe(3);
+    expect(after?.junctions).toContainEqual({ xNm: 10_000_000, yNm: 0 });
+
+    const w1 = after?.wires.find((w) => w.id === wire.createdEntityId);
+    const w2 = after?.wires.find(
+      (w) => w.sourcePinId === junctionPinId && w.targetPinId === pinB.id,
+    );
+    const branch = after?.wires.find(
+      (w) => w.sourcePinId === branchPin.id && w.targetPinId === junctionPinId,
+    );
+    if (!w1 || !w2 || !branch) throw new Error("Expected all three wires");
+    expect(w1.targetPinId).toBe(junctionPinId);
+    expect(w1.pointsNm).toEqual([
+      { x: 2_000_000, y: 0 },
+      { x: 10_000_000, y: 0 },
+    ]);
+    expect(w2.pointsNm).toEqual([
+      { x: 10_000_000, y: 0 },
+      { x: 18_000_000, y: 0 },
+    ]);
+
+    // No overlapping duplicate segment across the three wires (audit §4.5).
+    const segmentKey = (a: { x: number; y: number }, b: typeof a) => {
+      const [p, q] = a.x < b.x || (a.x === b.x && a.y < b.y) ? [a, b] : [b, a];
+      return `${p.x}:${p.y}|${q.x}:${q.y}`;
+    };
+    const seen = new Set<string>();
+    for (const w of [w1, w2, branch]) {
+      for (let i = 1; i < w.pointsNm.length; i += 1) {
+        const key = segmentKey(w.pointsNm[i - 1]!, w.pointsNm[i]!);
+        expect(seen.has(key)).toBe(false);
+        seen.add(key);
+      }
+    }
+
+    // All three wires + all three pins share one net.
+    const net = after?.nets.find((n) => n.wireIds.includes(w1.id));
+    expect(net?.wireIds.sort()).toEqual([w1.id, w2.id, branch.id].sort());
+    expect(net?.pinIds).toContain(pinA.id);
+    expect(net?.pinIds).toContain(pinB.id);
+    expect(net?.pinIds).toContain(branchPin.id);
+
+    // Single undo restores the pre-tap state (one wire, no junction node).
+    const undo = await designerSdk.undo(design.id, "junction-split");
+    expect(undo.ok).toBe(true);
+    revision += 1;
+    const afterUndo = await designerSdk.getSchematicProjection(design.id);
+    expect(afterUndo?.wires.length).toBe(1);
+    expect(afterUndo?.wires[0]?.pointsNm).toEqual([
+      { x: 2_000_000, y: 0 },
+      { x: 18_000_000, y: 0 },
+    ]);
+    expect(
+      afterUndo?.primitives.some((p) => p.kind === "junction"),
+    ).toBe(false);
+
+    const redo = await designerSdk.redo(design.id, "junction-split");
+    expect(redo.ok).toBe(true);
+    revision += 1;
+    const afterRedo = await designerSdk.getSchematicProjection(design.id);
+    expect(afterRedo?.wires.length).toBe(3);
+    expect(afterRedo?.primitives.some((p) => p.kind === "junction")).toBe(
+      true,
+    );
+
+    // Dragging the junction node re-routes all three wires to it.
+    await dispatch({
+      type: "move_primitive",
+      primitiveId: junction.id,
+      positionNm: { x: 10_000_000, y: 2_000_000 },
+    });
+    const afterMove = await designerSdk.getSchematicProjection(design.id);
+    for (const w of afterMove?.wires ?? []) {
+      const touches = [w.pointsNm[0], w.pointsNm[w.pointsNm.length - 1]].some(
+        (p) => p?.x === 10_000_000 && p?.y === 2_000_000,
+      );
+      expect(touches).toBe(true);
+    }
+
+    // Deleting the junction node cascades its three wires.
+    await dispatch({
+      type: "delete_entity",
+      entityKind: "primitive",
+      entityId: junction.id,
+    });
+    const afterDelete = await designerSdk.getSchematicProjection(design.id);
+    expect(afterDelete?.wires.length).toBe(0);
+    expect(
+      afterDelete?.primitives.some((p) => p.kind === "junction"),
+    ).toBe(false);
+  });
+
+  test("junction tap on a wire endpoint connects to the endpoint pin without splitting", async () => {
+    isolateTestDb("designer-hardening-junction-endpoint");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Junction endpoint" });
+    let revision = 0;
+    const dispatch = async (command: DesignerCommandEnvelope["command"]) => {
+      const result = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "junction-endpoint",
+        aggregateId: design.id,
+        baseRevision: revision,
+        issuedAt: Date.now(),
+        command,
+      });
+      expect(result.ok).toBe(true);
+      revision += 1;
+      return result;
+    };
+
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 0, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 0 },
+    });
+    await dispatch({
+      type: "place_part",
+      componentId,
+      positionNm: { x: 10_000_000, y: 6_000_000 },
+    });
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const pinA = placed?.parts[0]?.pins[1];
+    const pinB = placed?.parts[1]?.pins[0]; // (18mm, 0)
+    const branchPin = placed?.parts[2]?.pins[0];
+    if (!pinA || !pinB || !branchPin) throw new Error("Expected pins");
+
+    const wire = await dispatch({
+      type: "create_wire",
+      sourcePinId: pinA.id,
+      targetPinId: pinB.id,
+    });
+    if (!wire.ok || !wire.createdEntityId) throw new Error("Expected wire id");
+
+    // Tap exactly on the wire's target endpoint.
+    await dispatch({
+      type: "create_wire_junction",
+      sourcePinId: branchPin.id,
+      wireId: wire.createdEntityId,
+      targetPointNm: { x: 18_000_000, y: 0 },
+    });
+
+    const after = await designerSdk.getSchematicProjection(design.id);
+    expect(after?.wires.length).toBe(2);
+    expect(after?.primitives.some((p) => p.kind === "junction")).toBe(false);
+    const branch = after?.wires.find((w) => w.id !== wire.createdEntityId);
+    expect(branch?.sourcePinId).toBe(branchPin.id);
+    expect(branch?.targetPinId).toBe(pinB.id);
   });
 
   test("moves connected wire endpoints when moving part", async () => {

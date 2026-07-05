@@ -90,6 +90,9 @@ export const schematicWires = sqliteTable(
     sourcePinId: text("source_pin_id").notNull(),
     targetPinId: text("target_pin_id").notNull(),
     pointsJson: text("points_json").notNull(),
+    // "colliding" when the auto-router committed its known-colliding fallback
+    // (audit §4.4); NULL for clean or user-drawn geometry.
+    routeStatus: text("route_status"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

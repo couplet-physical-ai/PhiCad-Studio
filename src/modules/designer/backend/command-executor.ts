@@ -24,7 +24,7 @@ import {
   serializePrimitivePayload,
 } from "./primitive-store";
 import { buildCreateWirePayload } from "./commands/create-wire";
-import { autoRouteWirePoints } from "./routing/wire-obstacles";
+import { autoRouteWirePointsDetailed } from "./routing/wire-obstacles";
 import { applyAutoArrange } from "./layout/arrange-schematic";
 import {
   buildPlacePartPayload,
@@ -123,7 +123,6 @@ import { computeOutlineBboxMm } from "./pcb/outline-geometry";
 import {
   insertVertexOnWire,
   parseWirePointsJson,
-  sanitizePath,
   updateConnectedWireGeometry,
 } from "./wire-geometry";
 
@@ -426,21 +425,11 @@ export function insertWire(
       sourcePinId: payload.sourcePinId,
       targetPinId: payload.targetPinId,
       pointsJson: JSON.stringify(payload.pointsNm),
+      routeStatus: payload.routeStatus ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
     })
     .run();
-}
-
-function pathLength(points: Array<{ x: number; y: number }>): number {
-  let total = 0;
-  for (let index = 1; index < points.length; index += 1) {
-    const prev = points[index - 1];
-    const curr = points[index];
-    if (prev && curr)
-      total += Math.abs(curr.x - prev.x) + Math.abs(curr.y - prev.y);
-  }
-  return total;
 }
 
 function updatePartPinsAndConnectedWires(params: {
@@ -451,9 +440,18 @@ function updatePartPinsAndConnectedWires(params: {
   rotationDeg: number;
   mirrored: boolean;
   timestamp: string;
+  projection: DesignerSchematicProjection;
 }): void {
-  const { tx, designId, partId, positionNm, rotationDeg, mirrored, timestamp } =
-    params;
+  const {
+    tx,
+    designId,
+    partId,
+    positionNm,
+    rotationDeg,
+    mirrored,
+    timestamp,
+    projection,
+  } = params;
   const pinRows = tx
     .select()
     .from(schematicPins)
@@ -484,6 +482,7 @@ function updatePartPinsAndConnectedWires(params: {
     movedPinIds: [...nextByPinId.keys()],
     nextByPinId,
     timestamp,
+    projection,
   });
 }
 
@@ -1180,6 +1179,7 @@ export function executeDesignerCommand({
       movedPinIds: [synthPinId],
       nextByPinId,
       timestamp,
+      projection,
     });
     return okResult(
       bumpRevision(tx, designId, revision, timestamp),
@@ -1206,8 +1206,12 @@ export function executeDesignerCommand({
   if (command.type === "update_primitive_text") {
     const existing = loadPrimitiveById(tx, designId, command.primitiveId);
     if (!existing) return primitiveNotFound(command.primitiveId);
-    if (existing.kind === "gnd") {
-      return invalidPrimitive("GND ports do not have editable text");
+    if (existing.kind === "gnd" || existing.kind === "junction") {
+      return invalidPrimitive(
+        existing.kind === "gnd"
+          ? "GND ports do not have editable text"
+          : "Junction nodes do not have editable text",
+      );
     }
     const text = command.text.trim();
     if (text.length === 0) {
@@ -1235,14 +1239,46 @@ export function executeDesignerCommand({
     if (!sourcePin) return pinNotFound(command.sourcePinId);
     const targetPin = resolvePinAny(tx, designId, command.targetPinId);
     if (!targetPin) return pinNotFound(command.targetPinId);
+    // Reject a full duplicate: a second wire between the same two pins (either
+    // orientation) is always a fully redundant overlap.
+    const duplicate = tx
+      .select({ id: schematicWires.id })
+      .from(schematicWires)
+      .where(
+        and(
+          eq(schematicWires.designId, designId),
+          or(
+            and(
+              eq(schematicWires.sourcePinId, command.sourcePinId),
+              eq(schematicWires.targetPinId, command.targetPinId),
+            ),
+            and(
+              eq(schematicWires.sourcePinId, command.targetPinId),
+              eq(schematicWires.targetPinId, command.sourcePinId),
+            ),
+          ),
+        ),
+      )
+      .get();
+    if (duplicate) {
+      return invalidWirePath("a wire already connects these two pins");
+    }
     // No explicit geometry (undefined or empty) → obstacle-aware auto-route.
-    const pointsNm =
-      command.pointsNm && command.pointsNm.length > 0
-        ? command.pointsNm
-        : autoRouteWirePoints(projection, sourcePin, targetPin);
-    const built = buildCreateWirePayload(sourcePin, targetPin, pointsNm);
+    const explicitPoints =
+      command.pointsNm && command.pointsNm.length > 0 ? command.pointsNm : null;
+    const routed = explicitPoints
+      ? null
+      : autoRouteWirePointsDetailed(projection, sourcePin, targetPin);
+    const built = buildCreateWirePayload(
+      sourcePin,
+      targetPin,
+      explicitPoints ?? routed?.points,
+    );
     if (!built.payload)
       return invalidWirePath(built.invalidReason ?? "wire path is invalid");
+    if (routed && !routed.clean) {
+      built.payload.routeStatus = "colliding";
+    }
     insertWire(tx, designId, built.payload, timestamp);
     return okResult(
       bumpRevision(tx, designId, revision, timestamp),
@@ -1272,67 +1308,88 @@ export function executeDesignerCommand({
     const junctionPoint = insertion.points[insertion.insertIndex];
     if (!junctionPoint) return invalidWirePath("junction insertion failed");
 
-    const endpointSourcePin = resolvePinAny(tx, designId, wireRow.sourcePinId);
-    const endpointTargetPin = resolvePinAny(tx, designId, wireRow.targetPinId);
-    if (!endpointSourcePin) return pinNotFound(wireRow.sourcePinId);
-    if (!endpointTargetPin) return pinNotFound(wireRow.targetPinId);
+    // Tap landing on the wire's own endpoint → plain pin-to-pin wire to that
+    // endpoint's real pin; no split, no junction node.
+    if (
+      insertion.insertIndex === 0 ||
+      insertion.insertIndex === insertion.points.length - 1
+    ) {
+      const endpointPinId =
+        insertion.insertIndex === 0 ? wireRow.sourcePinId : wireRow.targetPinId;
+      const endpointPin = resolvePinAny(tx, designId, endpointPinId);
+      if (!endpointPin) return pinNotFound(endpointPinId);
+      const endpointBuild = buildCreateWirePayload(
+        sourcePin,
+        endpointPin,
+        command.pointsNm,
+      );
+      if (!endpointBuild.payload)
+        return invalidWirePath(
+          endpointBuild.invalidReason ?? "wire path is invalid",
+        );
+      insertWire(tx, designId, endpointBuild.payload, timestamp);
+      return okResult(
+        bumpRevision(tx, designId, revision, timestamp),
+        endpointBuild.payload.id,
+      );
+    }
 
-    const pseudoJunctionPin: DesignerPin = {
-      id: `junction:${wireRow.id}`,
-      originPinKey: `junction:${wireRow.id}`,
-      number: null,
-      name: "junction",
-      electricalType: "passive",
-      unit: 1,
-      localPositionNm: { x: junctionPoint.x, y: junctionPoint.y },
-      worldPositionNm: { x: junctionPoint.x, y: junctionPoint.y },
+    // Split the tapped wire in two at a first-class junction node (audit §4.5)
+    // instead of double-drawing half of it under the new branch. All three
+    // wires terminate on the junction's synthetic `primitive:<id>` pin.
+    const junctionNode: DesignerPrimitive = {
+      id: crypto.randomUUID(),
+      kind: "junction",
+      positionNm: { x: junctionPoint.x, y: junctionPoint.y },
+      rotationDeg: 0,
     };
-    const toJunctionBuild = buildCreateWirePayload(
+    const junctionPin = primitiveAsPin(junctionNode);
+
+    // Build + validate every payload BEFORE mutating: an invalid result must
+    // not leave a half-split wire behind (the dispatch transaction commits
+    // even for ok:false results).
+    const branchBuild = buildCreateWirePayload(
       sourcePin,
-      pseudoJunctionPin,
+      junctionPin,
       command.pointsNm,
     );
-    if (!toJunctionBuild.payload)
+    if (!branchBuild.payload)
       return invalidWirePath(
-        toJunctionBuild.invalidReason ?? "wire path is invalid",
+        branchBuild.invalidReason ?? "wire path is invalid",
       );
-
-    const pathToSourceEndpoint = insertion.points
-      .slice(0, insertion.insertIndex + 1)
-      .reverse();
-    const pathToTargetEndpoint = insertion.points.slice(insertion.insertIndex);
-    const useSourceEndpoint =
-      pathLength(pathToSourceEndpoint) <= pathLength(pathToTargetEndpoint);
-    const endpointPath = useSourceEndpoint
-      ? pathToSourceEndpoint
-      : pathToTargetEndpoint;
-    const targetEndpointPin = useSourceEndpoint
-      ? endpointSourcePin
-      : endpointTargetPin;
-    const finalBuild = buildCreateWirePayload(
-      sourcePin,
-      targetEndpointPin,
-      sanitizePath([
-        ...toJunctionBuild.payload.pointsNm,
-        ...endpointPath.slice(1),
-      ]),
+    const firstHalfPoints = insertion.points.slice(
+      0,
+      insertion.insertIndex + 1,
     );
-    if (!finalBuild.payload)
-      return invalidWirePath(
-        finalBuild.invalidReason ?? "wire path is invalid",
-      );
+    const secondHalfPoints = insertion.points.slice(insertion.insertIndex);
 
+    insertPrimitiveRow(tx, designId, junctionNode, timestamp);
     tx.update(schematicWires)
       .set({
-        pointsJson: JSON.stringify(insertion.points),
+        pointsJson: JSON.stringify(firstHalfPoints),
+        targetPinId: junctionPin.id,
         updatedAt: timestamp,
       })
       .where(eq(schematicWires.id, wireRow.id))
       .run();
-    insertWire(tx, designId, finalBuild.payload, timestamp);
+    insertWire(
+      tx,
+      designId,
+      {
+        id: crypto.randomUUID(),
+        sourcePinId: junctionPin.id,
+        targetPinId: wireRow.targetPinId,
+        pointsNm: secondHalfPoints,
+        ...(wireRow.routeStatus === "colliding"
+          ? { routeStatus: "colliding" as const }
+          : {}),
+      },
+      timestamp,
+    );
+    insertWire(tx, designId, branchBuild.payload, timestamp);
     return okResult(
       bumpRevision(tx, designId, revision, timestamp),
-      finalBuild.payload.id,
+      branchBuild.payload.id,
     );
   }
 
@@ -1394,6 +1451,7 @@ export function executeDesignerCommand({
       rotationDeg,
       mirrored,
       timestamp,
+      projection,
     });
     return okResult(bumpRevision(tx, designId, revision, timestamp), partId);
   }

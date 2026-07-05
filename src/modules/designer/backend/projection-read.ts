@@ -92,6 +92,9 @@ function mapWireRow(row: WireRow): DesignerWire {
     sourcePinId: row.sourcePinId,
     targetPinId: row.targetPinId,
     pointsNm: parseWirePointsJson(row.pointsJson),
+    ...(row.routeStatus === "colliding"
+      ? { routeStatus: "colliding" as const }
+      : {}),
   };
 }
 

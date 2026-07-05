@@ -22,7 +22,7 @@ import {
   recomputePinWorldPositions,
 } from "../commands/place-part";
 import { loadSchematicProjection } from "../projection-read";
-import { autoRouteWirePoints } from "../routing/wire-obstacles";
+import { autoRouteWirePointsDetailed } from "../routing/wire-obstacles";
 import {
   schematicParts,
   schematicPins,
@@ -181,6 +181,9 @@ export function applyAutoArrange(params: {
       primToPin.set(primEnd, pinEnd);
   }
   for (const prim of projection.primitives) {
+    // Junction nodes are wire topology, not per-pin flags — never slide them;
+    // the re-route pass below routes their wires to the junction's position.
+    if (prim.kind === "junction") continue;
     const pinId = primToPin.get(`primitive:${prim.id}`);
     if (!pinId) continue;
     const oldP = oldPinWorld.get(pinId);
@@ -213,10 +216,14 @@ export function applyAutoArrange(params: {
     const others = wires
       .filter((w) => w.id !== wire.id)
       .map((w) => ({ ...w, pointsNm: routed.get(w.id) ?? w.pointsNm }));
-    const points = autoRouteWirePoints(post, src, tgt, others);
-    routed.set(wire.id, points);
+    const result = autoRouteWirePointsDetailed(post, src, tgt, others);
+    routed.set(wire.id, result.points);
     tx.update(schematicWires)
-      .set({ pointsJson: JSON.stringify(points), updatedAt: timestamp })
+      .set({
+        pointsJson: JSON.stringify(result.points),
+        routeStatus: result.clean ? null : "colliding",
+        updatedAt: timestamp,
+      })
       .where(eq(schematicWires.id, wire.id))
       .run();
   }

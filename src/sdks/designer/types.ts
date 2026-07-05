@@ -12,7 +12,7 @@ export type DesignerEntityKind = "part" | "wire" | "label" | "primitive";
  *  library components. They have no footprint and never become PCB
  *  placements. Net derivation uses them to force net names and to globally
  *  join sub-graphs by portal text. */
-export type DesignerPrimitiveKind = "gnd" | "pwr" | "net_portal";
+export type DesignerPrimitiveKind = "gnd" | "pwr" | "net_portal" | "junction";
 
 /**
  * Compact DRC status for the design card. Sourced from the latest persisted
@@ -1013,6 +1013,9 @@ export interface DesignerWire {
     x: number;
     y: number;
   }>;
+  /** "colliding" when the auto-router had to commit its known-colliding
+   *  fallback path (no clean route found within its caps). Absent otherwise. */
+  routeStatus?: "colliding";
 }
 
 export interface DesignerLabel {
@@ -1046,10 +1049,22 @@ export interface DesignerNetPortal extends DesignerPrimitiveBase {
   portalText: string;
 }
 
+/**
+ * Topology anchor created by a wire T-tap (`create_wire_junction`): a
+ * first-class wire terminus so the tapped wire can split into two wires and
+ * the branch can end exactly at the tap point. It names no net, renders no
+ * glyph (the derived junction dot is the visual), and is never a routing
+ * obstacle. Its synthetic pin id is `primitive:<id>` like every primitive.
+ */
+export interface DesignerJunctionNode extends DesignerPrimitiveBase {
+  kind: "junction";
+}
+
 export type DesignerPrimitive =
   | DesignerGndPort
   | DesignerPwrPort
-  | DesignerNetPortal;
+  | DesignerNetPortal
+  | DesignerJunctionNode;
 
 export interface DesignerPlacePartCommand {
   type: "place_part";

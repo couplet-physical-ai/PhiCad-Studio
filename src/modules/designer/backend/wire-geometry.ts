@@ -1,5 +1,9 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type {
+  DesignerPin,
+  DesignerSchematicProjection,
+} from "../../../sdks/designer/types";
 import { asNumber, asRecord } from "./value-guards";
 import { schematicWires } from "./schema";
 import {
@@ -10,6 +14,7 @@ import {
   simplifyCollinearPath,
   type Point,
 } from "./routing/manhattan";
+import { autoRouteWirePointsDetailed } from "./routing/wire-obstacles";
 
 type DbClient = BetterSQLite3Database<Record<string, unknown>>;
 
@@ -68,19 +73,58 @@ export function insertVertexOnWire(
   return { points: result, insertIndex: bestIndex };
 }
 
+/** Minimal pin shell for the auto-router: only `id` (owner exclusion) and
+ *  `worldPositionNm` (route endpoints) are consumed by obstacle collection. */
+function pinShell(pinId: string, worldPositionNm: Point): DesignerPin {
+  return {
+    id: pinId,
+    originPinKey: pinId,
+    number: null,
+    name: "",
+    electricalType: "passive",
+    unit: 1,
+    localPositionNm: { x: 0, y: 0 },
+    worldPositionNm: { ...worldPositionNm },
+  };
+}
+
 function rerouteWireWithUpdatedEndpoints(
   points: Point[],
   source: Point,
   target: Point,
-): Point[] {
+  route: {
+    projection: DesignerSchematicProjection;
+    sourcePinId: string;
+    targetPinId: string;
+  },
+): { points: Point[]; routeStatus: "colliding" | null | undefined } {
   if (points.length <= 2) {
-    return simplifyCollinearPath(
-      buildManhattanPathThroughAnchors([source, target]),
+    // No user-placed interior waypoints — the wire is a plain pin-to-pin run,
+    // so re-route it through the obstacle-aware router (audit §4.3). The wire
+    // itself is skipped as an obstacle because it shares both endpoint pins.
+    const routed = autoRouteWirePointsDetailed(
+      route.projection,
+      pinShell(route.sourcePinId, source),
+      pinShell(route.targetPinId, target),
     );
+    return {
+      points: simplifyCollinearPath(routed.points),
+      routeStatus: routed.clean ? null : "colliding",
+    };
   }
-  return simplifyCollinearPath(
-    buildManhattanPathThroughAnchors([source, ...points.slice(1, -1), target]),
-  );
+  // Explicit interior waypoints are user intent — keep them verbatim and only
+  // re-Manhattan the connection to the moved endpoints. The route flag is
+  // creation-time information; leave it untouched (undefined) here.
+  return {
+    points: simplifyCollinearPath(
+      buildManhattanPathThroughAnchors([
+        source,
+        ...points.slice(1, -1),
+        target,
+      ]),
+    ),
+    routeStatus: undefined,
+  };
 }
 
 export function updateConnectedWireGeometry(params: {
@@ -89,8 +133,10 @@ export function updateConnectedWireGeometry(params: {
   movedPinIds: string[];
   nextByPinId: Map<string, Point>;
   timestamp: string;
+  projection: DesignerSchematicProjection;
 }): void {
-  const { tx, designId, movedPinIds, nextByPinId, timestamp } = params;
+  const { tx, designId, movedPinIds, nextByPinId, timestamp, projection } =
+    params;
   if (movedPinIds.length === 0) return;
 
   const wireRows = tx
@@ -113,11 +159,17 @@ export function updateConnectedWireGeometry(params: {
     const target =
       nextByPinId.get(wireRow.targetPinId) ?? points[points.length - 1];
     if (!source || !target) continue;
+    const rerouted = rerouteWireWithUpdatedEndpoints(points, source, target, {
+      projection,
+      sourcePinId: wireRow.sourcePinId,
+      targetPinId: wireRow.targetPinId,
+    });
     tx.update(schematicWires)
       .set({
-        pointsJson: JSON.stringify(
-          rerouteWireWithUpdatedEndpoints(points, source, target),
-        ),
+        pointsJson: JSON.stringify(rerouted.points),
+        ...(rerouted.routeStatus !== undefined
+          ? { routeStatus: rerouted.routeStatus }
+          : {}),
         updatedAt: timestamp,
       })
       .where(eq(schematicWires.id, wireRow.id))

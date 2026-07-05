@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   inflateRect,
   routeSchematicWire,
+  routeSchematicWireDetailed,
   type Rect,
 } from "../../../modules/designer/backend/routing/schematic-autoroute";
 import {
@@ -199,13 +200,44 @@ describe("wire + primitive obstacles", () => {
     expect(path.length).toBeGreaterThan(2); // straight blocked → detour
   });
 
-  test("same-net wire (shared endpoint pin) is NOT an obstacle", () => {
-    const sameNet = { ...blocker, sourcePinId: "U1:1" };
-    const path = autoRouteWirePoints(proj({ wires: [sameNet] }), s, t);
+  test("wire sharing BOTH endpoint pins (self during re-route) is fully transparent", () => {
+    const self = { ...blocker, sourcePinId: "U1:1", targetPinId: "U2:1" };
+    const path = autoRouteWirePoints(proj({ wires: [self] }), s, t);
     expect(path).toEqual([
       { x: 0, y: 0 },
       { x: 20 * MM, y: 0 },
     ]);
+  });
+
+  test("same-net wire: segment at the shared end transparent, body still a wall", () => {
+    // Existing same-net wire leaves the shared source pin (0,0) east along
+    // y=0, then heads north — exactly the geometry a naive router would ride.
+    const sameNet: DesignerSchematicProjection["wires"][number] = {
+      id: "w-same",
+      sourcePinId: "U1:1",
+      targetPinId: "U5:1",
+      pointsNm: [
+        { x: 0, y: 0 },
+        { x: 10 * MM, y: 0 },
+        { x: 10 * MM, y: 10 * MM },
+      ],
+    };
+    const path = autoRouteWirePoints(proj({ wires: [sameNet] }), s, t);
+    // Route must not run along the same-net wire's vertical body: no segment
+    // may lie on x=10mm between y=0 and y=10mm interior.
+    for (let i = 1; i < path.length; i += 1) {
+      const a = path[i - 1]!;
+      const b = path[i]!;
+      const onBody =
+        a.x === 10 * MM &&
+        b.x === 10 * MM &&
+        Math.min(a.y, b.y) < 10 * MM &&
+        Math.max(a.y, b.y) > 0;
+      expect(onBody).toBe(false);
+    }
+    expect(isOrthogonal(path)).toBe(true);
+    expect(path[0]).toEqual({ x: 0, y: 0 });
+    expect(path[path.length - 1]).toEqual({ x: 20 * MM, y: 0 });
   });
 
   test("wire detours around a primitive body", () => {
@@ -286,5 +318,42 @@ describe("wire + primitive obstacles", () => {
       t,
     );
     expect(a).toEqual(b);
+  });
+
+  test("fully enclosed target → known-colliding HV fallback flagged clean:false", () => {
+    const source = { x: 0, y: 0 };
+    const target = { x: 20, y: 20 };
+    // Closed ring of obstacle rects around the target — no clean escape.
+    const ring: Rect[] = [
+      { minX: 10, minY: 10, maxX: 30, maxY: 12 }, // bottom wall
+      { minX: 10, minY: 28, maxX: 30, maxY: 30 }, // top wall
+      { minX: 10, minY: 10, maxX: 12, maxY: 30 }, // left wall
+      { minX: 28, minY: 10, maxX: 30, maxY: 30 }, // right wall
+    ];
+    const detailed = routeSchematicWireDetailed({
+      source,
+      target,
+      obstacles: ring,
+    });
+    expect(detailed.clean).toBe(false);
+    // Fallback is the HV L-bend — never worse than the naive router.
+    expect(detailed.points).toEqual([
+      { x: 0, y: 0 },
+      { x: 20, y: 0 },
+      { x: 20, y: 20 },
+    ]);
+    // The points-only wrapper returns the same geometry.
+    expect(routeSchematicWire({ source, target, obstacles: ring })).toEqual(
+      detailed.points,
+    );
+  });
+
+  test("clean route reports clean:true", () => {
+    const detailed = routeSchematicWireDetailed({
+      source: { x: 0, y: 0 },
+      target: { x: 20, y: 20 },
+      obstacles: [],
+    });
+    expect(detailed.clean).toBe(true);
   });
 });

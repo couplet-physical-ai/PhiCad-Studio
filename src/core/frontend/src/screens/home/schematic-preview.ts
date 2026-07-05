@@ -43,8 +43,10 @@ export interface SchematicPreviewGeometry {
 
 // Local-space (mm) primitive geometry, mirrored from the editor's
 // SchematicPrimitivesLayer (core/ may not import from modules/). Connection
-// point is at local (0, 0); rotation pivots around it.
+// point is at local (0, 0); rotation pivots around it. Junction nodes have no
+// glyph (the connection dot is their visual).
 const PRIMITIVE_SEGMENTS: Record<PreviewPrimitive["kind"], Array<[Pt, Pt]>> = {
+  junction: [],
   gnd: [
     [
       { x: 0, y: 0 },

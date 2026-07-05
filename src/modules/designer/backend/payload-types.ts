@@ -22,6 +22,8 @@ export interface PersistedWirePayload {
   sourcePinId: string;
   targetPinId: string;
   pointsNm: Array<{ x: number; y: number }>;
+  /** "colliding" when the auto-router committed its known-colliding fallback. */
+  routeStatus?: "colliding";
 }
 
 export interface PersistedLabelPayload {

@@ -80,6 +80,14 @@ import {
   type CommentDraft,
 } from "./comments/CanvasCommentLayer";
 import { useCanvasProjection } from "./comments/useCanvasProjection";
+import {
+  buildManhattanPathThroughAnchors,
+  pointOnOrthogonalSegment,
+  simplifyCollinearPath,
+} from "../../../../shared/schematic-routing/manhattan";
+import { routeSchematicWire } from "../../../../shared/schematic-routing/schematic-autoroute";
+import { collectWireObstacles } from "../../../../shared/schematic-routing/wire-obstacles";
+import { computeWireCrossingGaps } from "../../../../shared/schematic-routing/crossing-gaps";
 const PIN_HIT_MM = 0.35;
 // Primitive connection dots are rendered larger (≈0.36 mm radius), so the
 // hit zone must be wider than for part pins to match the visible target.
@@ -94,12 +102,15 @@ const PART_CENTER_FALLBACK_MM = 2.6;
 // click target, not just the connection dot.
 const PRIMITIVE_HIT_PADDING_MM = 0.4;
 const PRIMITIVE_LOCAL_BOUNDS_MM: Record<
-  "gnd" | "pwr" | "net_portal",
+  DesignerPrimitive["kind"],
   { minX: number; minY: number; maxX: number; maxY: number }
 > = {
   gnd: { minX: -2.032, minY: -3.556, maxX: 2.032, maxY: 0 },
   pwr: { minX: -1.27, minY: 0, maxX: 1.27, maxY: 2.794 },
   net_portal: { minX: -4.47, minY: -1.016, maxX: 0, maxY: 1.016 },
+  // Junction node (wire T-tap anchor): no glyph, just a small grab target
+  // around the derived junction dot.
+  junction: { minX: -0.3, minY: -0.3, maxX: 0.3, maxY: 0.3 },
 };
 
 interface PointNm {
@@ -135,6 +146,14 @@ interface DragPartsSession {
 interface WireSession {
   sourcePinId: string;
   waypointsNm: PointNm[];
+}
+
+/** Optimistic post-drop state: final positions + re-routed wire geometry kept
+ *  on screen until the move commands land and the projection refreshes. */
+interface PendingMoveState {
+  partPositionsNm: Map<string, PointNm>;
+  primitivePositionsNm: Map<string, PointNm>;
+  wirePointsNm: Map<string, PointNm[]>;
 }
 
 export interface SchematicCanvasHandle {
@@ -243,47 +262,6 @@ function snapNm(pointNm: PointNm, gridEnabled: boolean): PointNm {
     x: Math.round(pointNm.x / SCHEMATIC_GRID_NM) * SCHEMATIC_GRID_NM,
     y: Math.round(pointNm.y / SCHEMATIC_GRID_NM) * SCHEMATIC_GRID_NM,
   };
-}
-
-function pointKey(point: PointNm): string {
-  return `${point.x}:${point.y}`;
-}
-
-function dedupeConsecutive(pointsNm: PointNm[]): PointNm[] {
-  const out: PointNm[] = [];
-  for (const point of pointsNm) {
-    const last = out[out.length - 1];
-    if (last && pointKey(last) === pointKey(point)) {
-      continue;
-    }
-    out.push(point);
-  }
-  return out;
-}
-
-function buildManhattanPathThroughAnchors(anchorsNm: PointNm[]): PointNm[] {
-  if (anchorsNm.length <= 1) {
-    return anchorsNm;
-  }
-
-  const path: PointNm[] = [{ ...anchorsNm[0]! }];
-  for (let index = 1; index < anchorsNm.length; index += 1) {
-    const next = anchorsNm[index];
-    const prev = path[path.length - 1];
-    if (!prev || !next) {
-      continue;
-    }
-
-    if (prev.x === next.x || prev.y === next.y) {
-      path.push({ ...next });
-      continue;
-    }
-
-    path.push({ x: next.x, y: prev.y });
-    path.push({ ...next });
-  }
-
-  return dedupeConsecutive(path);
 }
 
 function emptySelection(): SelectionState {
@@ -514,6 +492,11 @@ function sameStringSet(
  */
 const SCHEMATIC_WIRE_WIDTH_MM = 0.18;
 
+// Warning tint for wires the auto-router committed on its known-colliding
+// fallback (audit §4.4). Local constant — the canvas theme lives in the
+// tag-installed @openpcb/r3f-eda-canvas package and is not editable here.
+const COLLIDING_WIRE_COLOR = "#f59e0b";
+
 // KiCad-style net classification by name. Matches the same regexes used
 // server-side in `pcb/net-class-resolver.ts` plus common +Vn / -Vn rails
 // (e.g. "+5V", "+3V3", "-12V").
@@ -674,6 +657,7 @@ function InvalidateOnCanvasChange({
   cursorNm,
   selection,
   dragSession,
+  pendingMove,
   marqueeRect,
   wireSession,
   armedComponentDetail,
@@ -682,6 +666,7 @@ function InvalidateOnCanvasChange({
   cursorNm: PointNm | null;
   selection: SelectionState;
   dragSession: DragPartsSession | null;
+  pendingMove: PendingMoveState | null;
   marqueeRect: { a: PointMm | null; b: PointMm | null } | null;
   wireSession: WireSession | null;
   armedComponentDetail: LibraryComponentPlacementDetail | null;
@@ -695,6 +680,7 @@ function InvalidateOnCanvasChange({
     cursorNm,
     selection,
     dragSession,
+    pendingMove,
     marqueeRect,
     wireSession,
     armedComponentDetail,
@@ -794,6 +780,11 @@ export const SchematicCanvas = forwardRef<
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const [dragSession, setDragSession] = useState<DragPartsSession | null>(null);
+  // Optimistic overlay held from drop until the move commands + projection
+  // refresh settle — without it, parts/wires flash back to their pre-drag
+  // positions (and through partial multi-command states) while the async
+  // dispatch chain runs.
+  const [pendingMove, setPendingMove] = useState<PendingMoveState | null>(null);
   const [wireSession, setWireSession] = useState<WireSession | null>(null);
   const [armedLabelText, setArmedLabelText] = useState<string | null>(null);
   const [armedPrimitive, setArmedPrimitive] = useState<ArmedPrimitive>(null);
@@ -1079,15 +1070,17 @@ export const SchematicCanvas = forwardRef<
   const renderedPartPositionNm = useCallback(
     (part: DesignerPlacedPart): PointNm => {
       const initial = dragSession?.initialPartPositionsNm.get(part.id);
-      if (!initial || !dragSession) {
-        return { x: part.positionNm.x, y: part.positionNm.y };
+      if (dragSession && initial) {
+        return {
+          x: initial.x + dragSession.deltaNm.x,
+          y: initial.y + dragSession.deltaNm.y,
+        };
       }
-      return {
-        x: initial.x + dragSession.deltaNm.x,
-        y: initial.y + dragSession.deltaNm.y,
-      };
+      const pending = pendingMove?.partPositionsNm.get(part.id);
+      if (pending) return { x: pending.x, y: pending.y };
+      return { x: part.positionNm.x, y: part.positionNm.y };
     },
-    [dragSession],
+    [dragSession, pendingMove],
   );
 
   const renderedPrimitivePositionNm = useCallback(
@@ -1095,15 +1088,17 @@ export const SchematicCanvas = forwardRef<
       const initial = dragSession?.initialPrimitivePositionsNm.get(
         primitive.id,
       );
-      if (!initial || !dragSession) {
-        return { x: primitive.positionNm.x, y: primitive.positionNm.y };
+      if (dragSession && initial) {
+        return {
+          x: initial.x + dragSession.deltaNm.x,
+          y: initial.y + dragSession.deltaNm.y,
+        };
       }
-      return {
-        x: initial.x + dragSession.deltaNm.x,
-        y: initial.y + dragSession.deltaNm.y,
-      };
+      const pending = pendingMove?.primitivePositionsNm.get(primitive.id);
+      if (pending) return { x: pending.x, y: pending.y };
+      return { x: primitive.positionNm.x, y: primitive.positionNm.y };
     },
-    [dragSession],
+    [dragSession, pendingMove],
   );
 
   // Marquee/rubber-band selection — uses the same shared hook as PCB so both
@@ -1380,6 +1375,17 @@ export const SchematicCanvas = forwardRef<
       targetPin: DesignerPin,
       waypointsNm: PointNm[],
     ) => {
+      // No user-placed waypoints → omit pointsNm so the backend routes the
+      // wire through the obstacle-aware auto-router (audit §4.2). Explicit
+      // waypoints are user intent and are sent verbatim.
+      if (waypointsNm.length === 0) {
+        await actions.dispatchCommand({
+          type: "create_wire",
+          sourcePinId: sourcePin.id,
+          targetPinId: targetPin.id,
+        });
+        return;
+      }
       const anchors = [
         sourcePin.worldPositionNm,
         ...waypointsNm,
@@ -1639,6 +1645,77 @@ export const SchematicCanvas = forwardRef<
     selection,
     wireSession,
   ]);
+
+  // Live wire re-route while dragging: wires attached to the dragged parts/
+  // primitives preview their COMMIT geometry each drag step, using the exact
+  // rules the backend applies on drop (≤2 points → obstacle-aware router;
+  // user waypoints kept verbatim + re-Manhattaned to the moved endpoints).
+  // Declared before interactionHandler — its drop path snapshots this map.
+  const dragReroutedWires = useMemo(() => {
+    const overrides = new Map<string, PointNm[]>();
+    if (!projection || !dragSession) return overrides;
+    const delta = dragSession.deltaNm;
+    if (delta.x === 0 && delta.y === 0) return overrides;
+    const draggedPartIds = new Set(dragSession.initialPartPositionsNm.keys());
+    const draggedPrimitiveIds = new Set(
+      dragSession.initialPrimitivePositionsNm.keys(),
+    );
+    const nextByPinId = new Map<string, PointNm>();
+    for (const part of projection.parts) {
+      if (!draggedPartIds.has(part.id)) continue;
+      for (const p of part.pins) {
+        nextByPinId.set(p.id, {
+          x: p.worldPositionNm.x + delta.x,
+          y: p.worldPositionNm.y + delta.y,
+        });
+      }
+    }
+    for (const primitive of projection.primitives) {
+      if (!draggedPrimitiveIds.has(primitive.id)) continue;
+      nextByPinId.set(`primitive:${primitive.id}`, {
+        x: primitive.positionNm.x + delta.x,
+        y: primitive.positionNm.y + delta.y,
+      });
+    }
+    if (nextByPinId.size === 0) return overrides;
+    for (const wire of projection.wires) {
+      const movedSource = nextByPinId.get(wire.sourcePinId);
+      const movedTarget = nextByPinId.get(wire.targetPinId);
+      if (!movedSource && !movedTarget) continue;
+      const source = movedSource ?? wire.pointsNm[0];
+      const target = movedTarget ?? wire.pointsNm[wire.pointsNm.length - 1];
+      if (!source || !target) continue;
+      if (wire.pointsNm.length <= 2) {
+        overrides.set(
+          wire.id,
+          simplifyCollinearPath(
+            routeSchematicWire({
+              source,
+              target,
+              obstacles: collectWireObstacles(projection, {
+                source,
+                target,
+                sourcePinId: wire.sourcePinId,
+                targetPinId: wire.targetPinId,
+              }),
+            }),
+          ),
+        );
+      } else {
+        overrides.set(
+          wire.id,
+          simplifyCollinearPath(
+            buildManhattanPathThroughAnchors([
+              source,
+              ...wire.pointsNm.slice(1, -1),
+              target,
+            ]),
+          ),
+        );
+      }
+    }
+    return overrides;
+  }, [dragSession, projection]);
 
   const interactionHandler: InteractionHandler = useMemo(
     () => ({
@@ -2048,37 +2125,46 @@ export const SchematicCanvas = forwardRef<
             dragSession.deltaNm.x !== 0 || dragSession.deltaNm.y !== 0;
           if (hasMovement) {
             const commands: DesignerCommand[] = [];
+            const finalPartPositionsNm = new Map<string, PointNm>();
+            const finalPrimitivePositionsNm = new Map<string, PointNm>();
             for (const [
               partId,
               initial,
             ] of dragSession.initialPartPositionsNm.entries()) {
-              commands.push({
-                type: "move_part",
-                partId,
-                positionNm: {
-                  x: initial.x + dragSession.deltaNm.x,
-                  y: initial.y + dragSession.deltaNm.y,
-                },
-              });
+              const positionNm = {
+                x: initial.x + dragSession.deltaNm.x,
+                y: initial.y + dragSession.deltaNm.y,
+              };
+              finalPartPositionsNm.set(partId, positionNm);
+              commands.push({ type: "move_part", partId, positionNm });
             }
             for (const [
               primitiveId,
               initial,
             ] of dragSession.initialPrimitivePositionsNm.entries()) {
-              commands.push({
-                type: "move_primitive",
-                primitiveId,
-                positionNm: {
-                  x: initial.x + dragSession.deltaNm.x,
-                  y: initial.y + dragSession.deltaNm.y,
-                },
-              });
+              const positionNm = {
+                x: initial.x + dragSession.deltaNm.x,
+                y: initial.y + dragSession.deltaNm.y,
+              };
+              finalPrimitivePositionsNm.set(primitiveId, positionNm);
+              commands.push({ type: "move_primitive", primitiveId, positionNm });
             }
-            void dispatchCommandsSequentially(commands).catch((err) =>
-              actions.setError(
-                err instanceof Error ? err.message : "Failed to move",
-              ),
-            );
+            // Hold the dropped state on screen until every move command has
+            // landed AND the projection refreshed — clearing the drag overlay
+            // immediately would flash parts/wires back through their stale
+            // (and partially-moved) positions while the async chain runs.
+            setPendingMove({
+              partPositionsNm: finalPartPositionsNm,
+              primitivePositionsNm: finalPrimitivePositionsNm,
+              wirePointsNm: new Map(dragReroutedWires),
+            });
+            void dispatchCommandsSequentially(commands)
+              .catch((err) =>
+                actions.setError(
+                  err instanceof Error ? err.message : "Failed to move",
+                ),
+              )
+              .finally(() => setPendingMove(null));
           }
           setDragSession(null);
           return;
@@ -2525,6 +2611,7 @@ export const SchematicCanvas = forwardRef<
       dragPlacementDetail,
       dragPlacementLoading,
       dragGhostNm,
+      dragReroutedWires,
       dragSession,
       draggingComponentId,
       hitLabelId,
@@ -2544,22 +2631,35 @@ export const SchematicCanvas = forwardRef<
     ],
   );
 
+  const effectiveWires = useMemo(() => {
+    if (!projection) return [];
+    const overrides =
+      dragReroutedWires.size > 0
+        ? dragReroutedWires
+        : (pendingMove?.wirePointsNm ?? null);
+    if (!overrides || overrides.size === 0) return projection.wires;
+    return projection.wires.map((wire) => {
+      const pointsNm = overrides.get(wire.id);
+      return pointsNm ? { ...wire, pointsNm } : wire;
+    });
+  }, [dragReroutedWires, pendingMove, projection]);
+
   const selectedWires = useMemo(() => {
     if (!projection || selection.wireIds.size === 0) {
       return [];
     }
-    return projection.wires.filter((wire) => selection.wireIds.has(wire.id));
-  }, [projection, selection.wireIds]);
+    return effectiveWires.filter((wire) => selection.wireIds.has(wire.id));
+  }, [effectiveWires, projection, selection.wireIds]);
 
   const unselectedWires = useMemo(() => {
     if (!projection) {
       return [];
     }
     if (selection.wireIds.size === 0) {
-      return projection.wires;
+      return effectiveWires;
     }
-    return projection.wires.filter((wire) => !selection.wireIds.has(wire.id));
-  }, [projection, selection.wireIds]);
+    return effectiveWires.filter((wire) => !selection.wireIds.has(wire.id));
+  }, [effectiveWires, projection, selection.wireIds]);
 
   const wirePreview = useMemo(() => {
     if (!projection || !wireSession || !cursorNm) {
@@ -2569,19 +2669,92 @@ export const SchematicCanvas = forwardRef<
     if (!sourcePin) {
       return null;
     }
-    const anchors = [
-      sourcePin.worldPositionNm,
-      ...wireSession.waypointsNm,
-      snap(cursorNm),
-    ];
-    const pointsNm = buildManhattanPathThroughAnchors(anchors);
+    const target = snap(cursorNm);
+    // Preview parity with the commit path: a session without user waypoints
+    // commits through the backend's obstacle-aware router, so preview with
+    // the same shared router. Waypointed sessions preview the exact polyline
+    // that will be committed verbatim.
+    const pointsNm =
+      wireSession.waypointsNm.length === 0
+        ? routeSchematicWire({
+            source: sourcePin.worldPositionNm,
+            target,
+            obstacles: collectWireObstacles(projection, {
+              source: sourcePin.worldPositionNm,
+              target,
+              sourcePinId: sourcePin.id,
+              targetPinId: "preview:cursor",
+            }),
+          })
+        : buildManhattanPathThroughAnchors([
+            sourcePin.worldPositionNm,
+            ...wireSession.waypointsNm,
+            target,
+          ]);
     return {
       id: "preview",
       sourcePinId: sourcePin.id,
       targetPinId: "cursor",
       pointsNm,
     } satisfies DesignerWire;
-  }, [cursorNm, pinById, projection, wireSession]);
+  }, [cursorNm, gridVisible, pinById, projection, wireSession]);
+
+  // Live connect-by-touch indicator while dragging (Altium-style): a dragged
+  // pin (or primitive connection point) landing on a non-dragged wire's path
+  // will auto-connect at commit — preview the junction dot during the drag.
+  const dragTouchIndicators = useMemo(() => {
+    if (!projection || !dragSession) return [];
+    const delta = dragSession.deltaNm;
+    if (delta.x === 0 && delta.y === 0) return [];
+    const draggedPartIds = new Set(dragSession.initialPartPositionsNm.keys());
+    const draggedPrimitiveIds = new Set(
+      dragSession.initialPrimitivePositionsNm.keys(),
+    );
+    const movedPinIds = new Set<string>();
+    const movedPoints: PointNm[] = [];
+    for (const part of projection.parts) {
+      if (!draggedPartIds.has(part.id)) continue;
+      for (const pin of part.pins) {
+        movedPinIds.add(pin.id);
+        movedPoints.push({
+          x: pin.worldPositionNm.x + delta.x,
+          y: pin.worldPositionNm.y + delta.y,
+        });
+      }
+    }
+    for (const primitive of projection.primitives) {
+      if (!draggedPrimitiveIds.has(primitive.id)) continue;
+      movedPinIds.add(`primitive:${primitive.id}`);
+      movedPoints.push({
+        x: primitive.positionNm.x + delta.x,
+        y: primitive.positionNm.y + delta.y,
+      });
+    }
+    // Wires attached to the dragged selection re-route at commit; only wires
+    // that stay put are touch targets during the drag.
+    const staticWires = projection.wires.filter(
+      (w) => !movedPinIds.has(w.sourcePinId) && !movedPinIds.has(w.targetPinId),
+    );
+    const indicators: PointNm[] = [];
+    for (const point of movedPoints) {
+      for (const w of staticWires) {
+        let touched = false;
+        for (let i = 1; i < w.pointsNm.length; i += 1) {
+          const a = w.pointsNm[i - 1];
+          const b = w.pointsNm[i];
+          if (a && b && pointOnOrthogonalSegment(point, a, b)) {
+            touched = true;
+            break;
+          }
+        }
+        if (touched) {
+          indicators.push(point);
+          break;
+        }
+      }
+    }
+    return indicators;
+  }, [dragSession, projection]);
 
   const dragGhostModel = dragPlacementDetail?.symbol.preview ?? null;
   const componentGhostModel = armedComponentDetail?.symbol.preview ?? null;
@@ -2591,7 +2764,10 @@ export const SchematicCanvas = forwardRef<
 
   const displayedPrimitives = useMemo(() => {
     if (!projection) return [];
-    if (!dragSession || dragSession.initialPrimitivePositionsNm.size === 0) {
+    const dragging =
+      dragSession && dragSession.initialPrimitivePositionsNm.size > 0;
+    const pending = pendingMove && pendingMove.primitivePositionsNm.size > 0;
+    if (!dragging && !pending) {
       return projection.primitives;
     }
     return projection.primitives.map((primitive) => {
@@ -2604,7 +2780,7 @@ export const SchematicCanvas = forwardRef<
       }
       return { ...primitive, positionNm };
     });
-  }, [dragSession, projection, renderedPrimitivePositionNm]);
+  }, [dragSession, pendingMove, projection, renderedPrimitivePositionNm]);
 
   const primitiveGhost: DesignerPrimitive | null = useMemo(() => {
     if (!armedPrimitive || !cursorNm) return null;
@@ -2662,6 +2838,7 @@ export const SchematicCanvas = forwardRef<
           cursorNm={cursorNm}
           selection={selection}
           dragSession={dragSession}
+          pendingMove={pendingMove}
           marqueeRect={{ a: marqueeOverlay.a, b: marqueeOverlay.b }}
           wireSession={wireSession}
           armedComponentDetail={armedComponentDetail}
@@ -2679,6 +2856,7 @@ export const SchematicCanvas = forwardRef<
           primitives={displayedPrimitives}
           primitiveGhost={primitiveGhost}
           junctions={projection?.junctions ?? []}
+          dragTouchIndicators={dragTouchIndicators}
           marqueeOverlay={marqueeOverlay}
           dragGhostNm={dragGhostNm}
           dragGhostModel={dragGhostModel}
@@ -2756,6 +2934,8 @@ interface SchematicSceneProps {
   primitives: DesignerSchematicProjection["primitives"];
   primitiveGhost: DesignerPrimitive | null;
   junctions: DesignerSchematicProjection["junctions"];
+  /** Connect-by-touch preview dots shown while dragging (world nm). */
+  dragTouchIndicators: PointNm[];
   marqueeOverlay: { a: PointMm | null; b: PointMm | null; color: string };
   dragGhostNm: { x: number; y: number } | null;
   dragGhostModel: SymbolRenderModel | null;
@@ -2778,6 +2958,7 @@ function SchematicScene({
   primitives,
   primitiveGhost,
   junctions,
+  dragTouchIndicators,
   marqueeOverlay,
   dragGhostNm,
   dragGhostModel,
@@ -2829,24 +3010,71 @@ function SchematicScene({
     return { highlightedWires: high, dimmedUnselectedWires: dim };
   }, [highlightedNetId, unselectedWires, wireToNet]);
 
+  // Display geometry with crossing gaps (audit §4.8): where independent wires
+  // cross without connecting, the vertical segment renders with a small break.
+  // Stored geometry / hit-testing / selection are untouched.
+  const displayRunsByWireId = useMemo(() => {
+    if (!projection) return null;
+    // Use the wires as passed in (they carry live drag re-route geometry),
+    // not projection.wires, so gaps track the previewed positions.
+    return computeWireCrossingGaps(
+      [...unselectedWires, ...selectedWires],
+      projection.junctions,
+    );
+  }, [projection, selectedWires, unselectedWires]);
+
+  const toDisplayWires = useCallback(
+    (wires: DesignerWire[]): DesignerWire[] =>
+      wires.flatMap((wire) => {
+        const runs = displayRunsByWireId?.get(wire.id);
+        if (!runs || runs.length <= 1) return [wire];
+        return runs.map((run, index) => ({
+          ...wire,
+          id: `${wire.id}#gap${index}`,
+          pointsNm: run,
+        }));
+      }),
+    [displayRunsByWireId],
+  );
+
   // Bucket ALL wires (selected + unselected) by net class so selected wires
   // keep their net-class color. The selection halo is rendered as a
-  // separate thicker pass behind the wires.
-  const wireBucketsByClass = useMemo(() => {
+  // separate thicker pass behind the wires. Wires flagged by the auto-router
+  // as committed on its known-colliding fallback (audit §4.4) split into a
+  // dedicated warning bucket instead of their net-class color.
+  const { wireBucketsByClass, collidingWires } = useMemo(() => {
     const buckets: Record<WireNetClass, DesignerWire[]> = {
       default: [],
       gnd: [],
       power: [],
     };
-    const allRendered = [...dimmedUnselectedWires, ...selectedWires];
-    for (const wire of allRendered) {
+    const colliding: DesignerWire[] = [];
+    // Classify on the ORIGINAL wire ids first (gap pseudo-ids would miss the
+    // net-class map), then swap in the gapped display geometry per group.
+    for (const wire of [...dimmedUnselectedWires, ...selectedWires]) {
+      if (wire.routeStatus === "colliding") {
+        colliding.push(wire);
+        continue;
+      }
       const cls = wireToClass.get(wire.id) ?? "default";
       buckets[cls].push(wire);
     }
-    return buckets;
-  }, [dimmedUnselectedWires, selectedWires, wireToClass]);
+    return {
+      wireBucketsByClass: {
+        default: toDisplayWires(buckets.default),
+        gnd: toDisplayWires(buckets.gnd),
+        power: toDisplayWires(buckets.power),
+      },
+      collidingWires: toDisplayWires(colliding),
+    };
+  }, [dimmedUnselectedWires, selectedWires, toDisplayWires, wireToClass]);
 
   const wireOpacity = highlightedNetId ? 0.2 : 1;
+
+  const displayHighlightedWires = useMemo(
+    () => toDisplayWires(highlightedWires),
+    [highlightedWires, toDisplayWires],
+  );
 
   return (
     <>
@@ -2881,8 +3109,18 @@ function SchematicScene({
               opacity={wireOpacity}
             />
           ) : null}
-          {highlightedWires.length > 0 ? (
-            <WireLayer wires={highlightedWires} color={t.wireSelectedColor} />
+          {collidingWires.length > 0 ? (
+            <WireLayer
+              wires={collidingWires}
+              color={COLLIDING_WIRE_COLOR}
+              opacity={wireOpacity}
+            />
+          ) : null}
+          {displayHighlightedWires.length > 0 ? (
+            <WireLayer
+              wires={displayHighlightedWires}
+              color={t.wireSelectedColor}
+            />
           ) : null}
           {/* Selection halo: thicker semi-transparent line behind selected
               wires. The wires themselves render in their net-class color
@@ -2974,6 +3212,24 @@ function SchematicScene({
               <circleGeometry args={[0.1, 24]} />
               <meshBasicMaterial
                 color={t.junctionColor}
+                depthTest={false}
+                depthWrite={false}
+              />
+            </mesh>
+          ))}
+
+          {/* Live connect-by-touch preview while dragging: where a dragged
+              pin would land on a wire, a junction dot WILL appear at commit
+              — show it during the drag (slightly larger, preview-tinted). */}
+          {dragTouchIndicators.map((point) => (
+            <mesh
+              key={`touch:${point.x}:${point.y}`}
+              position={[Units.nmToMm(point.x), Units.nmToMm(point.y), 0]}
+              renderOrder={RENDER_ORDER.PREVIEW}
+            >
+              <circleGeometry args={[0.14, 24]} />
+              <meshBasicMaterial
+                color={t.wirePreviewColor}
                 depthTest={false}
                 depthWrite={false}
               />

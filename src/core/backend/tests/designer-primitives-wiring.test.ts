@@ -12,6 +12,7 @@ import { createHttpServer } from "../http/create-http-server";
 import { DiagnosticsStore } from "../diagnostics/diagnostics-store";
 import { ModuleRuntime } from "../modules/module-loader";
 import { ModuleRouterRegistry } from "../router/module-registry";
+import { MentionRegistry } from "../mentions";
 
 function isolate(label: string): void {
   resetSharedSqliteForTesting();
@@ -25,6 +26,9 @@ async function boot(): Promise<{
   sdk: DesignerSDK;
   server: ReturnType<typeof createHttpServer>;
 }> {
+  // The library module registers @mention providers on activate; the real boot
+  // (runtime.ts) calls this before bootstrap. Idempotent — safe per test.
+  MentionRegistry.init();
   const repoRoot = path.resolve(import.meta.dir, "../../..");
   const moduleRegistry = new ModuleRouterRegistry();
   const moduleRuntime = new ModuleRuntime({

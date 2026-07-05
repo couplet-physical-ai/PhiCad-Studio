@@ -8,6 +8,7 @@ import { DiagnosticsStore } from "../diagnostics/diagnostics-store";
 import { createHttpServer } from "../http/create-http-server";
 import { ModuleRuntime } from "../modules/module-loader";
 import { ModuleRouterRegistry } from "../router/module-registry";
+import { MentionRegistry } from "../mentions";
 
 // ── Regression: pins the ERC engine output AT THE SDK + HTTP-ROUTE BOUNDARY
 // for the representative cases (connected net, floating power_in → error,
@@ -28,6 +29,9 @@ function isolateTestDb(testLabel: string): void {
 }
 
 async function createRuntimeAndServer() {
+  // The library module registers @mention providers on activate; the real boot
+  // (runtime.ts) calls this before bootstrap. Idempotent — safe per test.
+  MentionRegistry.init();
   const repoRoot = path.resolve(import.meta.dir, "../../..");
   const moduleRegistry = new ModuleRouterRegistry();
   const moduleRuntime = new ModuleRuntime({
@@ -234,7 +238,10 @@ describe("designer ERC SDK + route regression", () => {
     expect(await ercViaRoute(server, design.id)).toEqual(floating);
 
     // ── Connect part A's power_in + input to part B's passive pin via wires,
-    //    making them genuinely connected (≥2-pin nets). They must clear. ──
+    //    making them genuinely connected (≥2-pin nets). They must clear.
+    //    All probe pins sit on y=0, so a straight wire would run THROUGH the
+    //    other pins and (correctly, per connect-by-touch) join them too —
+    //    detour each wire away from the pin row with explicit waypoints. ──
     const bPass = pinOf(partB, "passive");
     const bOut = pinOf(partB, "output");
 
@@ -244,7 +251,17 @@ describe("designer ERC SDK + route regression", () => {
       aggregateId: design.id,
       baseRevision: 2,
       issuedAt: Date.now(),
-      command: { type: "create_wire", sourcePinId: aPwr, targetPinId: bPass },
+      command: {
+        type: "create_wire",
+        sourcePinId: aPwr,
+        targetPinId: bPass,
+        pointsNm: [
+          { x: -6_000_000, y: 0 },
+          { x: -6_000_000, y: -10_000_000 },
+          { x: 40_000_000, y: -10_000_000 },
+          { x: 40_000_000, y: 0 },
+        ],
+      },
     });
     expect(wire1.ok).toBe(true);
 
@@ -254,7 +271,17 @@ describe("designer ERC SDK + route regression", () => {
       aggregateId: design.id,
       baseRevision: 3,
       issuedAt: Date.now(),
-      command: { type: "create_wire", sourcePinId: aIn, targetPinId: bOut },
+      command: {
+        type: "create_wire",
+        sourcePinId: aIn,
+        targetPinId: bOut,
+        pointsNm: [
+          { x: -3_000_000, y: 0 },
+          { x: -3_000_000, y: -13_000_000 },
+          { x: 43_000_000, y: -13_000_000 },
+          { x: 43_000_000, y: 0 },
+        ],
+      },
     });
     expect(wire2.ok).toBe(true);
 

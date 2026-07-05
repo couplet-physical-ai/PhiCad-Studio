@@ -109,12 +109,15 @@ const NET_PORTAL_SEGMENTS: Array<[Vec2, Vec2]> = [
 // Local-space (mm) AABB per primitive kind. Padded slightly so the selection
 // outline frames the geometry instead of clipping the strokes.
 const PRIMITIVE_LOCAL_BOUNDS_MM: Record<
-  "gnd" | "pwr" | "net_portal",
+  DesignerPrimitive["kind"],
   { minX: number; minY: number; maxX: number; maxY: number }
 > = {
   gnd: { minX: -2.032, minY: -3.556, maxX: 2.032, maxY: 0 },
   pwr: { minX: -1.27, minY: 0, maxX: 1.27, maxY: 2.794 },
   net_portal: { minX: -4.47, minY: -1.016, maxX: 0, maxY: 1.016 },
+  // Junction node: no glyph — small box around the derived dot so it can be
+  // selected/dragged.
+  junction: { minX: -0.3, minY: -0.3, maxX: 0.3, maxY: 0.3 },
 };
 
 const SELECTION_OUTLINE_PAD_MM = 0.508;
@@ -123,7 +126,7 @@ function PrimitiveSelectionOutline({
   kind,
   color,
 }: {
-  kind: "gnd" | "pwr" | "net_portal";
+  kind: DesignerPrimitive["kind"];
   color: string;
 }): ReactElement | null {
   const positions = useMemo(() => {
@@ -187,11 +190,13 @@ function SinglePrimitive({
   // connection points read as "the same kind of thing" visually.
   const pinDotColor = theme.preview.symbolPinDot;
   const segments =
-    primitive.kind === "gnd"
-      ? GND_SEGMENTS
-      : primitive.kind === "pwr"
-        ? PWR_SEGMENTS
-        : NET_PORTAL_SEGMENTS;
+    primitive.kind === "junction"
+      ? []
+      : primitive.kind === "gnd"
+        ? GND_SEGMENTS
+        : primitive.kind === "pwr"
+          ? PWR_SEGMENTS
+          : NET_PORTAL_SEGMENTS;
   const positions = useMemo(() => flattenSegments(segments), [segments]);
 
   const x = Units.nmToMm(primitive.positionNm.x);
@@ -200,13 +205,16 @@ function SinglePrimitive({
 
   // Per-kind primitive accent color. Wires are intentionally muted greys;
   // primitives use saturated landmark colors so PWR/GND/Net Portal ports
-  // remain immediately recognizable.
+  // remain immediately recognizable. Junction nodes have no glyph — the
+  // derived junction dot is their visual.
   const kindBaseColor =
     primitive.kind === "gnd"
       ? t.primitiveGndColor
       : primitive.kind === "pwr"
         ? t.primitivePwrColor
-        : t.primitivePortalColor;
+        : primitive.kind === "net_portal"
+          ? t.primitivePortalColor
+          : t.junctionColor;
 
   // Selected primitives keep their kind color — selection is communicated
   // by the surrounding outline rect (PrimitiveSelectionOutline), not by
@@ -235,7 +243,7 @@ function SinglePrimitive({
         renderOrder={RENDER_ORDER.LABELS}
         opacity={ghost ? 0.5 : 1}
       />
-      {ghost ? null : (
+      {ghost || primitive.kind === "junction" ? null : (
         <mesh renderOrder={RENDER_ORDER.JUNCTIONS}>
           <circleGeometry args={[SYMBOL_PIN_DOT_RADIUS_MM, 24]} />
           <meshBasicMaterial

@@ -42,11 +42,31 @@ function validatePath(path: Point[]): string | null {
   if (path.length < 2) {
     return "wire path must contain at least 2 points (source and target must differ)";
   }
-  for (let index = 1; index < path.length; index += 1) {
-    const prev = path[index - 1]!;
-    const curr = path[index]!;
-    if (pointKey(prev) === pointKey(curr)) {
-      return "wire path contains duplicate consecutive points";
+  // Reject any revisited vertex anywhere in the path (not just consecutive
+  // duplicates): a Manhattan path that returns to an earlier point always
+  // overlaps itself and inflates junction stub counts.
+  const seen = new Set<string>();
+  for (const point of path) {
+    const key = pointKey(point);
+    if (seen.has(key)) {
+      return "wire path revisits an earlier point (path doubles back on itself)";
+    }
+    seen.add(key);
+  }
+  // Reject a collinear direction reversal between consecutive segments
+  // (e.g. A→B→mid(A,B)): no vertex repeats, but the second segment retraces
+  // part of the first.
+  for (let index = 2; index < path.length; index += 1) {
+    const a = path[index - 2]!;
+    const b = path[index - 1]!;
+    const c = path[index]!;
+    const horizontal = a.y === b.y && b.y === c.y;
+    const vertical = a.x === b.x && b.x === c.x;
+    if (
+      (horizontal && Math.sign(b.x - a.x) === -Math.sign(c.x - b.x)) ||
+      (vertical && Math.sign(b.y - a.y) === -Math.sign(c.y - b.y))
+    ) {
+      return "wire path doubles back along its own segment";
     }
   }
   if (!isManhattanPath(path)) {
