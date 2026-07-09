@@ -17,9 +17,13 @@ export type AutoLayoutPreset = AutoLayoutConfig["preset"];
 export const AUTOLAYOUT_DEFAULT_STORAGE_KEY = "openpcb.autolayout.defaultConfig";
 
 /**
- * Effort tier → engine budgets. Balanced leaves place `restarts`/`maxMoves` and
- * route `maxExpansions` undefined so the service applies its own defaults
- * (restarts→4, maxMoves→max(8000,1500·movable), maxExpansions→2_000_000).
+ * Effort tier → engine knobs. Balanced leaves place `restarts`/`maxMoves`
+ * undefined so the service applies its own defaults (restarts→4,
+ * maxMoves→max(8000,1500·movable)). Route budget fields (`budgetMode`,
+ * `maxExpansions`, job-budget knobs) are deliberately NEVER pinned here: the
+ * server's defaults govern routing budget, so a cloud-side default change
+ * (e.g. the budget-mode flip) reaches users without a desktop release. Route
+ * effort therefore maps to `portfolio` only.
  */
 const EFFORT_TUNING: Record<
   AutoLayoutEffort,
@@ -27,12 +31,11 @@ const EFFORT_TUNING: Record<
     restarts?: number;
     maxMoves?: number;
     portfolio: number;
-    maxExpansions?: number;
   }
 > = {
-  fast: { restarts: 2, maxMoves: 3000, portfolio: 1, maxExpansions: 500_000 },
+  fast: { restarts: 2, maxMoves: 3000, portfolio: 1 },
   balanced: { portfolio: 4 },
-  quality: { restarts: 8, portfolio: 8, maxExpansions: 4_000_000 },
+  quality: { restarts: 8, portfolio: 8 },
 };
 
 /** Balanced curated knobs — match the current engine defaults. */
@@ -113,9 +116,6 @@ export function toRouteRequest(cfg: AutoLayoutConfig): {
   };
   if (cfg.route.maxViasPerNet !== undefined) {
     options.maxViasPerNet = cfg.route.maxViasPerNet;
-  }
-  if (tuning.maxExpansions !== undefined) {
-    options.maxExpansions = tuning.maxExpansions;
   }
   const pours = cfg.route.serializePours;
   return pours === true || pours === false

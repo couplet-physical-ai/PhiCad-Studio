@@ -18,14 +18,14 @@ describe("autolayout config → request mapping", () => {
 
     const route = toRouteRequest(DEFAULT_AUTOLAYOUT_CONFIG);
     expect(route.options.portfolio).toBe(4);
-    expect(route.options.maxExpansions).toBeUndefined();
+    expect("maxExpansions" in route.options).toBe(false);
     // "auto" ⇒ the key is dropped so the backend negotiates the capability.
     expect("serializePours" in route).toBe(false);
     // undefined maxViasPerNet ⇒ omitted (not sent as an explicit null).
     expect("maxViasPerNet" in route.options).toBe(false);
   });
 
-  test("fast preset → portfolio 1 + low place/route budgets", () => {
+  test("fast preset → portfolio 1 + low place budgets; route budget inherited", () => {
     const { placeOptions } = toPlaceRequest(
       applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "fast"),
     );
@@ -34,15 +34,18 @@ describe("autolayout config → request mapping", () => {
 
     const route = toRouteRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "fast"));
     expect(route.options.portfolio).toBe(1);
-    expect(route.options.maxExpansions).toBe(500_000);
+    // Route budget fields are never pinned — the server default governs.
+    expect("maxExpansions" in route.options).toBe(false);
+    expect("budgetMode" in route.options).toBe(false);
   });
 
-  test("quality preset → portfolio 8 + higher budgets", () => {
+  test("quality preset → portfolio 8 + higher place budgets; route budget inherited", () => {
     const q = applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "quality");
     expect(toPlaceRequest(q).placeOptions.restarts).toBe(8);
     const route = toRouteRequest(q);
     expect(route.options.portfolio).toBe(8);
-    expect(route.options.maxExpansions).toBe(4_000_000);
+    expect("maxExpansions" in route.options).toBe(false);
+    expect("budgetMode" in route.options).toBe(false);
   });
 
   test("explicit serializePours + maxViasPerNet are forwarded", () => {
