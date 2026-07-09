@@ -322,7 +322,9 @@ export function PcbBoardPanel({
           <div className="flex items-center gap-1.5 text-[11px] text-text-tertiary">
             <span>{shapeLabel(currentOutline)}</span>
             <span aria-hidden>·</span>
-            <Pill tone="neutral">2-layer</Pill>
+            <Pill tone="neutral">
+              {workspace.projection?.board.layerCount ?? 2}-layer
+            </Pill>
           </div>
         </>
       )}
