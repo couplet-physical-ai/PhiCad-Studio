@@ -581,7 +581,7 @@ export function ComponentDetailPage({
                   }
                   optionCount={variants.length}
                   source={sourceLabel}
-                  datasheetUrl={null}
+                  datasheetUrl={detail.component.datasheetUrl ?? null}
                 />
 
                 <section className="flex h-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">

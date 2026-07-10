@@ -703,6 +703,13 @@ function upsertComponent(
 
   const tagsJson = JSON.stringify(entry.tags ?? []);
   const isBuiltin = sourceId === "openpcb.core" ? 1 : 0;
+  // Pack metadata (opclib-pack >= 0.3.0); older packs leave these null.
+  const subcategory = entry.subcategory ?? null;
+  const datasheetUrl = entry.datasheet ?? null;
+  const keywordsJson = entry.keywords?.length
+    ? JSON.stringify(entry.keywords)
+    : null;
+  const primaryPart = entry.manufacturerParts?.[0] ?? null;
   const originJson = JSON.stringify({
     libraryId: sourceId,
     componentId: entry.id,
@@ -729,6 +736,11 @@ function upsertComponent(
         // row's package_sha256 covers integrity for the whole bundle.
         contentSha256: null,
         originJson,
+        subcategory,
+        datasheetUrl,
+        keywordsJson,
+        manufacturer: primaryPart?.manufacturer ?? null,
+        manufacturerPartNumber: primaryPart?.mpn ?? null,
       })
       .onConflictDoNothing()
       .run();
@@ -746,6 +758,16 @@ function upsertComponent(
         version: entry.version,
         uuid: entry.uuid,
         originJson,
+        subcategory,
+        datasheetUrl,
+        keywordsJson,
+        // Keep user/editor-set sourcing when the pack carries none.
+        ...(primaryPart
+          ? {
+              manufacturer: primaryPart.manufacturer,
+              manufacturerPartNumber: primaryPart.mpn,
+            }
+          : {}),
       })
       .where(eq(components.id, entry.id))
       .run();

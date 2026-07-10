@@ -16,6 +16,10 @@ export interface LibraryComponent {
   manufacturerPartNumber?: string | null;
   lcscPartNumber?: string | null;
   supplier?: string | null;
+  /** Pack metadata (opclib-pack >= 0.3.0). Null for older packs. */
+  subcategory?: string | null;
+  datasheetUrl?: string | null;
+  keywords?: string[];
 }
 
 export interface LibraryPinMapEntry {

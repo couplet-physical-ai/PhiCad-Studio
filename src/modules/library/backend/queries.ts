@@ -586,6 +586,9 @@ export function mapComponent(row: ComponentRow): LibraryComponent {
     manufacturerPartNumber: row.manufacturerPartNumber,
     lcscPartNumber: row.lcscPartNumber,
     supplier: row.supplier,
+    subcategory: row.subcategory,
+    datasheetUrl: row.datasheetUrl,
+    keywords: row.keywordsJson ? parseJsonStringArray(row.keywordsJson) : [],
   };
 }
 

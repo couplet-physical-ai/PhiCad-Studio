@@ -123,6 +123,10 @@ export const components = sqliteTable(
     manufacturerPartNumber: text("manufacturer_part_number"),
     lcscPartNumber: text("lcsc_part_number"),
     supplier: text("supplier"),
+    // Pack metadata (opclib-pack >= 0.3.0). Null for older packs.
+    subcategory: text("subcategory"),
+    datasheetUrl: text("datasheet_url"),
+    keywordsJson: text("keywords_json"),
   },
   (table) => ({
     nameIdx: index("library_components_name_idx").on(table.name),
