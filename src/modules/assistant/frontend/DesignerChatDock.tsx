@@ -22,7 +22,9 @@ import { contextBudgetKb } from "./components/chat-format";
 import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
 import { useAuth } from "../../../core/frontend/src/cloud/AuthProvider";
 import { readCloudConfig } from "../../../core/frontend/src/cloud/config";
+import { cloudApi } from "../../../core/frontend/src/cloud/cloud-api";
 import { useFeatureFlag } from "../../../core/frontend/src/feature-flags";
+import type { CopilotUsageFrameData, WalletBalance } from "@openpcb/contracts";
 
 const QUICK_ACTIONS = [
   "Wire the schematic",
@@ -139,6 +141,20 @@ function taskStage(task: Task | TaskEvent): {
   }
 }
 
+// Persisted chat-mode choice. Signed-in Pro users default to Cloud Copilot; the
+// stored value only records an *explicit* override (so a Pro user who switches
+// back to Local BYOK keeps that on reload). null ⇒ follow the smart default.
+const CHAT_MODE_STORAGE_KEY = "openpcb.assistant.chatMode";
+
+function readStoredChatMode(): "local" | "cloud" | null {
+  try {
+    const value = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
+    return value === "local" || value === "cloud" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function DesignerChatDock({
   backendURL,
   designId,
@@ -177,12 +193,34 @@ export function DesignerChatDock({
   // S6 cloud chat mode: offered only when the flag is on, a copilot URL is
   // configured, and the user has a cloud session (bearer to forward).
   const cloudCopilotFlag = useFeatureFlag("cloud.copilot");
-  const { session } = useAuth();
+  const { session, tier } = useAuth();
   const cloudCfg = useMemo(() => readCloudConfig(), []);
+  // Pro-tier gate (UX): copilot is a pro feature. The cloud-copilot service enforces
+  // tier=pro server-side (the real boundary); this just hides a dead toggle for non-pro.
   const cloudModeAvailable =
-    cloudCopilotFlag && Boolean(cloudCfg.copilotUrl) && Boolean(session);
-  const [chatMode, setChatMode] = useState<"local" | "cloud">("local");
-  const effectiveMode = cloudModeAvailable ? chatMode : "local";
+    cloudCopilotFlag &&
+    Boolean(cloudCfg.copilotUrl) &&
+    Boolean(session) &&
+    tier === "pro";
+  // Explicit user override (persisted); null ⇒ follow the default. When cloud is
+  // available the default is "cloud" (Pro users get Cloud Copilot by default);
+  // otherwise it falls back to Local. Derived — no effect needed, so it settles
+  // correctly once the async cloud session/tier resolves.
+  const [chatModeOverride, setChatModeOverride] = useState<
+    "local" | "cloud" | null
+  >(() => readStoredChatMode());
+  const chooseChatMode = useCallback((mode: "local" | "cloud") => {
+    setChatModeOverride(mode);
+    try {
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
+    } catch {
+      // ignore persistence failures (e.g. storage disabled)
+    }
+  }, []);
+  const effectiveMode: "local" | "cloud" =
+    cloudModeAvailable && (chatModeOverride ?? "cloud") === "cloud"
+      ? "cloud"
+      : "local";
   const [menuOpen, setMenuOpen] = useState(false);
   const [toolCount, setToolCount] = useState<number | null>(null);
   const [activeRunsByChat, setActiveRunsByChat] = useState<
@@ -192,6 +230,18 @@ export function DesignerChatDock({
   const [cloudRunsByChat, setCloudRunsByChat] = useState<
     Record<string, { cloudRunId: string; refreshKey: number }>
   >({});
+  // Remaining Cloud AI credits: seeded from the wallet on mount, live-updated
+  // from `copilot.usage` frames. null ⇒ no indicator (local/unlimited).
+  const [credits, setCredits] = useState<{
+    remaining: number;
+    low: boolean;
+  } | null>(null);
+  // Set by a `run.warning{code:'budget_credits'}` frame — shows the top-up CTA.
+  const [budgetHit, setBudgetHit] = useState(false);
+  // Cloud Copilot requires the bound design to be cloud-linked (the agent reads
+  // the synced projection). null ⇒ unknown/loading; false ⇒ show the sync prompt.
+  const [cloudLinked, setCloudLinked] = useState<boolean | null>(null);
+  const [linking, setLinking] = useState(false);
   const [messagesPage, setMessagesPage] = useState({
     oldestCursor: null as string | null,
     hasMore: false,
@@ -217,6 +267,71 @@ export function DesignerChatDock({
     if (cloudCfg.apiUrl) headers["x-cloud-api-url"] = cloudCfg.apiUrl;
     return headers;
   }, [session, cloudCfg]);
+  const designerBase = useMemo(
+    () => (backendURL ? `${backendURL}/api/modules/designer` : null),
+    [backendURL],
+  );
+  // In cloud mode, read whether the bound design is cloud-linked so we can prompt
+  // the user to sync before the agent run (which would otherwise fail "not linked").
+  useEffect(() => {
+    if (effectiveMode !== "cloud" || !designerBase || !designId) {
+      setCloudLinked(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `${designerBase}/designs/${encodeURIComponent(designId)}/cloud-link`,
+        );
+        if (cancelled) return;
+        if (!res.ok) {
+          setCloudLinked(null);
+          return;
+        }
+        const body = (await res.json()) as {
+          data?: { link?: unknown } | null;
+          link?: unknown;
+        };
+        const link = body.data?.link ?? body.link ?? null;
+        if (!cancelled) setCloudLinked(Boolean(link));
+      } catch {
+        if (!cancelled) setCloudLinked(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveMode, designerBase, designId, designRevision]);
+
+  const linkDesignForCloud = useCallback(async () => {
+    if (!designerBase || !designId || !cloudActionHeaders) return;
+    setLinking(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `${designerBase}/designs/${encodeURIComponent(designId)}/cloud-link`,
+        {
+          method: "POST",
+          headers: { ...cloudActionHeaders, "content-type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (!res.ok) {
+        const detail = await res
+          .json()
+          .then((b: { detail?: string; title?: string }) => b.detail ?? b.title)
+          .catch(() => null);
+        throw new Error(detail ?? `Sync failed (HTTP ${res.status})`);
+      }
+      setCloudLinked(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinking(false);
+    }
+  }, [designerBase, designId, cloudActionHeaders]);
+
   const selectedProvider =
     providers.find((provider) => provider.id === providerId) ?? null;
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
@@ -382,8 +497,19 @@ export function DesignerChatDock({
       });
     },
     onCopilotFrame: (ctx, frame) => {
-      // Any copilot-only frame both identifies the cloud run and invalidates
-      // the plan view (plan created/updated/checkpoint, approval park).
+      // Live credit surfacing: advisory, no plan refetch.
+      if (frame.type === "copilot.usage") {
+        const usage = frame.data as Partial<CopilotUsageFrameData>;
+        if (typeof usage.creditsRemaining === "number") {
+          setCredits({
+            remaining: usage.creditsRemaining,
+            low: usage.lowBalance === true,
+          });
+        }
+        return;
+      }
+      // Any other copilot-only frame both identifies the cloud run and
+      // invalidates the plan view (plan created/updated/checkpoint, approval park).
       setCloudRunsByChat((prev) => {
         const current = prev[ctx.chatId];
         return {
@@ -395,7 +521,13 @@ export function DesignerChatDock({
         };
       });
     },
-    onAiEvent: (ctx) => {
+    onAiEvent: (ctx, event) => {
+      if (
+        event.type === "run.warning" &&
+        event.data.code === "budget_credits"
+      ) {
+        setBudgetHit(true);
+      }
       if (!assistantBase) return;
       updateRun(ctx.chatId, {
         status: "tooling",
@@ -478,6 +610,50 @@ export function DesignerChatDock({
       .then((tools) => setToolCount(Array.isArray(tools) ? tools.length : null))
       .catch(() => setToolCount(null));
   }, [assistantBase]);
+
+  // Baseline credit balance for cloud mode — seeds the composer footer before a
+  // run; `copilot.usage` frames keep it live during one. Best-effort (frames are
+  // the live source); a stale/failed read just leaves the last value.
+  useEffect(() => {
+    if (effectiveMode !== "cloud" || !assistantBase || !cloudActionHeaders)
+      return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const ws = await cloudApi.personalWorkspace();
+        const res = await fetch(
+          `${assistantBase}/cloud/wallet?workspaceId=${encodeURIComponent(ws.id)}`,
+          { headers: cloudActionHeaders },
+        );
+        if (cancelled || !res.ok) return;
+        const wallet = (await res.json()) as WalletBalance;
+        if (cancelled) return;
+        setCredits(
+          !wallet.unlimited && typeof wallet.balanceCredits === "number"
+            ? { remaining: wallet.balanceCredits, low: wallet.lowBalance === true }
+            : null,
+        );
+      } catch {
+        // best-effort — live frames still update the indicator
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveMode, assistantBase, cloudActionHeaders]);
+
+  const openDashboardBilling = useCallback(() => {
+    const base = cloudCfg.webUrl.replace(/\/$/, "");
+    if (!base) return;
+    const url = `${base}/billing`;
+    const electron = (
+      window as unknown as {
+        electronAPI?: { openExternal?: (u: string) => Promise<void> };
+      }
+    ).electronAPI;
+    if (electron?.openExternal) void electron.openExternal(url);
+    else window.open(url, "_blank", "noopener,noreferrer");
+  }, [cloudCfg.webUrl]);
 
   useEffect(() => {
     setMessages([]);
@@ -607,8 +783,17 @@ export function DesignerChatDock({
     event?.preventDefault();
     const content = (contentOverride ?? input).trim();
     if (!assistantBase || !content || !designId) return;
+    // Cloud runs need a cloud-linked design; prompt to sync instead of firing a
+    // run that would fail "not linked". Only block when confirmed unlinked.
+    if (effectiveMode === "cloud" && cloudLinked === false) {
+      setError(
+        "Sync this design to the cloud to use Cloud Copilot (Sync button above), or switch to Local.",
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
+    setBudgetHit(false);
     try {
       const chatId = await ensureDesignChat();
       const cloudMode = effectiveMode === "cloud";
@@ -814,37 +999,13 @@ export function DesignerChatDock({
           </button>
         </div>
         <div className="mt-2 flex items-center gap-2">
-          {cloudModeAvailable ? (
-            <div
-              className="inline-flex shrink-0 overflow-hidden rounded-control border border-slate-200 text-[10px] dark:border-slate-700"
-              role="group"
-              aria-label="Chat mode"
-            >
-              {(["local", "cloud"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setChatMode(m)}
-                  className={
-                    effectiveMode === m
-                      ? "bg-slate-200 px-2 py-1 font-medium text-slate-900 dark:bg-slate-700 dark:text-slate-100"
-                      : "px-2 py-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-900"
-                  }
-                  title={
-                    m === "cloud"
-                      ? "Run on Cloud Copilot (agent runs in the cloud; proposals mirror here)"
-                      : "Run locally with your own provider"
-                  }
-                >
-                  {m === "cloud" ? "Cloud" : "Local"}
-                </button>
-              ))}
-            </div>
-          ) : null}
           <ModelSelectorPill
             providers={providers}
             providerId={providerId}
-            onProviderChange={setProviderId}
+            onProviderChange={(id) => {
+              chooseChatMode("local");
+              setProviderId(id);
+            }}
             model={model}
             onModelChange={setModel}
             models={models}
@@ -858,6 +1019,9 @@ export function DesignerChatDock({
             onPresetChange={setPromptPresetId}
             selectedProvider={selectedProvider}
             align="left"
+            cloudAvailable={cloudModeAvailable}
+            cloudSelected={effectiveMode === "cloud"}
+            onSelectCloud={() => chooseChatMode("cloud")}
           />
           {toolCount !== null ? (
             <span
@@ -888,6 +1052,19 @@ export function DesignerChatDock({
         {error ? (
           <div className="m-3 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
             {error}
+          </div>
+        ) : null}
+        {effectiveMode === "cloud" && cloudLinked === false ? (
+          <div className="m-3 flex items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+            <span>Sync this design to the cloud to use Cloud Copilot.</span>
+            <button
+              type="button"
+              onClick={() => void linkDesignForCloud()}
+              disabled={linking || !cloudActionHeaders}
+              className="shrink-0 rounded-control bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+            >
+              {linking ? "Syncing…" : "Sync design"}
+            </button>
           </div>
         ) : null}
         {messages.length === 0 ? (
@@ -961,6 +1138,20 @@ export function DesignerChatDock({
         ) : null}
       </div>
       <div className="shrink-0 border-t border-slate-200 p-2.5 dark:border-slate-800">
+        {budgetHit ? (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+            <span className="flex-1">
+              Out of Cloud AI credits — this run may stop early.
+            </span>
+            <button
+              type="button"
+              onClick={openDashboardBilling}
+              className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-700"
+            >
+              <ExternalLink className="h-3 w-3" /> Top up in dashboard
+            </button>
+          </div>
+        ) : null}
         <ChatComposer
           value={input}
           onChange={setInput}
@@ -981,6 +1172,10 @@ export function DesignerChatDock({
           backendURL={backendURL}
           workspaceId="default"
           chatId={selectedChatId ?? undefined}
+          creditsRemaining={
+            effectiveMode === "cloud" ? (credits?.remaining ?? null) : null
+          }
+          lowBalance={credits?.low ?? false}
           compact
         />
       </div>

@@ -519,7 +519,7 @@ function summarizePcb(
   };
 }
 
-function resolveDesignForTool(input: {
+export function resolveDesignForTool(input: {
   chatId?: string;
   requestedDesignId?: string;
   contextResolver: ContextResolver;
@@ -1513,7 +1513,7 @@ function buildPlacementProposalEnvelope(input: {
   };
 }
 
-function failedTool<T>(
+export function failedTool<T>(
   message: string,
   limits: AiToolResult<T>["limits"],
 ): AiToolResult<T | null> {

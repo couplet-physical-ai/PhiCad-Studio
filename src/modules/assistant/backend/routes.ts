@@ -282,6 +282,17 @@ export function registerRoutes(
       ),
     );
   });
+  // Read-only remaining-credits balance (composer footer). Workspace-scoped, not
+  // chat-scoped; cloud-only — creds required (400 if absent).
+  router.get("/cloud/wallet", (ctx) => {
+    const url = new URL(ctx.req.url);
+    return proxyCopilot(() =>
+      getAssistantService().getCloudWallet(
+        url.searchParams.get("workspaceId") ?? "",
+        cloudCredsFromHeaders(ctx.req),
+      ),
+    );
+  });
 
   router.get("/chats/:id/write-policy/session-allow", (ctx) => {
     const id = chatId(ctx);

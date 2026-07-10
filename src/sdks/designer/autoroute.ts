@@ -171,6 +171,23 @@ export interface RouteOptions {
   budgetMode?: "legacy" | "job" | null;
   /** [P5] Total job work pool (expansions) — only read when budgetMode="job". */
   jobBudget?: number | null;
+  /**
+   * [CP-M1 T4] Job-budget policy — "scaled" derives the work pool per board:
+   * W = clamp(wPerTarget × routableTargets, wMin, wMax); an explicit
+   * jobBudget is ignored under "scaled". Only read when budgetMode="job".
+   * Absent = service default; all four fields hash-project out when absent.
+   */
+  jobBudgetPolicy?: "flat" | "scaled" | null;
+  wPerTarget?: number | null;
+  wMin?: number | null;
+  wMax?: number | null;
+  /**
+   * [CP-M1 B3] Opt-in route-start seal check: when true, nets whose terminals
+   * have no legal escape at the declared rules retire up front as the
+   * `escape_blocked_by_rules` unrouted reason (honest reporting; frees their
+   * search budget) instead of burning it. Absent/false = service default (off).
+   */
+  escapePrecheck?: boolean | null;
 }
 
 /** Cost-term weights for cloud-auto-place (scale-normalized terms). */

@@ -95,8 +95,8 @@ function KnowledgeSpaceInner({
   );
 
   return (
-    <div className="flex h-full w-full bg-background text-foreground">
-      <div className="w-[260px] flex-shrink-0 border-r border-border">
+    <div className="flex h-full w-full bg-surface-app text-text-primary">
+      <div className="w-[260px] flex-shrink-0 border-r border-slate-200 bg-surface-app dark:border-slate-800">
         <Sidebar
           selectedPageId={selectedPageId}
           onSelectPage={setSelectedPageId}
@@ -104,7 +104,7 @@ function KnowledgeSpaceInner({
           designId={designId}
         />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 bg-surface-card">
         <PageEditor
           pageId={selectedPageId}
           page={page}

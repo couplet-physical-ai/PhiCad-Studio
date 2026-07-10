@@ -1000,7 +1000,7 @@
         "jobBudget": {
           "anyOf": [
             {
-              "maximum": 50000000,
+              "maximum": 64000000,
               "minimum": 100000,
               "type": "integer"
             },
@@ -1010,6 +1010,76 @@
           ],
           "default": null,
           "title": "Jobbudget"
+        },
+        "jobBudgetPolicy": {
+          "anyOf": [
+            {
+              "enum": [
+                "flat",
+                "scaled"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Jobbudgetpolicy"
+        },
+        "wPerTarget": {
+          "anyOf": [
+            {
+              "maximum": 10000000,
+              "minimum": 1000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wpertarget"
+        },
+        "wMin": {
+          "anyOf": [
+            {
+              "maximum": 64000000,
+              "minimum": 100000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wmin"
+        },
+        "wMax": {
+          "anyOf": [
+            {
+              "maximum": 64000000,
+              "minimum": 100000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wmax"
+        },
+        "escapePrecheck": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Escapeprecheck"
         }
       },
       "title": "RouteOptions",

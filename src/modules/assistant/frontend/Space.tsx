@@ -46,6 +46,9 @@ import type {
 import type { Task, TaskEvent } from "../../../sdks/tasks";
 import { MessageCard } from "./components/MessageCard";
 import { ModelSelectorPill } from "./components/ModelSelectorPill";
+import { CopilotPlanCard } from "./components/CopilotPlanCard";
+import { useCloudChatMode } from "./cloud/use-cloud-chat-mode";
+import type { CopilotUsageFrameData } from "@openpcb/contracts";
 import { ChatComposer } from "./components/ChatComposer";
 import { useChatUserState } from "./components/useChatUserState";
 import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
@@ -205,6 +208,16 @@ export function AssistantSpace({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [titleCommitting, setTitleCommitting] = useState(false);
+  // Cloud Copilot run state (mirrors DesignerChatDock): plan-refetch trigger per
+  // chat from {_copilotFrame}s, live credits from copilot.usage frames, budget CTA.
+  const [cloudRunsByChat, setCloudRunsByChat] = useState<
+    Record<string, { cloudRunId: string; refreshKey: number }>
+  >({});
+  const [credits, setCredits] = useState<{
+    remaining: number;
+    low: boolean;
+  } | null>(null);
+  const [budgetHit, setBudgetHit] = useState(false);
   const userState = useChatUserState();
   const navigateToModule = useNavigationStore((s) => s.navigateToModule);
   const activeChatIdRef = useRef<string | null>(null);
@@ -252,6 +265,11 @@ export function AssistantSpace({
 
   const selectedChat = chats.find((c) => c.id === selectedChatId) ?? null;
   const selectedLinked = linkedDesign(selectedChat ?? undefined);
+  // Cloud Copilot mode (selectable in the model picker). Pro users default to it.
+  const cloud = useCloudChatMode({
+    backendURL,
+    designId: selectedLinked?.id ?? null,
+  });
 
   useEffect(() => {
     if (!base) return;
@@ -265,6 +283,9 @@ export function AssistantSpace({
   );
   const selectedRun = selectedChatId
     ? activeRunsByChat[selectedChatId]
+    : undefined;
+  const selectedCloudRun = selectedChatId
+    ? cloudRunsByChat[selectedChatId]
     : undefined;
 
   const toolEventsByMessage = useMemo(() => {
@@ -510,7 +531,36 @@ export function AssistantSpace({
         lastError: mapped.error,
       });
     },
+    onCopilotFrame: (ctx, frame) => {
+      // Cloud-only frames: live credits (advisory) + plan-refetch trigger.
+      if (frame.type === "copilot.usage") {
+        const usage = frame.data as Partial<CopilotUsageFrameData>;
+        if (typeof usage.creditsRemaining === "number") {
+          setCredits({
+            remaining: usage.creditsRemaining,
+            low: usage.lowBalance === true,
+          });
+        }
+        return;
+      }
+      setCloudRunsByChat((prev) => {
+        const current = prev[ctx.chatId];
+        return {
+          ...prev,
+          [ctx.chatId]: {
+            cloudRunId: frame.runId,
+            refreshKey: (current?.refreshKey ?? 0) + 1,
+          },
+        };
+      });
+    },
     onAiEvent: (ctx, event) => {
+      if (
+        event.type === "run.warning" &&
+        event.data.code === "budget_credits"
+      ) {
+        setBudgetHit(true);
+      }
       // Re-fetch tool events for the active chat so cards update live.
       if (!base) return;
       if (event.type === "run.tool.requested") {
@@ -852,20 +902,40 @@ export function AssistantSpace({
     event?.preventDefault();
     const submittedContent = (contentOverride ?? input).trim();
     if (!base || !submittedContent) return;
+    // Cloud runs need a cloud-linked design; prompt to sync instead of a run
+    // that would fail "not linked". Only block when confirmed unlinked.
+    if (cloud.mode === "cloud" && cloud.linked === false) {
+      setError(
+        "Sync this design to the cloud to use Cloud Copilot (Sync button above), or pick a local provider.",
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
+    setBudgetHit(false);
     try {
       const chatId = await ensureActiveChat();
+      const cloudMode = cloud.mode === "cloud";
+      const submitHeaders: Record<string, string> = {
+        "content-type": "application/json",
+      };
+      if (cloudMode && cloud.session) {
+        // Per-request cloud creds (backend seals them into the task payload).
+        submitHeaders["x-cloud-bearer"] = cloud.session.access_token;
+        submitHeaders["x-cloud-api-url"] = cloud.apiUrl;
+        submitHeaders["x-cloud-copilot-url"] = cloud.copilotUrl;
+      }
       const result = await api<SubmitAssistantMessageResult>(
         `${base}/chats/${chatId}/messages`,
         {
           method: "POST",
-          headers: headers(),
+          headers: submitHeaders,
           body: JSON.stringify({
             content: submittedContent,
             providerConfigId: providerId,
             model,
             promptPresetId,
+            ...(cloudMode ? { mode: "cloud" as const } : {}),
           }),
         },
       );
@@ -1362,7 +1432,10 @@ export function AssistantSpace({
             <ModelSelectorPill
               providers={providers}
               providerId={providerId}
-              onProviderChange={setProviderId}
+              onProviderChange={(id) => {
+                cloud.selectLocal();
+                setProviderId(id);
+              }}
               model={model}
               onModelChange={setModel}
               models={models}
@@ -1375,6 +1448,9 @@ export function AssistantSpace({
               promptPresetId={promptPresetId}
               onPresetChange={setPromptPresetId}
               selectedProvider={selectedProvider}
+              cloudAvailable={cloud.available}
+              cloudSelected={cloud.mode === "cloud"}
+              onSelectCloud={cloud.selectCloud}
             />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1599,6 +1675,44 @@ export function AssistantSpace({
           <div className="h-20 bg-gradient-to-t from-slate-50 to-transparent dark:from-slate-950" />
           <div className="bg-slate-50 px-4 pb-4 dark:bg-slate-950">
             <div className="pointer-events-auto mx-auto w-full max-w-5xl">
+              {cloud.mode === "cloud" && cloud.linked === false ? (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                  <span>
+                    Sync this design to the cloud to use Cloud Copilot.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void cloud.link()}
+                    disabled={cloud.linking || !cloud.actionHeaders}
+                    className="shrink-0 rounded-control bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                  >
+                    {cloud.linking ? "Syncing…" : "Sync design"}
+                  </button>
+                </div>
+              ) : null}
+              {cloud.linkError ? (
+                <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+                  {cloud.linkError}
+                </div>
+              ) : null}
+              {budgetHit ? (
+                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                  Cloud AI credits exhausted — top up in the dashboard to
+                  continue.
+                </div>
+              ) : null}
+              {selectedChatId && selectedCloudRun && cloud.actionHeaders && base ? (
+                <div className="mb-2">
+                  <CopilotPlanCard
+                    assistantBase={base}
+                    chatId={selectedChatId}
+                    cloudRunId={selectedCloudRun.cloudRunId}
+                    refreshKey={selectedCloudRun.refreshKey}
+                    cloudHeaders={cloud.actionHeaders}
+                    onError={setError}
+                  />
+                </div>
+              ) : null}
               {showNewMessagesPill ? (
                 <div className="mb-2 flex justify-center">
                   <button
@@ -1640,6 +1754,16 @@ export function AssistantSpace({
                 />
               </div>
               <div className="mt-1.5 text-center text-[10px] text-slate-500">
+                {cloud.mode === "cloud" && credits ? (
+                  <span
+                    className={
+                      credits.low ? "text-amber-600 dark:text-amber-400" : ""
+                    }
+                  >
+                    Cloud Copilot · {credits.remaining} credits
+                    {credits.low ? " (low)" : ""} ·{" "}
+                  </span>
+                ) : null}
                 Assistant can make mistakes. Verify critical design decisions.
               </div>
             </div>

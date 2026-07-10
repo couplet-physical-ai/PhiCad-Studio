@@ -20,6 +20,9 @@ import {
 } from "lucide-react";
 import { useRuntime } from "../../providers/RuntimeProvider";
 import { useNavigationStore } from "../../stores/navigation-store";
+import { useAuth } from "@/cloud/AuthProvider";
+import { readCloudConfig } from "@/cloud/config";
+import { useFeatureFlag } from "@/feature-flags";
 import { cn } from "@/lib/utils";
 import { Pill } from "@shared/frontend/ui/pill";
 import { StackedCard } from "@shared/frontend/ui/stacked-card";
@@ -314,6 +317,36 @@ export function AssistantPanel() {
 
   const defaultProviderId = settings?.defaultProviderId;
 
+  // Cloud Copilot availability (signed-in Pro + copilot URL + flag). When
+  // available it's the default assistant unless the user picked Local BYOK.
+  // The choice is the same localStorage key the chat UIs read.
+  const cloudCopilotFlag = useFeatureFlag("cloud.copilot");
+  const { session, tier } = useAuth();
+  const cloudCfg = useMemo(() => readCloudConfig(), []);
+  const cloudCopilotAvailable =
+    cloudCopilotFlag &&
+    Boolean(cloudCfg.copilotUrl) &&
+    Boolean(session) &&
+    tier === "pro";
+  const [cloudIsDefault, setCloudIsDefault] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("openpcb.assistant.chatMode") !== "local";
+    } catch {
+      return true;
+    }
+  });
+  const chooseAssistantDefault = (useCloud: boolean) => {
+    setCloudIsDefault(useCloud);
+    try {
+      window.localStorage.setItem(
+        "openpcb.assistant.chatMode",
+        useCloud ? "cloud" : "local",
+      );
+    } catch {
+      // ignore persistence failures
+    }
+  };
+
   return (
     <div className="space-y-5 pb-24 text-slate-900 dark:text-slate-100">
       <div>
@@ -334,31 +367,79 @@ export function AssistantPanel() {
         </div>
       ) : null}
 
-      {/* OpenPCB AI Cloud upsell banner (UI stub). */}
+      {/* OpenPCB Cloud Copilot — real available/default state for signed-in Pro,
+          upsell stub otherwise. */}
       <div className="flex items-center gap-3 rounded-xl border border-violet-300/60 bg-accent-soft p-3 dark:border-violet-800/60">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/20">
           <Sparkles className="h-4 w-4 text-accent-text" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-sm font-medium">OpenPCB AI Cloud</span>
-            <Pill tone="accent" className="text-[9px] tracking-wide">
-              PAID
-            </Pill>
+            <span className="text-sm font-medium">OpenPCB Cloud Copilot</span>
+            {cloudCopilotAvailable ? (
+              <>
+                <Pill tone="success" className="text-[9px] tracking-wide">
+                  AVAILABLE
+                </Pill>
+                {cloudIsDefault ? (
+                  <Pill tone="accent" className="text-[9px] tracking-wide">
+                    DEFAULT
+                  </Pill>
+                ) : null}
+              </>
+            ) : (
+              <Pill tone="accent" className="text-[9px] tracking-wide">
+                PAID
+              </Pill>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            Skip setup. Tuned models for schematic generation, BOM auto-source,
-            and ERC fixes.
+            {cloudCopilotAvailable
+              ? "Managed AI — schematic generation, BOM auto-source, ERC fixes. No API key needed; runs in the cloud."
+              : "Skip setup. Tuned models for schematic generation, BOM auto-source, and ERC fixes."}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => openSettings("account")}
-          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-violet-400/40 px-2.5 py-1.5 text-xs text-accent-text hover:bg-violet-500/10"
-        >
-          Learn more
-          <ArrowRight className="h-3 w-3" />
-        </button>
+        {cloudCopilotAvailable ? (
+          <div
+            className="inline-flex shrink-0 overflow-hidden rounded-control border border-violet-400/40 text-[11px]"
+            role="group"
+            aria-label="Default assistant"
+          >
+            <button
+              type="button"
+              onClick={() => chooseAssistantDefault(true)}
+              className={cn(
+                "px-2.5 py-1.5",
+                cloudIsDefault
+                  ? "bg-violet-500/20 font-medium text-accent-text"
+                  : "text-slate-500 hover:bg-violet-500/10",
+              )}
+            >
+              Cloud
+            </button>
+            <button
+              type="button"
+              onClick={() => chooseAssistantDefault(false)}
+              className={cn(
+                "px-2.5 py-1.5",
+                !cloudIsDefault
+                  ? "bg-violet-500/20 font-medium text-accent-text"
+                  : "text-slate-500 hover:bg-violet-500/10",
+              )}
+            >
+              Local
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => openSettings("account")}
+            className="inline-flex shrink-0 items-center gap-1 rounded-control border border-violet-400/40 px-2.5 py-1.5 text-xs text-accent-text hover:bg-violet-500/10"
+          >
+            Learn more
+            <ArrowRight className="h-3 w-3" />
+          </button>
+        )}
       </div>
 
       {/* Default assistant defaults */}

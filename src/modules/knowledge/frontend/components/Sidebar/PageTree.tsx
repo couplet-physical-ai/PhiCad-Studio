@@ -1,4 +1,7 @@
-import { usePageTree } from "../../hooks";
+import { useCallback, useState } from "react";
+import { Plus, Loader2 } from "lucide-react";
+import { Button } from "@shared/frontend/ui/button";
+import { usePageTree, useKnowledgeApi } from "../../hooks";
 import { TreeItem } from "./TreeItem";
 import type { PageTreeNode } from "../../../shared/types";
 
@@ -16,13 +19,31 @@ export function PageTree({
   designId,
 }: PageTreeProps) {
   const { tree, isLoading, error, refresh } = usePageTree(designId);
+  const api = useKnowledgeApi();
+  const [isCreating, setIsCreating] = useState(false);
+
+  const handleCreate = useCallback(async () => {
+    setIsCreating(true);
+    try {
+      const page = await api.createPage({
+        workspace_id: "default",
+        project_id: designId ?? undefined,
+        title: "Untitled",
+      });
+      if (page) onSelectPage(page.id);
+    } catch (err) {
+      console.error("Failed to create page:", err);
+    } finally {
+      setIsCreating(false);
+    }
+  }, [api, designId, onSelectPage]);
 
   if (isLoading) {
     return (
       <div className="space-y-2 p-2">
-        <div className="h-8 w-full animate-pulse rounded-md bg-muted" />
-        <div className="h-8 w-full animate-pulse rounded-md bg-muted" />
-        <div className="h-8 w-full animate-pulse rounded-md bg-muted" />
+        <div className="h-8 w-full animate-pulse rounded-md bg-slate-200 dark:bg-slate-800" />
+        <div className="h-8 w-full animate-pulse rounded-md bg-slate-200 dark:bg-slate-800" />
+        <div className="h-8 w-full animate-pulse rounded-md bg-slate-200 dark:bg-slate-800" />
       </div>
     );
   }
@@ -43,9 +64,31 @@ export function PageTree({
 
   if (tree.length === 0) {
     return (
-      <p className="p-4 text-center text-xs text-muted-foreground">
-        No pages yet
-      </p>
+      <div className="p-3">
+        <div className="rounded-card border border-dashed border-slate-300 bg-surface-card px-4 py-10 text-center dark:border-slate-700">
+          <p className="text-sm text-text-secondary">No pages yet</p>
+          <p className="mt-1 text-xs text-text-tertiary">
+            Create your first page to get started.
+          </p>
+          <div className="mt-3 flex justify-center">
+            <Button
+              variant="primary"
+              size="sm"
+              icon={
+                isCreating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )
+              }
+              onClick={handleCreate}
+              disabled={isCreating}
+            >
+              New page
+            </Button>
+          </div>
+        </div>
+      </div>
     );
   }
 

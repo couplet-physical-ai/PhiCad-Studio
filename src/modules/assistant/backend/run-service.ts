@@ -98,6 +98,7 @@ const WRITE_TOOL_NAMES = new Set<string>([
   "designer_propose_schematic_updates",
   "designer_propose_schematic_deletions",
   "designer_arrange_schematic",
+  "compile_circuit",
 ]);
 
 /**
@@ -143,6 +144,17 @@ interface BomResultShape {
     quantity?: number;
     value?: unknown;
     selected?: { componentId: string } | null;
+  }>;
+}
+
+/** Minimal shape of the compile_circuit result we read for BuildIntent. */
+interface CompileResultShape {
+  placedCount?: number;
+  bom?: Array<{
+    role?: unknown;
+    componentId?: string;
+    quantity?: number;
+    value?: unknown;
   }>;
 }
 
@@ -260,6 +272,49 @@ export class RunService {
         goal: typeof parsed.goal === "string" ? parsed.goal : "",
         items: intentItems,
       });
+    } catch {
+      // Persisting intent is best-effort; never fail the run over it.
+    }
+  }
+
+  /**
+   * Parse a compile_circuit result and persist its BOM as a BuildIntent so the
+   * Definition-of-Done harness verifies the composed circuit (ERC/wiring) and can
+   * drive correction passes. Only a compile that actually placed parts is worth
+   * verifying — unresolved/failed compiles placed nothing and already told the
+   * model to fix the IR.
+   */
+  private captureCompiledBuildIntent(
+    chatId: string,
+    taskId: string,
+    resultJson: string,
+  ): void {
+    let parsed: CompileResultShape;
+    try {
+      parsed = JSON.parse(resultJson) as CompileResultShape;
+    } catch {
+      return;
+    }
+    if (!parsed || (parsed.placedCount ?? 0) <= 0) return;
+    const bom = Array.isArray(parsed.bom) ? parsed.bom : [];
+    const intentItems = bom
+      .filter((item) => typeof item.componentId === "string" && item.componentId)
+      .map((item) => ({
+        role: typeof item.role === "string" ? item.role : "part",
+        componentId: item.componentId!,
+        quantity:
+          Number.isFinite(item.quantity) && (item.quantity ?? 0) > 0
+            ? Math.floor(item.quantity!)
+            : 1,
+        value: typeof item.value === "string" ? item.value : undefined,
+        requiredNets: requiredNetsForItem(
+          typeof item.role === "string" ? item.role : "",
+          typeof item.value === "string" ? item.value : undefined,
+        ),
+      }));
+    if (intentItems.length === 0) return;
+    try {
+      this.buildIntents.save({ chatId, taskId, goal: "", items: intentItems });
     } catch {
       // Persisting intent is best-effort; never fail the run over it.
     }
@@ -845,6 +900,12 @@ export class RunService {
         // both keys are in scope.
         if (event.data.toolName === "library_resolve_bom") {
           this.captureBuildIntent(
+            payload.chatId,
+            taskCtx.task.id,
+            event.data.resultJson,
+          );
+        } else if (event.data.toolName === "compile_circuit") {
+          this.captureCompiledBuildIntent(
             payload.chatId,
             taskCtx.task.id,
             event.data.resultJson,

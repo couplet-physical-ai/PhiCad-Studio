@@ -31,6 +31,7 @@ import { CloudRunService } from "./cloud/cloud-run-service";
 import {
   approvePlan,
   getPlan,
+  getWallet,
   patchPlan,
   postApplied,
   rejectProposal,
@@ -475,6 +476,17 @@ export class AssistantService {
   ): ReturnType<typeof getPlan> {
     this.assertValidChatId(chatId);
     return getPlan(this.requireCloudCtx(cloudCreds), runId);
+  }
+
+  /** Read-only remaining-credits balance for a workspace (cloud-only). Not
+   * chat-scoped — the desktop surfaces it in the composer footer. */
+  getCloudWallet(
+    workspaceId: string,
+    cloudCreds?: CloudCredentials | null,
+  ): ReturnType<typeof getWallet> {
+    const ws = workspaceId.trim();
+    if (!ws) throw new ValidationError("workspaceId is required");
+    return getWallet(this.requireCloudCtx(cloudCreds), ws);
   }
 
   patchCloudPlan(

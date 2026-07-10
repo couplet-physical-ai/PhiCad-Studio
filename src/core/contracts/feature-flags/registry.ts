@@ -37,11 +37,15 @@ export interface FeatureFlagDef {
  */
 export const FEATURE_FLAGS = {
   "cloud.auth": {
-    availability: "dev",
+    // Graduated to prod for the Cloud Copilot pro-tier beta: login + session are the
+    // prerequisite for tier gating (the desktop reads app_metadata.tier from the session).
+    availability: "all",
     description: "Cloud sign-in/session + invite acceptance (cloud foundation)",
   },
   "cloud.sync": {
-    availability: "dev",
+    // Graduated to prod: Copilot requires a cloud-linked design (link/sync routes live
+    // behind this flag). Copilot/auto-layout access itself is gated at runtime by tier=pro.
+    availability: "all",
     description:
       "Project cloud sync (command mirroring, sync badge, prefs toggle)",
   },
@@ -58,7 +62,9 @@ export const FEATURE_FLAGS = {
     description: "Comment cloud sync (local comments are unaffected)",
   },
   "cloud.autolayout": {
-    availability: "dev",
+    // Graduated to prod for the pro-tier beta. The button/modal are additionally gated
+    // at runtime on tier=pro (UI), and cloud-auto-layout enforces pro server-side.
+    availability: "all",
     description:
       "Cloud Auto-Layout (unified auto-place + auto-route: BoardSnapshot → placement/trace/via proposals)",
   },
@@ -75,7 +81,10 @@ export const FEATURE_FLAGS = {
     description: "Cloud assistant provider presets (OpenAI / OpenRouter)",
   },
   "cloud.copilot": {
-    availability: "dev",
+    // Graduated to prod for the pro-tier beta. Visible only when a copilot URL is
+    // configured AND the signed-in user is tier=pro (UI); cloud-copilot enforces pro
+    // server-side on every route (the real boundary).
+    availability: "all",
     description:
       "Cloud Copilot chat mode (agent runs on the cloud-copilot service; proposals mirrored locally)",
   },

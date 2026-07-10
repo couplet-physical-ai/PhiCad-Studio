@@ -10,6 +10,10 @@ const COMPONENTS: LibraryComponent[] = [
   component("openpcb.core.transistor.npn-sot-23-ebc", "NPN Transistor SOT-23 EBC", ["transistor", "bjt", "npn", "sot-23"]),
   component("openpcb.core.passive.resistor", "Resistor", ["passive", "builtin", "system"]),
   component("openpcb.core.passive.capacitor", "Capacitor", ["passive", "builtin", "system"]),
+  // Regression fixture: its name/description contain the word "resistor" so a
+  // plain resistor query used to resolve here (alphabetical tie-break). It is a
+  // sensor and must lose to the generic Resistor.
+  component("openpcb.core.sensor.ldr", "LDR Photoresistor", ["sensor", "light", "photoresistor", "ldr"]),
 ];
 
 interface SearchOutput {
@@ -55,6 +59,17 @@ describe("assistant library tools", () => {
     expect(data.results[0]?.componentId).toBe("openpcb.core.transistor.npn-sot-23-ebc");
   });
 
+  test("search prefers generic Resistor over LDR Photoresistor for a resistor query", async () => {
+    const tool = makeLibrarySearchComponentsTool(fakeCtx()) as unknown as AiTool<unknown, unknown>;
+
+    const result = await tool.execute(execCtx(), { query: "220 ohm resistor", limit: 5 });
+    const data = result.data as SearchOutput;
+
+    expect(result.ok).toBe(true);
+    expect(data.results[0]?.componentId).toBe("openpcb.core.passive.resistor");
+    expect(data.results.some((r) => r.componentId === "openpcb.core.sensor.ldr")).toBe(false);
+  });
+
   test("BOM resolver carries defaults and instance attributes", async () => {
     const tool = makeLibraryResolveBomTool(fakeCtx()) as unknown as AiTool<unknown, unknown>;
 
@@ -77,6 +92,10 @@ describe("assistant library tools", () => {
     expect(data.items.find((item) => item.role === "red indicator")?.selected?.componentId).toBe("openpcb.core.opto.led");
     expect(data.items.find((item) => item.role === "red indicator")?.attributes.color).toBe("red");
     expect(data.items.find((item) => item.role === "current limit")?.value).toBe("330Ω");
+    // Regression: current-limit resistor must resolve to the generic Resistor, not the LDR.
+    expect(data.items.find((item) => item.role === "current limit")?.selected?.componentId).toBe(
+      "openpcb.core.passive.resistor",
+    );
   });
 });
 

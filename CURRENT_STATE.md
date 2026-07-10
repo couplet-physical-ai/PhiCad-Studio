@@ -1,3 +1,20 @@
+# Cloud Copilot → local compiler agent: CURRENT STATE
+
+Last verified: 2026-07-08 · effort narrative: `HANDOFF.md` · full context: `~/.claude/plans/act-as-expert-on-snug-nest.md`
+
+- **Branch:** `master` (OpenPCB repo), dirty. All changes working-tree, uncommitted.
+- **My changed files (ONLY these — rest of the dirty tree is unrelated prior work):**
+  - `src/modules/assistant/backend/tools/library-tools.ts` — resolver category scoring (M)
+  - `src/core/backend/tests/assistant-library-tools.test.ts` — LDR regression (M)
+  - `src/modules/assistant/backend/compiler/{ir,units,blocks,expander,lowering,apply}.ts` — new compiler module
+  - `src/core/backend/tests/assistant-compiler.test.ts` — 11 golden tests (new)
+- **Build/test:** `bun test` (the two files) → 11 + 4 pass · `npm run typecheck` (tsc -b) → clean.
+- **Key decisions:** compiler model (LLM→IR→expand+ERC) · local-first brain, cloud=tools+gateway · hybrid recipes (code primitives + data functional blocks) · IR internal, DesignerCommand batch on wire · param calc in expander · auto-apply non-destructive / gate destructive / ERC auto-correct ≤N · guardrails clarify-first + installed-only + schematic-only.
+- **Blockers:** none. `apply.ts` validated only vs a fake DesignerSDK — needs a live 5-LED smoke for real-designer fidelity.
+- **Next:** P1.3 `compile_circuit(IR)` AiTool (see TODO.md "Now").
+
+---
+
 # OpenPCB Desktop — Cloud Teams / Sharing / Collaboration: CURRENT STATE
 
 > Feature-scoped handoff (the rest of the desktop's state lives in `TODO.md` +

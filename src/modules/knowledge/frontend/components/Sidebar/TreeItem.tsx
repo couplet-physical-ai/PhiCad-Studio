@@ -165,10 +165,11 @@ export const TreeItem = memo(function TreeItem({
         onDrop={handleDrop}
         onClick={() => onSelect(node.id)}
         className={[
-          "group relative flex cursor-pointer items-center gap-1 rounded-md py-1 pr-1 text-sm transition-colors",
-          "hover:bg-accent/50",
-          isSelected ? "bg-accent text-accent-foreground" : "",
-          draggedOver && dropPosition === "inside" ? "bg-accent/30" : "",
+          "group relative flex cursor-pointer items-center gap-1 rounded-control py-1.5 pr-1 text-sm transition-colors",
+          isSelected
+            ? "bg-accent-soft font-medium text-accent-text before:absolute before:bottom-1 before:left-0 before:top-1 before:w-0.5 before:rounded-full before:bg-accent"
+            : "text-text-secondary hover:bg-slate-100 dark:hover:bg-slate-800",
+          draggedOver && dropPosition === "inside" ? "bg-accent-soft" : "",
         ].join(" ")}
         style={{ paddingLeft }}
       >
@@ -182,7 +183,7 @@ export const TreeItem = memo(function TreeItem({
         <button
           type="button"
           onClick={handleToggle}
-          className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground"
+          className="flex h-5 w-5 shrink-0 items-center justify-center text-text-tertiary"
         >
           {hasChildren ? (
             expanded ? (
@@ -196,7 +197,11 @@ export const TreeItem = memo(function TreeItem({
         </button>
 
         <span className="shrink-0 text-base leading-none">
-          {node.icon || <FileText className="h-4 w-4 text-muted-foreground" />}
+          {node.icon || (
+            <FileText
+              className={`h-4 w-4 ${isSelected ? "text-accent-text" : "text-text-tertiary"}`}
+            />
+          )}
         </span>
 
         <span className="min-w-0 flex-1 truncate font-medium">{node.title}</span>

@@ -73,23 +73,37 @@ describe("backend isFeatureEnabled", () => {
     else process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT = prevOverride;
   });
 
+  // cloud.presence is still a dev-only flag (cloud.autolayout/copilot/auth/sync
+  // graduated to "all" for the Copilot pro beta), so it exercises the dev gating.
   test("cloud flag enabled in dev, disabled in production", () => {
-    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT;
+    delete process.env.OPENPCB_FEATURE_CLOUD_PRESENCE;
     process.env.NODE_ENV = "development";
-    expect(isFeatureEnabled("cloud.autolayout")).toBe(true);
+    expect(isFeatureEnabled("cloud.presence")).toBe(true);
     process.env.NODE_ENV = "production";
-    expect(isFeatureEnabled("cloud.autolayout")).toBe(false);
+    expect(isFeatureEnabled("cloud.presence")).toBe(false);
   });
 
   test("non-production NODE_ENV (e.g. test) keeps cloud flags on", () => {
-    delete process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT;
+    delete process.env.OPENPCB_FEATURE_CLOUD_PRESENCE;
     process.env.NODE_ENV = "test";
-    expect(isFeatureEnabled("cloud.autolayout")).toBe(true);
+    expect(isFeatureEnabled("cloud.presence")).toBe(true);
   });
 
   test("env override force-enables in production", () => {
     process.env.NODE_ENV = "production";
-    process.env.OPENPCB_FEATURE_CLOUD_AUTOLAYOUT = "1";
-    expect(isFeatureEnabled("cloud.autolayout")).toBe(true);
+    process.env.OPENPCB_FEATURE_CLOUD_PRESENCE = "1";
+    expect(isFeatureEnabled("cloud.presence")).toBe(true);
+  });
+
+  test("graduated cloud flags (copilot/autolayout/auth/sync) are on in production", () => {
+    process.env.NODE_ENV = "production";
+    for (const flag of [
+      "cloud.copilot",
+      "cloud.autolayout",
+      "cloud.auth",
+      "cloud.sync",
+    ] as const) {
+      expect(isFeatureEnabled(flag)).toBe(true);
+    }
   });
 });

@@ -153,3 +153,13 @@ body {
   background: inherit;
   color: inherit;
 }
+
+/* TipTap placeholder — Placeholder extension tags the empty first node with
+   `.tiptap-is-empty` + `data-placeholder`; render it as ghost text. */
+.tiptap-is-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--text-tertiary);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}

@@ -3,10 +3,13 @@ import { Loader2, Plus, Trash2, AlertCircle, FileText } from "lucide-react";
 import type { Editor } from "@tiptap/react";
 import { Button } from "@shared/frontend/ui/button";
 import { useKnowledgeApi, useAutosave } from "../../hooks";
+import { useTreeStore } from "../../stores/tree-store";
 import { TiptapEditor } from "./TiptapEditor";
 import { FixedToolbar } from "./FixedToolbar";
 import { LinkDialog } from "./LinkDialog";
-import type { EditorContent, Page } from "../../../shared/types";
+import { findParentNode } from "../Sidebar/PageTree";
+import { formatRelativeTime } from "../../lib/format";
+import type { EditorContent, Page, PageTreeNode } from "../../../shared/types";
 
 interface PageEditorProps {
   pageId: string | null;
@@ -21,6 +24,19 @@ interface PageEditorProps {
   onSelectPage?: (id: string) => void;
   onSaveRequestId?: (requestId: string) => void;
   onRefreshTree?: () => void;
+}
+
+/** Ancestor titles for a page, root-first. Empty if the page isn't in the tree. */
+function buildBreadcrumb(tree: PageTreeNode[], pageId: string): string[] {
+  const crumbs: string[] = [];
+  let currentId = pageId;
+  for (let i = 0; i < 50; i++) {
+    const parent = findParentNode(tree, currentId);
+    if (!parent) break;
+    crumbs.unshift(parent.title);
+    currentId = parent.id;
+  }
+  return crumbs;
 }
 
 function toIsoTimestamp(value: Date | string | null | undefined): string | null {
@@ -52,6 +68,8 @@ export function PageEditor({
   const [title, setTitle] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const tree = useTreeStore((state) => state.tree);
   const titleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const updatedAtRef = useRef(new Map<string, string>());
   const pageIdRef = useRef(pageId);
@@ -83,6 +101,19 @@ export function PageEditor({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!editor) return;
+    const update = () => {
+      const text = editor.getText().trim();
+      setWordCount(text ? text.split(/\s+/).length : 0);
+    };
+    update();
+    editor.on("update", update);
+    return () => {
+      editor.off("update", update);
+    };
+  }, [editor]);
 
   const handleSaveContent = useCallback(
     async (content: EditorContent) => {
@@ -177,60 +208,105 @@ export function PageEditor({
 
   if (!pageId) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 text-slate-500">
-        <FileText className="h-12 w-12" />
-        <p className="text-sm">Select a page or create a new one.</p>
-        {onSelectPage && (
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<Plus className="h-4 w-4" />}
-            onClick={handleCreatePage}
-            disabled={isCreating}
-          >
-            New page
-          </Button>
-        )}
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="max-w-md rounded-card border border-dashed border-slate-300 bg-surface-card px-6 py-12 text-center dark:border-slate-700">
+          <FileText className="mx-auto h-10 w-10 text-text-tertiary" />
+          <p className="mt-3 text-sm text-text-secondary">No page selected</p>
+          <p className="mt-1 text-xs text-text-tertiary">
+            Select a page from the sidebar or create a new one.
+          </p>
+          {onSelectPage && (
+            <div className="mt-4 flex justify-center">
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<Plus className="h-4 w-4" />}
+                onClick={handleCreatePage}
+                disabled={isCreating}
+              >
+                New page
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
 
+  const breadcrumb = pageId ? buildBreadcrumb(tree, pageId) : [];
+  const editedRelative = page ? formatRelativeTime(page.updated_at) : null;
+
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <input
-          type="text"
-          value={title}
-          onChange={handleTitleChange}
-          placeholder="Page title"
-          className="flex-1 bg-transparent text-lg font-semibold text-foreground placeholder:text-muted-foreground focus:outline-none"
-        />
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={<Plus className="h-4 w-4" />}
-            onClick={handleCreatePage}
-            disabled={isCreating}
-          >
-            {isCreating ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : null}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={<Trash2 className="h-4 w-4" />}
-            onClick={handleDeletePage}
-            disabled={!page || page.is_project_root}
+      <div className="border-b border-slate-200 dark:border-slate-800">
+        <div className="flex items-center gap-2 px-4 pt-2">
+          <input
+            type="text"
+            value={title}
+            onChange={handleTitleChange}
+            placeholder="Page title"
+            className="flex-1 bg-transparent text-lg font-semibold text-text-primary placeholder:text-text-tertiary focus:outline-none"
           />
-          {saveStatus !== "idle" && (
-            <span className="ml-2 text-xs text-muted-foreground">
-              {saveStatus === "saving" && "Saving..."}
-              {saveStatus === "saved" && "Saved"}
-              {saveStatus === "error" && "Error"}
-            </span>
+          <div className="flex items-center gap-1">
+            {saveStatus !== "idle" && (
+              <span
+                className={`rounded-pill bg-slate-100 px-2 py-0.5 text-[11px] dark:bg-slate-800 ${
+                  saveStatus === "saved"
+                    ? "text-status-success"
+                    : saveStatus === "error"
+                      ? "text-status-danger"
+                      : "text-text-tertiary"
+                }`}
+              >
+                {saveStatus === "saving" && "Saving…"}
+                {saveStatus === "saved" && "Saved"}
+                {saveStatus === "error" && "Error"}
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              title="New page"
+              aria-label="New page"
+              icon={
+                isCreating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )
+              }
+              onClick={handleCreatePage}
+              disabled={isCreating}
+            />
+            <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Delete page"
+              aria-label="Delete page"
+              className="hover:text-status-danger"
+              icon={<Trash2 className="h-4 w-4" />}
+              onClick={handleDeletePage}
+              disabled={!page || page.is_project_root}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 px-4 pb-2 pt-1 text-[11px] text-text-tertiary">
+          {breadcrumb.length > 0 && (
+            <>
+              <span className="truncate">{breadcrumb.join(" / ")}</span>
+              <span aria-hidden>·</span>
+            </>
           )}
+          {editedRelative && (
+            <>
+              <span>edited {editedRelative}</span>
+              <span aria-hidden>·</span>
+            </>
+          )}
+          <span>
+            {wordCount} {wordCount === 1 ? "word" : "words"}
+          </span>
         </div>
       </div>
 
@@ -238,9 +314,9 @@ export function PageEditor({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading && !page ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading page...</div>
+          <div className="p-4 text-sm text-text-tertiary">Loading page...</div>
         ) : error ? (
-          <div className="flex items-center gap-2 p-4 text-sm text-red-600">
+          <div className="flex items-center gap-2 p-4 text-sm text-status-danger">
             <AlertCircle className="h-4 w-4" />
             {error}
           </div>

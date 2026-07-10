@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { ChevronDown, RefreshCw, Settings } from "lucide-react";
+import { ChevronDown, RefreshCw, Settings, Sparkles } from "lucide-react";
 import type {
   AssistantPromptPreset,
   AssistantPromptPresetId,
   AssistantProviderConfig,
   AssistantProviderModel,
 } from "../../../../sdks/assistant";
+import {
+  CLOUD_PROVIDER_ID,
+  CLOUD_PROVIDER_LABEL,
+} from "../cloud/use-cloud-chat-mode";
 
 const PRESET_SHORT: Record<AssistantPromptPresetId, string> = {
   "strict-grounded": "Strict",
@@ -54,6 +58,12 @@ export interface ModelSelectorPillProps {
   selectedProvider: AssistantProviderConfig | null;
   align?: "left" | "right";
   onOpenSettings?: () => void;
+  /** Offer "OpenPCB Cloud Copilot" as the top provider option (signed-in Pro). */
+  cloudAvailable?: boolean;
+  /** Cloud Copilot is the active selection (mode = cloud). */
+  cloudSelected?: boolean;
+  /** Called when the user picks the Cloud Copilot option. */
+  onSelectCloud?: () => void;
 }
 
 /**
@@ -75,11 +85,16 @@ export function ModelSelectorPill({
   selectedProvider,
   align = "right",
   onOpenSettings,
+  cloudAvailable = false,
+  cloudSelected = false,
+  onSelectCloud,
 }: ModelSelectorPillProps): ReactElement {
   const [open, setOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  const dot = dotColor(selectedProvider);
+  const dot = cloudSelected
+    ? { cls: "bg-emerald-500", title: `${CLOUD_PROVIDER_LABEL} · Cloud` }
+    : dotColor(selectedProvider);
 
   const refreshModels = () => {
     if (!onRefreshModels || refreshing) return;
@@ -118,11 +133,17 @@ export function ModelSelectorPill({
           className={`h-2 w-2 shrink-0 rounded-full ${dot.cls} shadow-[0_0_6px_currentColor]`}
         />
         <span className="truncate font-medium text-slate-700 dark:text-slate-200">
-          {shortModel(model)}
+          {cloudSelected ? CLOUD_PROVIDER_LABEL : shortModel(model)}
         </span>
-        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-          {PRESET_SHORT[promptPresetId]}
-        </span>
+        {cloudSelected ? (
+          <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-accent-soft px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-accent-text">
+            <Sparkles className="h-2.5 w-2.5" /> Cloud
+          </span>
+        ) : (
+          <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+            {PRESET_SHORT[promptPresetId]}
+          </span>
+        )}
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-500" />
       </button>
 
@@ -134,14 +155,23 @@ export function ModelSelectorPill({
             Provider
           </label>
           <select
-            value={providerId}
+            value={cloudSelected ? CLOUD_PROVIDER_ID : providerId}
             onChange={(e) => {
+              if (e.target.value === CLOUD_PROVIDER_ID) {
+                onSelectCloud?.();
+                return;
+              }
               const provider = providers.find((p) => p.id === e.target.value);
               onProviderChange(e.target.value);
               if (provider) onModelChange(provider.defaultModel);
             }}
             className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
           >
+            {cloudAvailable ? (
+              <option value={CLOUD_PROVIDER_ID}>
+                {CLOUD_PROVIDER_LABEL} · Cloud
+              </option>
+            ) : null}
             {providers
               .filter((p) => p.enabled)
               .map((p) => (
@@ -151,6 +181,13 @@ export function ModelSelectorPill({
               ))}
           </select>
 
+          {cloudSelected ? (
+            <p className="mt-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+              Runs on OpenPCB Cloud Copilot — model picked automatically (fast ·
+              reasoning). No API key needed.
+            </p>
+          ) : (
+            <>
           <div className="mt-2.5 flex items-center justify-between">
             <label className="block text-[10px] uppercase tracking-wide text-slate-500">
               Model
@@ -214,6 +251,8 @@ export function ModelSelectorPill({
               </option>
             ))}
           </select>
+            </>
+          )}
 
           <button
             type="button"

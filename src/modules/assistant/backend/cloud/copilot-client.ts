@@ -8,15 +8,32 @@
 // JSON) and replays durably after `Last-Event-ID` on reconnect.
 
 import type {
+  CopilotModelTier,
   CopilotPlanMutationResponse,
   CopilotPlanView,
   CopilotProposalView,
+  CopilotRunKind,
   CopilotStreamFrame,
-  CreateCopilotRunRequest,
   CreateCopilotRunResponse,
   PatchCopilotPlanRequest,
   ResumeCopilotRunRequest,
+  WalletBalance,
 } from "@openpcb/contracts";
+
+/**
+ * Create-run request. Superset of the published `CreateCopilotRunRequest`:
+ * `designId` is OPTIONAL and `kind` allows `"chat"` for a design-less
+ * brainstorming run (the cloud resolves the workspace from the user's owned
+ * workspace, or `workspaceId` when provided).
+ */
+export interface CreateCopilotRunInput {
+  designId?: string;
+  workspaceId?: string;
+  kind: CopilotRunKind | "chat";
+  goal?: string | null;
+  modelTier?: CopilotModelTier;
+  approvePlan?: boolean;
+}
 
 export interface CopilotClientContext {
   /** Base URL of the cloud-copilot service, e.g. `http://localhost:3001`. */
@@ -62,7 +79,7 @@ async function request<T>(
 
 export function createRun(
   ctx: CopilotClientContext,
-  req: CreateCopilotRunRequest,
+  req: CreateCopilotRunInput,
 ): Promise<CreateCopilotRunResponse> {
   return request(ctx, "POST", "/v1/copilot/runs", req);
 }
@@ -72,6 +89,19 @@ export function getPlan(
   runId: string,
 ): Promise<CopilotPlanView> {
   return request(ctx, "GET", `/v1/copilot/runs/${runId}/plan`);
+}
+
+/** Read-only workspace wallet balance (remaining AI credits). Desktop surfaces
+ * this as a baseline before a run; live updates arrive via `copilot.usage`. */
+export function getWallet(
+  ctx: CopilotClientContext,
+  workspaceId: string,
+): Promise<WalletBalance> {
+  return request(
+    ctx,
+    "GET",
+    `/v1/copilot/workspaces/${encodeURIComponent(workspaceId)}/wallet`,
+  );
 }
 
 export function patchPlan(

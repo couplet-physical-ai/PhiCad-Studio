@@ -215,6 +215,11 @@ export interface RouteOptions {
   portfolio?: number;
   budgetMode?: "legacy" | "job" | null;
   jobBudget?: number | null;
+  jobBudgetPolicy?: "flat" | "scaled" | null;
+  wPerTarget?: number | null;
+  wMin?: number | null;
+  wMax?: number | null;
+  escapePrecheck?: boolean | null;
 }
 
 export interface Stackup {

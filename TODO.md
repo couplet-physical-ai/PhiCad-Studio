@@ -1,3 +1,30 @@
+# Cloud Copilot → local compiler agent (active 2026-07-08)
+
+> Separate effort from everything below. Full context/decisions:
+> `~/.claude/plans/act-as-expert-on-snug-nest.md`. Narrative: `HANDOFF.md`. State: `CURRENT_STATE.md` (top section).
+> Goal: local-first compiler copilot (LLM → IR → deterministic expand + ERC), no whole-design sync, cloud = tools + model gateway.
+
+## Now
+
+- [ ] **P1.3 `compile_circuit(IR)` AiTool** — Ajv-validate IR → resolve roles→componentIds (LibrarySDK) → `expandCircuit → lowerNetlist → applyCompiledPlan` → ERC gate + report → register in `openpcb-tool-registry.ts` + clarify-first/installed-only/schematic-only guards.
+
+## Done (all green: bun test + tsc -b)
+
+- [x] P0 resolver ranking fix (LDR-for-resistor) — tag-based category scoring in `tools/library-tools.ts` + regression tests. (Deviation: no new column — category == tags[0].)
+- [x] P1.1 IR + primitive block + deterministic expander (`compiler/{ir,units,blocks,expander}.ts`)
+- [x] P1.2a lowering `ResolvedNetlist → CompiledPlan` (`compiler/lowering.ts`)
+- [x] P1.2b live apply + apply-time pin resolution (`compiler/apply.ts`) — tested vs a fake DesignerSDK
+- [x] Atomic place+wire — rescoped: apply-time deferred resolution (provisional-index infeasible; place_part owns ref/pin ids)
+
+## Next
+
+- [ ] P1.3 (above) then live 5-LED smoke (OpenCode/DeepSeek) — real-designer fidelity (apply only fake-tested so far)
+- [ ] More primitive blocks (decoupling, pull-up/down, RC)
+- [ ] P2 data recipes + additive editing · P3 edit reconciliation · cloud stateless tools + model gateway · golden-IR/fixture/telemetry validation
+- [ ] (deprioritized) `get_design_state` completion-pressure read
+
+---
+
 # Release 1.0 — Production Hardening (active 2026-06-21)
 
 ## CoreLibrary Live Link Setup (active)

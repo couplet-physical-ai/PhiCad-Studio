@@ -105,14 +105,40 @@ interface NormalizedSearchPlan {
   normalized: Record<string, string | string[]>;
   searchQueries: string[];
   tags: string[];
+  /** Component tags a correct match for the detected family should carry (scoring boost). */
+  familyCategoryTags: string[];
+  /** Component tags that signal a wrong-category match for the detected family (scoring penalty). */
+  familyAvoidTags: string[];
   attributes: Record<string, string | string[] | number | boolean>;
   assumptions: string[];
 }
 
-const FAMILY_SYNONYMS: Array<{ family: string; tags: string[]; patterns: RegExp[] }> = [
+// `categoryTags` = tags a correct match should carry (soft boost); `avoidTags`
+// = tags that signal a WRONG category (soft penalty). Category here == tags[0]
+// (the library has no category column; see cloud-pack-builder `category:tags[0]`).
+// This is what stops a plain "resistor" query resolving to "LDR Photoresistor".
+const FAMILY_SYNONYMS: Array<{
+  family: string;
+  tags: string[];
+  patterns: RegExp[];
+  categoryTags?: string[];
+  avoidTags?: string[];
+}> = [
   { family: "led", tags: ["led"], patterns: [/\bleds?\b/i, /light[-\s]?emitting diode/i, /indicator/i] },
-  { family: "resistor", tags: [], patterns: [/\bresistors?\b/i] },
-  { family: "capacitor", tags: [], patterns: [/\bcapacitors?\b/i, /\bcaps?\b/i] },
+  {
+    family: "resistor",
+    tags: [],
+    patterns: [/\bresistors?\b/i],
+    categoryTags: ["passive"],
+    avoidTags: ["sensor", "photoresistor", "ldr", "thermistor", "varistor", "photodiode"],
+  },
+  {
+    family: "capacitor",
+    tags: [],
+    patterns: [/\bcapacitors?\b/i, /\bcaps?\b/i],
+    categoryTags: ["passive"],
+    avoidTags: ["sensor"],
+  },
   { family: "transistor", tags: ["transistor"], patterns: [/\btransistors?\b/i, /\bbjt\b/i] },
   { family: "diode", tags: ["diode"], patterns: [/\bdiodes?\b/i] },
   { family: "555 timer", tags: ["timer", "555", "ic"], patterns: [/\b555\b/i, /\bne555\b/i, /\btimers?\b/i] },
@@ -132,7 +158,10 @@ function tokenizeQuery(query: string): string[] {
     .filter((token, index, all) => token.length > 0 && all.indexOf(token) === index);
 }
 
-function detectFamily(query: string, reqs: Record<string, string | string[]>): { family: string; tags: string[] } | null {
+function detectFamily(
+  query: string,
+  reqs: Record<string, string | string[]>,
+): { family: string; tags: string[]; categoryTags: string[]; avoidTags: string[] } | null {
   const haystack = [query, typeof reqs.function === "string" ? reqs.function : "", ...(Array.isArray(reqs.tags) ? reqs.tags : [])].join(" ");
   for (const candidate of FAMILY_SYNONYMS) {
     if (candidate.patterns.some((pattern) => pattern.test(haystack))) {
@@ -141,7 +170,12 @@ function detectFamily(query: string, reqs: Record<string, string | string[]>): {
       if (/\bpnp\b/i.test(haystack)) tags.add("pnp");
       if (/\bnmos\b/i.test(haystack)) tags.add("nmos");
       if (/\bpmos\b/i.test(haystack)) tags.add("pmos");
-      return { family: candidate.family, tags: [...tags] };
+      return {
+        family: candidate.family,
+        tags: [...tags],
+        categoryTags: candidate.categoryTags ?? [],
+        avoidTags: candidate.avoidTags ?? [],
+      };
     }
   }
   return null;
@@ -183,6 +217,8 @@ function buildSearchPlan(input: LibrarySearchComponentsInput): NormalizedSearchP
     normalized,
     searchQueries: [...searchQueries],
     tags: [...tags],
+    familyCategoryTags: family?.categoryTags ?? [],
+    familyAvoidTags: family?.avoidTags ?? [],
     attributes,
     assumptions,
   };
@@ -215,6 +251,7 @@ function scoreComponent(
   },
   query: string,
   normalized: Record<string, string | string[]>,
+  familyHints?: { categoryTags: string[]; avoidTags: string[] },
 ): { score: number; reasons: string[] } {
   const reasons: string[] = [];
   let score = 0;
@@ -278,6 +315,17 @@ function scoreComponent(
       reasons.push(`matches ${matched} required tag(s)`);
     }
   }
+  if (familyHints) {
+    if (familyHints.categoryTags.some((t) => tags.has(t))) {
+      score += 2;
+      reasons.push("matches expected category");
+    }
+    const wrong = familyHints.avoidTags.filter((t) => tags.has(t));
+    if (wrong.length > 0) {
+      score -= 4;
+      reasons.push(`penalised: ${wrong.join(", ")} (wrong category)`);
+    }
+  }
   if (component.isBuiltin) score += 0.2;
   return { score, reasons };
 }
@@ -308,7 +356,10 @@ async function searchAndRankComponents(
       const queryForScore = isListAll ? "" : [plan.originalQuery, plan.rewrittenQuery, plan.tags.join(" ")].join(" ");
       const s = isListAll
         ? { score: 1 + (component.isBuiltin ? 0.2 : 0), reasons: ["listed (no query)"] }
-        : scoreComponent(component, queryForScore, plan.normalized);
+        : scoreComponent(component, queryForScore, plan.normalized, {
+            categoryTags: plan.familyCategoryTags,
+            avoidTags: plan.familyAvoidTags,
+          });
       return {
         componentId: component.id,
         name: component.name,
@@ -321,9 +372,33 @@ async function searchAndRankComponents(
       };
     })
     .filter((hit) => isListAll || hit.score > 0)
-    .sort((a, b) => (isListAll ? a.name.localeCompare(b.name) : b.score - a.score));
+    // Deterministic tie-break: score desc, then builtin/generic parts first, then
+    // name — replaces the old alphabetical DB order that let "LDR" beat "Resistor".
+    .sort((a, b) =>
+      isListAll
+        ? a.name.localeCompare(b.name)
+        : b.score - a.score ||
+          Number(b.isBuiltin) - Number(a.isBuiltin) ||
+          a.name.localeCompare(b.name),
+    );
   const { items, truncated } = truncateArray(scored, limit);
   return { plan, results: items, truncated };
+}
+
+/**
+ * Resolve a block-part role (e.g. "resistor", "led") to the best INSTALLED
+ * library component id, or `undefined` when nothing is installed. Backs the
+ * circuit compiler's `resolveRole` hook — reuses the same family-aware ranker as
+ * the search/BOM tools, so a plain "resistor" role never resolves to an LDR.
+ * Installed-parts-only: no import fallback, no substitution — `undefined` lets
+ * the compiler flag the missing role instead of placing a wrong part.
+ */
+export async function resolveRoleToComponentId(
+  library: LibrarySDK,
+  role: string,
+): Promise<string | undefined> {
+  const { results } = await searchAndRankComponents(library, { query: role }, 1);
+  return results[0]?.componentId;
 }
 
 function genericSuggestionsFor(

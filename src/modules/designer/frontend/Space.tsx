@@ -295,7 +295,7 @@ function DesignerSpaceInner({
   designId,
 }: ModuleSpaceProps): ReactElement {
   const { addToast } = useToast();
-  const { session, user, enabled: cloudEnabled } = useAuth();
+  const { session, user, tier, enabled: cloudEnabled } = useAuth();
   const projectSyncEnabled = useCloudPrefs((s) => s.projectSyncEnabled);
   // Per-feature cloud gates (dev-only by default — see @/feature-flags).
   const syncFeatureEnabled = useFeatureFlag("cloud.sync");
@@ -337,9 +337,13 @@ function DesignerSpaceInner({
     };
   }, [cloudEnabled, session]);
   // A valid login is enough (self-contained snapshot, stateless service) —
-  // project sync is NOT required.
+  // project sync is NOT required. Pro-tier gated (UX): cloud-auto-layout enforces
+  // tier=pro server-side; this hides the control for non-pro users.
   const autoLayoutEnabled =
-    cloudEnabled && Boolean(session) && autoLayoutFeatureEnabled;
+    cloudEnabled &&
+    Boolean(session) &&
+    tier === "pro" &&
+    autoLayoutFeatureEnabled;
   const { state, actions } = useDesignerWorkspace({
     backendURL,
     moduleId,

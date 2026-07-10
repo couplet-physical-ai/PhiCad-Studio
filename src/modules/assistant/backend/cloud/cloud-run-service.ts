@@ -111,53 +111,61 @@ export class CloudRunService {
 
     await this.options.contextResolver.refreshBindingHealth(chatId);
     const designId = this.boundDesignId(chatId);
-    if (!designId) {
-      throw new Error("Cloud Copilot needs a design bound to this chat.");
-    }
 
-    const designer = this.designer();
-    const link = await designer.getCloudLink(designId);
-    if (!link) {
-      throw new Error(
-        "This design is not linked to the cloud — link it (cloud sync) first.",
-      );
-    }
-    // Sync gate: the agent must read what the user sees.
-    let cloudRevision = link.lastSyncedRevision;
-    if (creds.apiUrl) {
-      const pushed = await designer.pushCloudSnapshot(designId, {
-        bearer: creds.bearer,
-        apiUrl: creds.apiUrl,
+    let created;
+    if (!designId) {
+      // Design-less brainstorming: a cloud `chat` run with no design context.
+      // The cloud resolves the workspace from the user's owned workspace; no
+      // sync / snapshot / plan-approval — it just streams the answer.
+      created = await this.api.createRun(cctx, {
+        kind: "chat",
+        goal: payload.goal,
       });
-      cloudRevision = pushed.revision;
-    }
-    // S8: board-snapshot push so the cloud layout tools can place/route. Best-
-    // effort — a schematic-only design (or flag off) just skips; the tools then
-    // honestly report "no board snapshot synced". revision must match the CLOUD
-    // design revision (the copilot staleness check compares against it).
-    if (isFeatureEnabled("cloud.autolayout")) {
-      try {
-        const build = await designer.buildBoardSnapshot(designId);
-        if (build && (build.snapshot.placements?.length ?? 0) > 0) {
-          await this.api.putBoardSnapshot(cctx, link.cloudDesignId, {
-            revision: cloudRevision,
-            snapshot: build.snapshot,
+    } else {
+      const designer = this.designer();
+      const link = await designer.getCloudLink(designId);
+      if (!link) {
+        throw new Error(
+          "This design is not linked to the cloud — link it (cloud sync) first.",
+        );
+      }
+      // Sync gate: the agent must read what the user sees.
+      let cloudRevision = link.lastSyncedRevision;
+      if (creds.apiUrl) {
+        const pushed = await designer.pushCloudSnapshot(designId, {
+          bearer: creds.bearer,
+          apiUrl: creds.apiUrl,
+        });
+        cloudRevision = pushed.revision;
+      }
+      // S8: board-snapshot push so the cloud layout tools can place/route. Best-
+      // effort — a schematic-only design (or flag off) just skips; the tools then
+      // honestly report "no board snapshot synced". revision must match the CLOUD
+      // design revision (the copilot staleness check compares against it).
+      if (isFeatureEnabled("cloud.autolayout")) {
+        try {
+          const build = await designer.buildBoardSnapshot(designId);
+          if (build && (build.snapshot.placements?.length ?? 0) > 0) {
+            await this.api.putBoardSnapshot(cctx, link.cloudDesignId, {
+              revision: cloudRevision,
+              snapshot: build.snapshot,
+            });
+          }
+        } catch (err) {
+          this.options.ctx.logger.warn("board-snapshot push failed", {
+            designId,
+            error: err instanceof Error ? err.message : String(err),
           });
         }
-      } catch (err) {
-        this.options.ctx.logger.warn("board-snapshot push failed", {
-          designId,
-          error: err instanceof Error ? err.message : String(err),
-        });
       }
-    }
 
-    const created = await this.api.createRun(cctx, {
-      designId: link.cloudDesignId,
-      kind: "agent",
-      goal: payload.goal,
-      approvePlan: true, // S7: the plan card renders/approves the parked plan
-    });
+      created = await this.api.createRun(cctx, {
+        designId: link.cloudDesignId,
+        kind: "agent",
+        goal: payload.goal,
+        approvePlan: true, // S7: the plan card renders/approves the parked plan
+      });
+    }
     const runId = created.runId;
 
     const emitAiEvent = (event: AiRunEvent): void => {
@@ -183,10 +191,12 @@ export class CloudRunService {
       if (mapped.kind === "ai") {
         const event = mapped.event;
         if (event.type === "run.message.delta") {
-          conversation.appendMessageContent(
-            assistantMessageId,
-            (event.data as { delta: string }).delta,
-          );
+          // Stream the token delta live: emitText emits a kind:"text" chunk the
+          // frontend renders via onChunkText (mirrors the local run-service path)
+          // AND appends to the conversation store. Deltas are pure text — skip the
+          // tool-event upsert + {_aiEvent} emit below.
+          emitText((event.data as { delta: string }).delta);
+          return;
         }
         // Persist cloud tool events (S11): ToolCard/SourceChips render from the
         // conversation store, which the local BYO path fills but cloud runs never
@@ -219,6 +229,8 @@ export class CloudRunService {
         case "copilot.proposal.created": {
           const cloudProposalId = String(f.data.id ?? "");
           if (!cloudProposalId || mirrored.has(cloudProposalId)) return;
+          // Design-less chat runs never emit proposals; nothing to mirror.
+          if (!designId) return;
           mirrored.add(cloudProposalId);
           await this.mirrorProposal(taskCtx, cctx, runId, {
             chatId,
