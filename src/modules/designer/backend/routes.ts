@@ -3,7 +3,11 @@ import type {
   ModuleRouterHandle,
 } from "../../../core/contracts/modules/backend-module";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { NotFoundError, ValidationError } from "../../../core/contracts/errors";
+import {
+  AppError,
+  NotFoundError,
+  ValidationError,
+} from "../../../core/contracts/errors";
 import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { buildExportBundle } from "./export";
 import {
@@ -113,6 +117,23 @@ async function parseJsonBody<T>(req: Request): Promise<T> {
   } catch {
     throw new ValidationError("Request body must be valid JSON");
   }
+}
+
+/** Cloud auto-layout proxy routes require a signed-in user (R0.4): reject
+ * before any upstream fetch instead of proxying unauthenticated. Apply routes
+ * are exempt — they never contact the service (bearer only feeds the optional
+ * cloud-sync mirror). */
+function requireCloudBearer(req: Request): string {
+  const bearer = req.headers.get("x-cloud-bearer");
+  if (!bearer) {
+    throw new AppError(
+      "Cloud sign-in required: x-cloud-bearer header missing",
+      401,
+      "Unauthorized",
+      "https://openpcb.dev/problems/unauthorized",
+    );
+  }
+  return bearer;
 }
 
 function parseCommentSurface(
@@ -2498,8 +2519,8 @@ export function registerRoutes(
   // the `cloud.autolayout` feature flag — the routes 404 in release builds.
   if (isFeatureEnabled("cloud.autolayout")) {
     router.post("/designs/:designId/autoroute", async ({ params, req }) => {
+      const bearer = requireCloudBearer(req);
       const designId = params.getOrThrow("designId");
-      const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
       type AutorouteRequestBody = {
         options?: RouteOptions;
         routableNetClassIds?: unknown;
@@ -2546,9 +2567,9 @@ export function registerRoutes(
     router.get(
       "/designs/:designId/autoroute/:jobId",
       async ({ params, req }) => {
+        const bearer = requireCloudBearer(req);
         params.getOrThrow("designId");
         const jobId = params.getOrThrow("jobId");
-        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
         const status = await getRouteStatus(jobId, bearer);
         return success(status);
       },
@@ -2557,9 +2578,9 @@ export function registerRoutes(
     router.post(
       "/designs/:designId/autoroute/:jobId/cancel",
       async ({ params, req }) => {
+        const bearer = requireCloudBearer(req);
         params.getOrThrow("designId");
         const jobId = params.getOrThrow("jobId");
-        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
         await cancelRoute(jobId, bearer);
         return success({ jobId, cancelRequested: true });
       },
@@ -2647,8 +2668,8 @@ export function registerRoutes(
   // `cloud.autolayout` feature flag — the routes 404 in release builds.
   if (isFeatureEnabled("cloud.autolayout")) {
     router.post("/designs/:designId/autoplace", async ({ params, req }) => {
+      const bearer = requireCloudBearer(req);
       const designId = params.getOrThrow("designId");
-      const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
       type AutoplaceRequestBody = {
         placeOptions?: PlaceOptions;
         routableNetClassIds?: unknown;
@@ -2684,9 +2705,9 @@ export function registerRoutes(
     router.get(
       "/designs/:designId/autoplace/:jobId",
       async ({ params, req }) => {
+        const bearer = requireCloudBearer(req);
         params.getOrThrow("designId");
         const jobId = params.getOrThrow("jobId");
-        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
         const status = await getPlaceStatus(jobId, bearer);
         return success(status);
       },
@@ -2695,9 +2716,9 @@ export function registerRoutes(
     router.post(
       "/designs/:designId/autoplace/:jobId/cancel",
       async ({ params, req }) => {
+        const bearer = requireCloudBearer(req);
         params.getOrThrow("designId");
         const jobId = params.getOrThrow("jobId");
-        const bearer = req.headers.get("x-cloud-bearer") ?? undefined;
         await cancelPlace(jobId, bearer);
         return success({ jobId, cancelRequested: true });
       },

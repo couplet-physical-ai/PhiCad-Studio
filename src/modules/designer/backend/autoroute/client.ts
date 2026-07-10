@@ -11,7 +11,7 @@ import type {
 } from "../../../../sdks/designer";
 import { autoLayoutBaseUrl as baseUrl } from "../autolayout/service-url";
 
-function authHeaders(bearer?: string): Record<string, string> {
+function authHeaders(bearer: string): Record<string, string> {
   return bearer ? { authorization: `Bearer ${bearer}` } : {};
 }
 
@@ -29,7 +29,7 @@ async function asError(res: Response, fallback: string): Promise<Error> {
 /** Submit a snapshot. Returns the job id + status/stream URLs + snapshot hash. */
 export async function submitRoute(
   snapshot: BoardSnapshot,
-  bearer?: string,
+  bearer: string,
 ): Promise<SubmitRouteResponse> {
   const res = await fetch(`${baseUrl()}/v1/route`, {
     method: "POST",
@@ -43,7 +43,7 @@ export async function submitRoute(
 /** Poll a job's status + (on completion) its RouteResultEnvelope. */
 export async function getRouteStatus(
   jobId: string,
-  bearer?: string,
+  bearer: string,
 ): Promise<RouteStatusResponse> {
   const res = await fetch(
     `${baseUrl()}/v1/route/${encodeURIComponent(jobId)}`,
@@ -56,7 +56,7 @@ export async function getRouteStatus(
 /** Request cooperative cancellation of a running job. */
 export async function cancelRoute(
   jobId: string,
-  bearer?: string,
+  bearer: string,
 ): Promise<void> {
   const res = await fetch(
     `${baseUrl()}/v1/route/${encodeURIComponent(jobId)}/cancel`,
