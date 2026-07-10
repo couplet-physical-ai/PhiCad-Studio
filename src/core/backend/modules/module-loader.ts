@@ -13,6 +13,7 @@ import { ModuleRouter } from "../router/module-router";
 import type { ModuleRouterRegistry } from "../router/module-registry";
 import { createModuleDb } from "../db/module-db-factory";
 import { createLogger } from "../logging/logger";
+import { MentionRegistry } from "../mentions";
 import { applyModuleMigrations } from "../migrations/module-migrator";
 import {
   isCoreBackendModuleDefinition,
@@ -177,6 +178,11 @@ export class ModuleRuntime implements ModuleRuntimeSnapshotProvider {
   }
 
   async bootstrap(): Promise<void> {
+    // Core-infra singleton the module system depends on (library/knowledge
+    // register mention providers in onActivate). Idempotent; initializing at
+    // the bootstrap choke-point makes every ModuleRuntime construction path
+    // safe — prod (runtime.ts also inits, belt-and-braces) and tests alike.
+    MentionRegistry.init();
     this.records.clear();
     this.loaded.clear();
 
