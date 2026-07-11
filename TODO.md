@@ -1,3 +1,30 @@
+# Route Tool Evolution (active 2026-07-11)
+
+> Plan (7 phases, UX-first): `~/.claude-personal/plans/act-as-expert-on-snoopy-sketch.md`.
+> Locked decisions: length tuning before bundles · walkaround-lite (no shove) · batch-per-session
+> commit · rbush only new dep · through-vias v1 · DRC hard-block+explain · match groups +
+> in-tool target · diff pairs by `_P/_N` suffix.
+
+## Done — P1 zero-config UX polish (green: bun test + vitest + tsc -b + e2e smoke)
+
+- [x] P1.1 finish-anywhere: Enter/End + double-click + context-menu Finish (`pcb/tools/route-interactions.ts`)
+- [x] P1.2 same-net copper finish (trace-interior click) + backend T-junction connectivity (`ratsnest.ts`)
+- [x] P1.3 Route HUD (`pcb/RouteHud.tsx` + `pcb/tools/route-hud-model.ts`): net · layer · width+source · via · live length · DRC · key hints
+- [x] P1.4 width precedence (`widthSource` netclass|preset|manual) + reset-to-netclass + Alt+W inline input (window.prompt removed)
+- [x] P1.5 keymap coherence (`pcb/tools/route-keymap.ts`); fixed dead `T`→F.Cu hotkey; H/P/T/M/R inert while routing
+- [x] P1.6 error surfacing: problem-detail toast (`pcb/dispatch-failure.ts`); sessions survive backend rejection
+- [x] P1.7 pad-shape connectivity behind `pcb.padShapeConnectivity` dev flag (AABB endpoint acceptance; graduate after bake)
+
+## Next
+
+- [ ] P2 commit engine: `pcb_commit_route` batch command (1 revision + 1 undo entry), rbush spatial index (snap + live-DRC broad-phase), DRC commit gate (hard-block + explain + override toggle), Shift = suppress all snap
+- [ ] P3 multi-layer fluency: thread via spans through `buildPcbViaForInsert`, V cycles enabled layers, layer-pair selector, `pcb.advancedVias` flag
+- [ ] P4 auto-finish + walkaround-lite in new `src/shared/pcb-routing/` (flags `pcb.autoFinish` / `pcb.walkaround`)
+- [ ] P5 length rules + HUD gauge + meander tuning · P6 bundle routing + diff pairs · P7 cloud corridor routing (optional)
+- Note: `library-facets.test.ts` core-catalog count failure is pre-existing (fails on clean tree, unrelated)
+
+---
+
 # Cloud Copilot → local compiler agent (active 2026-07-08)
 
 > Separate effort from everything below. Full context/decisions:

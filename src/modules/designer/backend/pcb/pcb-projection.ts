@@ -18,6 +18,7 @@ import {
 } from "./pcb-store";
 import { computeRatsnest } from "./ratsnest";
 import { findGroundNetId } from "./net-class-resolver";
+import { isFeatureEnabled } from "../../../../core/contracts/feature-flags/backend";
 
 type DbClient = BetterSQLite3Database<Record<string, unknown>>;
 
@@ -157,6 +158,7 @@ export function loadPcbProjection(params: {
     perNetClassAssignments: board.perNetClassAssignments,
     traces,
     vias,
+    padShapeTouch: isFeatureEnabled("pcb.padShapeConnectivity"),
     fill: {
       outline: board.outline,
       designRules: board.designRules,

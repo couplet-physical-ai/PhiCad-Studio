@@ -88,6 +88,11 @@ export const FEATURE_FLAGS = {
     description:
       "Cloud Copilot chat mode (agent runs on the cloud-copilot service; proposals mirrored locally)",
   },
+  "pcb.padShapeConnectivity": {
+    availability: "dev",
+    description:
+      "Ratsnest/DRC connectivity accepts trace endpoints anywhere inside a pad's copper AABB, not only within 1 µm of pad center — removes false opens on KiCad imports. Graduate to 'all' after a bake cycle (shifts DRC results on existing designs).",
+  },
   "dataset.capture": {
     availability: "prod",
     description:

@@ -130,11 +130,50 @@ describe("routeToolReducer", () => {
     expect(b.session.segmentMode).toBe("manhattan-90");
   });
 
-  test("set-width updates width", () => {
+  test("set-width updates width and its source", () => {
     const a = routeToolReducer(initialRouteToolState, startEvent);
-    const b = routeToolReducer(a, { kind: "set-width", widthMm: 0.5 });
+    if (a.kind !== "routing") throw new Error("expected routing");
+    // Width from the net class until the user overrides it.
+    expect(a.session.widthSource).toBe("netclass");
+    const b = routeToolReducer(a, {
+      kind: "set-width",
+      widthMm: 0.5,
+      source: "preset",
+    });
     if (b.kind !== "routing") throw new Error("expected routing");
     expect(b.session.widthMm).toBe(0.5);
+    expect(b.session.widthSource).toBe("preset");
+    const c = routeToolReducer(b, {
+      kind: "set-width",
+      widthMm: 0.42,
+      source: "manual",
+    });
+    if (c.kind !== "routing") throw new Error("expected routing");
+    expect(c.session.widthSource).toBe("manual");
+  });
+
+  test("rebase preserves width source unless overridden", () => {
+    const a = routeToolReducer(initialRouteToolState, startEvent);
+    const b = routeToolReducer(a, {
+      kind: "set-width",
+      widthMm: 0.5,
+      source: "manual",
+    });
+    const c = routeToolReducer(b, {
+      kind: "rebase",
+      anchorNm: { x: 10, y: 10 },
+      widthMm: 0.5,
+    });
+    if (c.kind !== "routing") throw new Error("expected routing");
+    expect(c.session.widthSource).toBe("manual");
+    const d = routeToolReducer(c, {
+      kind: "rebase",
+      anchorNm: { x: 20, y: 20 },
+      widthMm: 0.25,
+      widthSource: "netclass",
+    });
+    if (d.kind !== "routing") throw new Error("expected routing");
+    expect(d.session.widthSource).toBe("netclass");
   });
 
   test("cancel returns to idle", () => {

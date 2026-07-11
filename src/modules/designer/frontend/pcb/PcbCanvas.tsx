@@ -138,8 +138,10 @@ import {
   sessionAnchors,
   type PointNm,
   type RouteSession,
+  type RouteWidthSource,
 } from "./tools/route-tool-state";
 import { buildPreviewPath } from "./tools/route-preview-geometry";
+import { resolveRouteClickAction } from "./tools/route-interactions";
 import {
   initialMeasureToolState,
   measureToolReducer,
@@ -162,7 +164,10 @@ import {
 import {
   PCB_LAYER_COLORS,
   PCB_LAYER_PRESETS,
+  PCB_TRACE_COLORS,
 } from "../../../../shared/frontend/canvas/layers";
+import { RouteHud } from "./RouteHud";
+import { buildRouteHudModel } from "./tools/route-hud-model";
 import { FlipHorizontal2 } from "lucide-react";
 import { openContextMenu } from "../../../../shared/frontend/context-menu";
 import type { ContextMenuGroup } from "../../../../shared/frontend/context-menu";
@@ -464,6 +469,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     routeToolReducer,
     initialRouteToolState,
   );
+  // Inline custom-width editor in the route HUD (Alt+W / click the width).
+  const [widthInputOpen, setWidthInputOpen] = useState(false);
   const [measureState, dispatchMeasure] = useReducer(
     measureToolReducer,
     initialMeasureToolState,
@@ -1157,6 +1164,25 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   );
 
   /**
+   * Commit the session through `finalAnchorNm` and end it on success. A path
+   * with < 2 distinct points keeps the session alive (nothing to commit), as
+   * does a backend rejection (workspace.error is set) so the user can adjust
+   * and retry instead of losing the route.
+   */
+  const finishRoute = useCallback(
+    async (session: RouteSession, finalAnchorNm: PointNm): Promise<void> => {
+      try {
+        const created = await commitTrace(session, finalAnchorNm);
+        if (created !== null) dispatchRoute({ kind: "cancel" });
+      } catch {
+        // commitTrace surfaced the failure via workspace error state; the
+        // session intentionally survives.
+      }
+    },
+    [commitTrace],
+  );
+
+  /**
    * Smart Via: commit segments-so-far on the current layer, drop a via at the
    * cursor, then rebase the session onto the target layer. Mirrors the `+`/`-`
    * keyboard shortcut behaviour. The trace commit is a no-op when the path has
@@ -1352,13 +1378,13 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
    * width. KiCad/Altium "future segments only" semantics.
    */
   const setSessionWidth = useCallback(
-    async (widthMm: number) => {
+    async (widthMm: number, source: RouteWidthSource) => {
       if (routeState.kind !== "routing") return;
       const session = routeState.session;
       if (Math.abs(session.widthMm - widthMm) < 1e-9) return;
       const hasCommittedSegments = session.waypointsNm.length > 0;
       if (!hasCommittedSegments) {
-        dispatchRoute({ kind: "set-width", widthMm });
+        dispatchRoute({ kind: "set-width", widthMm, source });
         return;
       }
       // Commit segments-so-far at OLD width using the last waypoint as the
@@ -1374,10 +1400,22 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         kind: "rebase",
         anchorNm: lastWaypoint,
         widthMm,
+        widthSource: source,
       });
     },
     [commitTrace, routeState],
   );
+
+  /** Re-resolve the session width from its net class (HUD badge reset). */
+  const resetSessionWidthToNetClass = useCallback(() => {
+    if (routeState.kind !== "routing") return;
+    const board = workspace.projection?.board;
+    const sessionClass = board?.netClasses.find(
+      (nc) => nc.id === routeState.session.netClassId,
+    );
+    if (!sessionClass) return;
+    void setSessionWidth(sessionClass.traceWidthMm, "netclass");
+  }, [routeState, setSessionWidth, workspace.projection?.board]);
 
   const splitAndRerouteTrace = useCallback(
     async (traceHit: TraceHit) => {
@@ -1500,8 +1538,36 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         // Route mode takes the click first.
         if (toolMode === "route") {
           if (!defaultNetClass) return;
-          const anchor = resolveRouteAnchor(cursor);
-          if (routeState.kind === "idle") {
+          let anchor = resolveRouteAnchor(cursor);
+          // Same-net copper finish: when the click is neither on a pad nor a
+          // snapped copper object, look for a same-layer trace under the
+          // cursor so a route can terminate in a T-junction on its own net.
+          if (
+            routeState.kind === "routing" &&
+            !anchor.onPad &&
+            anchor.netId === null
+          ) {
+            const traceHit = hitTrace(
+              tracesRef.current,
+              cursor,
+              routeState.session.layer,
+            );
+            if (traceHit && traceHit.trace.netId !== null) {
+              anchor = {
+                pointMm: traceHit.closestMm,
+                netId: traceHit.trace.netId,
+                onPad: false,
+              };
+            }
+          }
+          const action = resolveRouteClickAction({
+            routing: routeState.kind === "routing",
+            anchor: { onPad: anchor.onPad, netId: anchor.netId },
+            sessionNetId:
+              routeState.kind === "routing" ? routeState.session.netId : null,
+            clickCount: event.nativeEvent?.nativeEvent.detail ?? 1,
+          });
+          if (action === "start" && routeState.kind === "idle") {
             // An explicit per-net assignment overrides the default class (and
             // its trace width) for the new route session.
             const board = workspace.projection?.board;
@@ -1541,15 +1607,12 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             }
             return;
           }
-          // Routing — finishing on a pad commits and exits the session;
-          // clicking empty space adds an intermediate waypoint.
+          // Routing — same-net pad click and double-click finish (dangling
+          // ends allowed); anything else adds an intermediate waypoint.
+          if (routeState.kind !== "routing") return;
           const session = routeState.session;
-          if (anchor.onPad) {
-            void commitTrace(session, pointMmToNm(anchor.pointMm))
-              .then(() => {
-                dispatchRoute({ kind: "cancel" });
-              })
-              .catch(() => undefined);
+          if (action === "finish") {
+            void finishRoute(session, pointMmToNm(anchor.pointMm));
             return;
           }
           dispatchRoute({
@@ -2118,6 +2181,19 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 },
               },
               {
+                kind: "action",
+                id: "finish-route",
+                label: "Finish route",
+                shortcut: "Enter",
+                onSelect: () => {
+                  const anchor = resolveRouteAnchor(cursor);
+                  void finishRoute(
+                    routeState.session,
+                    pointMmToNm(anchor.pointMm),
+                  );
+                },
+              },
+              {
                 kind: "separator",
                 id: "sep-via",
               },
@@ -2439,6 +2515,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     defaultNetClass,
     dragSession,
     eventToMm,
+    finishRoute,
     marquee,
     padToNet,
     previewActive,
@@ -2526,14 +2603,23 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       // placement when in Select mode without an active route session).
       // Group rotate is unsupported in v1 — R only rotates when exactly
       // one placement is selected.
-      if (event.key === "h" || event.key === "H") {
+      // Tool toggles are inert during an active route session — routing owns
+      // the keyboard (Esc is the one cancel gesture). `T` deliberately falls
+      // through so the layer-switch hotkey below can drive the smart via.
+      if (
+        (event.key === "h" || event.key === "H") &&
+        routeState.kind !== "routing"
+      ) {
         event.preventDefault();
         setToolMode((prev) => (prev === "hole" ? "select" : "hole"));
         dispatchRoute({ kind: "cancel" });
         dispatchMeasure({ kind: "clear" });
         return;
       }
-      if (event.key === "p" || event.key === "P") {
+      if (
+        (event.key === "p" || event.key === "P") &&
+        routeState.kind !== "routing"
+      ) {
         // Skip if a placement is selected — P is also "pad" shortcut, but
         // currently no conflicting binding exists for select mode.
         event.preventDefault();
@@ -2542,14 +2628,20 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         dispatchMeasure({ kind: "clear" });
         return;
       }
-      if (event.key === "t" || event.key === "T") {
+      if (
+        (event.key === "t" || event.key === "T") &&
+        routeState.kind !== "routing"
+      ) {
         event.preventDefault();
         setToolMode((prev) => (prev === "text" ? "select" : "text"));
         dispatchRoute({ kind: "cancel" });
         dispatchMeasure({ kind: "clear" });
         return;
       }
-      if (event.key === "m" || event.key === "M") {
+      if (
+        (event.key === "m" || event.key === "M") &&
+        routeState.kind !== "routing"
+      ) {
         event.preventDefault();
         setToolMode((prev) => {
           if (prev === "measure") {
@@ -2568,6 +2660,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         return;
       }
       if (event.key === "r" || event.key === "R") {
+        // Inert while routing — Esc cancels, R must not destroy the session.
+        if (routeState.kind === "routing") return;
         const sole =
           selection.placementIds.size === 1
             ? [...selection.placementIds][0]
@@ -2608,25 +2702,27 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           dispatchRoute({ kind: "step-back" });
           return;
         }
+        // Enter/End — finish anywhere: commit the ghost through the snapped
+        // cursor (or just the committed segments when the cursor is unknown),
+        // leaving a dangling end. KiCad "Finish Route" parity.
+        if (event.key === "Enter" || event.key === "End") {
+          event.preventDefault();
+          const finalNm = cursorMm
+            ? pointMmToNm(resolveRouteAnchor(cursorMm).pointMm)
+            : (session.waypointsNm[session.waypointsNm.length - 1] ?? null);
+          if (finalNm) void finishRoute(session, finalNm);
+          return;
+        }
         if (event.key === "w" || event.key === "W") {
           event.preventDefault();
           if (event.altKey) {
-            // Alt+W → custom width prompt.
-            const input = window.prompt(
-              "Trace width (mm):",
-              session.widthMm.toString(),
-            );
-            if (input !== null) {
-              const next = Number(input);
-              if (Number.isFinite(next) && next > 0) {
-                void setSessionWidth(next);
-              }
-            }
+            // Alt+W → inline custom-width editor in the route HUD.
+            setWidthInputOpen(true);
             return;
           }
           // W cycles forward through presets, Shift+W cycles backward.
           const next = cycleWidth(session.widthMm, event.shiftKey ? -1 : 1);
-          void setSessionWidth(next);
+          void setSessionWidth(next, "preset");
           return;
         }
         if (event.key === "/") {
@@ -2903,6 +2999,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     rotatePlacePreview,
     flipPlacePreview,
     flipManyPlacePreview,
+    finishRoute,
+    resolveRouteAnchor,
     routeState,
     selection,
     setActiveCopperLayer,
@@ -3007,6 +3105,43 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       designRules: workspace.projection.board.designRules,
     });
   }, [padToNet, routePreview, routeState, workspace.projection]);
+
+  // Route HUD view-model (net, layer, width + source, via sizes, length, DRC).
+  const routeHudModel = useMemo(() => {
+    if (routeState.kind !== "routing") return null;
+    const session = routeState.session;
+    const board = workspace.projection?.board;
+    const netClass =
+      board?.netClasses.find((nc) => nc.id === session.netClassId) ?? null;
+    const netName = session.netId
+      ? (workspace.projection?.netNames[session.netId] ?? null)
+      : null;
+    return buildRouteHudModel({
+      session,
+      previewPathNm: routePreview?.pointsNm ?? sessionAnchors(session),
+      netName,
+      netClass,
+      drcConflictCount: drcViolations.length,
+    });
+  }, [drcViolations.length, routePreview, routeState, workspace.projection]);
+
+  // The inline width editor is meaningless without a session.
+  useEffect(() => {
+    if (routeState.kind !== "routing") setWidthInputOpen(false);
+  }, [routeState.kind]);
+
+  // Transient surface for backend command rejections — previously these were
+  // swallowed silently. A fresh error re-shows and re-arms the auto-dismiss.
+  const [workspaceErrorVisible, setWorkspaceErrorVisible] = useState(false);
+  useEffect(() => {
+    if (!workspace.error) {
+      setWorkspaceErrorVisible(false);
+      return;
+    }
+    setWorkspaceErrorVisible(true);
+    const timer = setTimeout(() => setWorkspaceErrorVisible(false), 6000);
+    return () => clearTimeout(timer);
+  }, [workspace.error]);
 
   // Emit the live in-progress-trace conflict count only while routing; `null`
   // when idle so the status bar falls back to the full-board batch count.
@@ -3446,7 +3581,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   : (defaultNetClass?.traceWidthMm ?? 0.25)
               }
               tracePresets={tracePresets}
-              onPickWidth={(w) => void setSessionWidth(w)}
+              onPickWidth={(w) => void setSessionWidth(w, "preset")}
               viaDiameterMm={
                 routeState.kind === "routing" &&
                 routeState.session.viaDiameterMmOverride !== undefined
@@ -3576,6 +3711,39 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   appliedHasIssues={false}
                   onAccept={() => void acceptPreview()}
                   onReject={rejectPreview}
+                />
+              ) : null}
+              {workspaceErrorVisible && workspace.error ? (
+                <div
+                  role="alert"
+                  className="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-[11px] text-red-700 shadow-lg dark:border-red-900 dark:bg-red-950/90 dark:text-red-300"
+                >
+                  {workspace.error}
+                  <button
+                    type="button"
+                    aria-label="Dismiss error"
+                    className="rounded px-1 hover:bg-red-100 dark:hover:bg-red-900"
+                    onClick={() => setWorkspaceErrorVisible(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ) : null}
+              {toolMode === "route" && !previewActive ? (
+                <RouteHud
+                  model={routeHudModel}
+                  layerColor={
+                    PCB_TRACE_COLORS[
+                      routeState.kind === "routing"
+                        ? routeState.session.layer
+                        : activeCopperLayer
+                    ]
+                  }
+                  widthInputOpen={widthInputOpen}
+                  onOpenWidthInput={() => setWidthInputOpen(true)}
+                  onWidthInputSubmit={(w) => void setSessionWidth(w, "manual")}
+                  onWidthInputClose={() => setWidthInputOpen(false)}
+                  onResetWidthToNetClass={resetSessionWidthToNetClass}
                 />
               ) : null}
               {placeAppliedNote ? (

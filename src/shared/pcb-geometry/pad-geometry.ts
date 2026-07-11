@@ -65,3 +65,30 @@ export function placementPads(
 ): readonly FootprintRenderSourcePad[] {
   return placement.footprint.preview?.pads ?? [];
 }
+
+/**
+ * World-space axis-aligned half extents of a pad's bounding box. Cardinal
+ * placement rotations swap width/height exactly; arbitrary (KiCad-import)
+ * angles get the rotated-rect AABB, which slightly overestimates at the
+ * corners. Mirroring never changes extents. Matches the AABB approximation of
+ * the frontend pad hit-test (pcb-hit.ts hitPad). Used by pad-shape
+ * connectivity (trace endpoint inside pad ⇒ connected).
+ */
+export function padWorldHalfExtentsMm(
+  placement: PcbPlacedPart,
+  pad: Pick<FootprintRenderSourcePad, "widthMm" | "heightMm">,
+): { x: number; y: number } {
+  const hw = pad.widthMm / 2;
+  const hh = pad.heightMm / 2;
+  const norm = ((placement.rotationDeg % 360) + 360) % 360;
+  if (norm % 90 !== 0) {
+    const r = (norm * Math.PI) / 180;
+    const c = Math.abs(Math.cos(r));
+    const s = Math.abs(Math.sin(r));
+    return { x: hw * c + hh * s, y: hw * s + hh * c };
+  }
+  const swap =
+    normalizeRotationDeg(placement.rotationDeg) === 90 ||
+    normalizeRotationDeg(placement.rotationDeg) === 270;
+  return { x: swap ? hh : hw, y: swap ? hw : hh };
+}

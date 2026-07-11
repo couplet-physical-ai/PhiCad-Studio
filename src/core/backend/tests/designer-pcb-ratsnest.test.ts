@@ -10,6 +10,7 @@ import type {
   PcbBoardOutline,
   PcbNetClass,
   PcbPlacedPart,
+  PcbTrace,
 } from "../../../sdks/designer";
 import type { FootprintRenderSourcePad } from "../../../shared/rendering";
 
@@ -128,6 +129,151 @@ describe("computeRatsnest", () => {
     expect(segments).toHaveLength(3);
     expect(segments.filter((s) => s.netId === "vcc")).toHaveLength(1);
     expect(segments.filter((s) => s.netId === "gnd")).toHaveLength(2);
+  });
+});
+
+// --- trace connectivity (T-junctions) ---------------------------------------
+
+function sigTrace(
+  id: string,
+  pointsNm: Array<{ x: number; y: number }>,
+  layer: "F.Cu" | "B.Cu" = "F.Cu",
+): PcbTrace {
+  return {
+    id,
+    netId: "n1",
+    netClassId: "default",
+    layer,
+    widthMm: 0.25,
+    pointsNm,
+    segmentMode: "manhattan-90",
+  };
+}
+
+describe("computeRatsnest trace T-junctions", () => {
+  // Pads A(0,0), B(10,0), C(5,5). Trace t1 spans A→B along y=0; trace t2 runs
+  // from C down to (5,0), landing on t1's INTERIOR — a T-junction.
+  const correlation: NetPadCorrelation = {
+    netPads: new Map([
+      [
+        "n1",
+        [
+          { placementId: "A", padNumber: "1", worldMm: { x: 0, y: 0 } },
+          { placementId: "B", padNumber: "1", worldMm: { x: 10, y: 0 } },
+          { placementId: "C", padNumber: "1", worldMm: { x: 5, y: 5 } },
+        ],
+      ],
+    ]),
+    warnings: [],
+  };
+  const t1 = sigTrace("t1", [
+    { x: 0, y: 0 },
+    { x: 10_000_000, y: 0 },
+  ]);
+
+  test("endpoint on same-layer trace interior joins the nets' copper", () => {
+    const t2 = sigTrace("t2", [
+      { x: 5_000_000, y: 5_000_000 },
+      { x: 5_000_000, y: 0 },
+    ]);
+    const segments = computeRatsnest(correlation, {
+      ...ctx,
+      traces: [t1, t2],
+    });
+    // A—B routed by t1, C tied in through the T-junction → fully routed.
+    expect(segments.filter((s) => s.netId === "n1")).toHaveLength(0);
+  });
+
+  test("interior touch on a DIFFERENT layer does not connect", () => {
+    const t2 = sigTrace(
+      "t2",
+      [
+        { x: 5_000_000, y: 5_000_000 },
+        { x: 5_000_000, y: 0 },
+      ],
+      "B.Cu",
+    );
+    const segments = computeRatsnest(correlation, {
+      ...ctx,
+      traces: [t1, t2],
+    });
+    // C's trace floats on B.Cu — one airwire must remain for C.
+    expect(segments.filter((s) => s.netId === "n1")).toHaveLength(1);
+  });
+
+  test("endpoint near but beyond the touch tolerance stays open", () => {
+    const t2 = sigTrace("t2", [
+      { x: 5_000_000, y: 5_000_000 },
+      { x: 5_000_000, y: 5_000 }, // 5 µm short of t1 — outside the 1 µm eps
+    ]);
+    const segments = computeRatsnest(correlation, {
+      ...ctx,
+      traces: [t1, t2],
+    });
+    expect(segments.filter((s) => s.netId === "n1")).toHaveLength(1);
+  });
+});
+
+// --- pad-shape connectivity (flag pcb.padShapeConnectivity) ------------------
+
+describe("computeRatsnest pad-shape endpoint acceptance", () => {
+  // Two pads 10 mm apart; pad A is 2×1 mm. The trace ends 0.8 mm right of A's
+  // center — inside the pad copper, but far beyond the 1 µm center tolerance.
+  const correlation: NetPadCorrelation = {
+    netPads: new Map([
+      [
+        "n1",
+        [
+          {
+            placementId: "A",
+            padNumber: "1",
+            worldMm: { x: 0, y: 0 },
+            halfExtentsMm: { x: 1, y: 0.5 },
+          },
+          {
+            placementId: "B",
+            padNumber: "1",
+            worldMm: { x: 10, y: 0 },
+            halfExtentsMm: { x: 1, y: 0.5 },
+          },
+        ],
+      ],
+    ]),
+    warnings: [],
+  };
+  const edgeTrace = sigTrace("t1", [
+    { x: 800_000, y: 0 }, // 0.8 mm — inside pad A (halfExtents.x = 1 mm)
+    { x: 10_000_000, y: 0 }, // exactly on pad B center
+  ]);
+
+  test("flag ON: endpoint inside the pad AABB counts as connected", () => {
+    const segments = computeRatsnest(correlation, {
+      ...ctx,
+      traces: [edgeTrace],
+      padShapeTouch: true,
+    });
+    expect(segments.filter((s) => s.netId === "n1")).toHaveLength(0);
+  });
+
+  test("flag OFF: only the 1 µm center touch connects (airwire remains)", () => {
+    const segments = computeRatsnest(correlation, {
+      ...ctx,
+      traces: [edgeTrace],
+    });
+    expect(segments.filter((s) => s.netId === "n1")).toHaveLength(1);
+  });
+
+  test("flag ON: endpoint outside the pad AABB stays open", () => {
+    const outside = sigTrace("t1", [
+      { x: 1_200_000, y: 0 }, // 1.2 mm — beyond halfExtents.x + eps
+      { x: 10_000_000, y: 0 },
+    ]);
+    const segments = computeRatsnest(correlation, {
+      ...ctx,
+      traces: [outside],
+      padShapeTouch: true,
+    });
+    expect(segments.filter((s) => s.netId === "n1")).toHaveLength(1);
   });
 });
 

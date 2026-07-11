@@ -23,6 +23,14 @@ export function nextPosture(current: RoutePosture): RoutePosture {
 }
 
 /**
+ * Where the session's active trace width came from. Drives the width badge in
+ * the route HUD ("0.3 mm — netclass 'power'" vs "manual") so the user always
+ * knows why a width is in effect — the #1 reported confusion in KiCad's
+ * router. Precedence: manual > preset > netclass.
+ */
+export type RouteWidthSource = "netclass" | "preset" | "manual";
+
+/**
  * RouteSession captures the state of an in-progress trace placement.
  *
  *  - `anchorNm`: the last committed vertex of the route (start = first pad/click).
@@ -45,6 +53,7 @@ export interface RouteSession {
   netId: string | null;
   netClassId: string;
   widthMm: number;
+  widthSource: RouteWidthSource;
   posture: RoutePosture;
   viaDiameterMmOverride?: number;
   viaDrillMmOverride?: number;
@@ -70,6 +79,8 @@ export type RouteToolEvent =
       netId: string | null;
       netClassId: string;
       widthMm: number;
+      /** Defaults to `"netclass"` — the width came from the session's class. */
+      widthSource?: RouteWidthSource;
       posture?: RoutePosture;
       /** Pad the route originated from (`"placementId|padNumber"`), if any. */
       startPadId?: string;
@@ -84,7 +95,7 @@ export type RouteToolEvent =
    */
   | { kind: "rebase-layer"; anchorNm: PointNm; layer: PcbCopperLayerId }
   | { kind: "set-mode"; mode: PcbTraceSegmentMode }
-  | { kind: "set-width"; widthMm: number }
+  | { kind: "set-width"; widthMm: number; source: RouteWidthSource }
   | { kind: "set-posture"; posture: RoutePosture }
   | { kind: "cycle-posture" }
   | {
@@ -105,6 +116,8 @@ export type RouteToolEvent =
       kind: "rebase";
       anchorNm: PointNm;
       widthMm: number;
+      /** Absent = keep the session's current width source. */
+      widthSource?: RouteWidthSource;
     }
   | { kind: "step-back" }
   | { kind: "cancel" };
@@ -127,6 +140,7 @@ export function routeToolReducer(
           netId: event.netId,
           netClassId: event.netClassId,
           widthMm: event.widthMm,
+          widthSource: event.widthSource ?? "netclass",
           posture: event.posture ?? "auto",
           ...(event.startPadId !== undefined
             ? { startPadId: event.startPadId }
@@ -173,7 +187,11 @@ export function routeToolReducer(
     case "set-width":
       return {
         kind: "routing",
-        session: { ...state.session, widthMm: event.widthMm },
+        session: {
+          ...state.session,
+          widthMm: event.widthMm,
+          widthSource: event.source,
+        },
       };
     case "set-via-diameter":
       return {
@@ -212,6 +230,7 @@ export function routeToolReducer(
           anchorNm: event.anchorNm,
           waypointsNm: [],
           widthMm: event.widthMm,
+          widthSource: event.widthSource ?? state.session.widthSource,
         },
       };
     case "step-back": {

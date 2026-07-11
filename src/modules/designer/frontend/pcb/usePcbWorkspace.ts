@@ -12,6 +12,7 @@ import type {
   PcbTraceSegmentMode,
 } from "../../../../sdks";
 import { createDesignerApi } from "../api";
+import { dispatchFailureMessage } from "./dispatch-failure";
 import { fallbackBoardBoundsFromProjection } from "../three-d/primitives/geometry-utils";
 import { useDesignerHighlight } from "../useDesignerHighlight";
 import { syncLayerPresetFromVisible, usePcbViewStore } from "./pcb-view-store";
@@ -480,7 +481,8 @@ export function usePcbWorkspace(params: {
           type: "pcb_add_trace",
           ...input,
         });
-        if (!result.ok) throw new Error("Add trace failed");
+        if (!result.ok)
+          throw new Error(dispatchFailureMessage("Trace", result));
         await refresh();
         await refreshHistory();
         return result.createdEntityId;
@@ -519,7 +521,7 @@ export function usePcbWorkspace(params: {
           type: "pcb_add_via",
           ...input,
         });
-        if (!result.ok) throw new Error("Add via failed");
+        if (!result.ok) throw new Error(dispatchFailureMessage("Via", result));
         await refresh();
         await refreshHistory();
         return result.createdEntityId;
@@ -556,7 +558,8 @@ export function usePcbWorkspace(params: {
           trace: input.trace,
           via: input.via,
         });
-        if (!result.ok) throw new Error("Add trace/via failed");
+        if (!result.ok)
+          throw new Error(dispatchFailureMessage("Trace/via", result));
         await refresh();
         await refreshHistory();
         return result.createdEntityId;

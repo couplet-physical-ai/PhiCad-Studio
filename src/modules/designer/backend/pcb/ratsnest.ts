@@ -17,6 +17,7 @@ import type {
 } from "../../../../sdks/designer";
 import type { NetPadCorrelation, PadRef } from "./net-pad-correlation";
 import { GND_NAMES, resolveNetClassId } from "./net-class-resolver";
+import { pointToPolylineDistance } from "../../../../shared/pcb-geometry/pcb-trace-geometry";
 import {
   buildCopperFillPadGroups,
   resolveCopperFillClearanceMm,
@@ -78,6 +79,13 @@ export function groupPadsByConnectivity(
   vias: PcbVia[],
   /** Pad-key groups (`${placementId}|${padNumber}`) joined by a same-net pour. */
   pourGroups?: string[][],
+  opts?: {
+    /**
+     * Accept a trace endpoint anywhere inside the pad's copper AABB, not only
+     * within 1 µm of pad center. Flag `pcb.padShapeConnectivity`.
+     */
+    padShapeTouch?: boolean;
+  },
 ): PadRef[][] {
   const uf = new UnionFind();
   for (const pad of pads) uf.add(padKey(pad));
@@ -105,6 +113,7 @@ export function groupPadsByConnectivity(
   }
 
   // Union pads ↔ trace endpoints
+  const padShapeTouch = opts?.padShapeTouch === true;
   for (const trace of netTraces) {
     const traceKey = `trace:${trace.id}`;
     uf.add(traceKey);
@@ -117,6 +126,19 @@ export function groupPadsByConnectivity(
       for (const pad of pads) {
         if (pointsTouch(pad.worldMm, epMm)) {
           uf.union(traceKey, padKey(pad));
+          continue;
+        }
+        // Pad-shape connectivity: an endpoint inside the pad copper connects
+        // even when it misses the exact center (KiCad imports commonly end
+        // traces at pad edges).
+        if (padShapeTouch && pad.halfExtentsMm) {
+          const inX =
+            Math.abs(epMm.x - pad.worldMm.x) <=
+            pad.halfExtentsMm.x + TOUCH_EPS_MM;
+          const inY =
+            Math.abs(epMm.y - pad.worldMm.y) <=
+            pad.halfExtentsMm.y + TOUCH_EPS_MM;
+          if (inX && inY) uf.union(traceKey, padKey(pad));
         }
       }
     }
@@ -136,6 +158,33 @@ export function groupPadsByConnectivity(
         for (const b of tjEnds) {
           if (!b) continue;
           if (a.x === b.x && a.y === b.y) uf.union(tiKey, tjKey);
+        }
+      }
+    }
+  }
+
+  // T-junctions: an endpoint landing on the INTERIOR of a same-layer sibling
+  // trace connects them (the route tool's same-net-copper finish produces
+  // exactly this geometry). Same layer only — cross-layer copper connects
+  // through vias, never by overlap. Endpoint-to-endpoint touch above keeps
+  // its historical layer-agnostic behavior.
+  for (const ta of netTraces) {
+    if (ta.pointsNm.length < 2) continue;
+    const taEnds = [ta.pointsNm[0]!, ta.pointsNm[ta.pointsNm.length - 1]!];
+    for (const tb of netTraces) {
+      if (tb.id === ta.id || tb.layer !== ta.layer) continue;
+      if (tb.pointsNm.length < 2) continue;
+      const tbMm: PcbPointMm[] = tb.pointsNm.map((p) => ({
+        x: p.x / 1_000_000,
+        y: p.y / 1_000_000,
+      }));
+      for (const ep of taEnds) {
+        const epMm: PcbPointMm = {
+          x: ep.x / 1_000_000,
+          y: ep.y / 1_000_000,
+        };
+        if (pointToPolylineDistance(epMm, tbMm).distance <= TOUCH_EPS_MM) {
+          uf.union(`trace:${ta.id}`, `trace:${tb.id}`);
         }
       }
     }
@@ -282,6 +331,8 @@ export interface ComputeRatsnestContext {
   vias?: ReadonlyArray<PcbVia>;
   /** Copper-pour inputs; when present, same-net pours satisfy connectivity. */
   fill?: RatsnestFillContext;
+  /** Pad-shape (AABB) endpoint acceptance — flag `pcb.padShapeConnectivity`. */
+  padShapeTouch?: boolean;
 }
 
 /**
@@ -353,6 +404,7 @@ export function computeRatsnest(
       traces,
       vias,
       pourGroupsByNet?.get(netId),
+      { padShapeTouch: ctx.padShapeTouch === true },
     );
     result.push(...mstForRepresentatives(netId, classId, components));
   }

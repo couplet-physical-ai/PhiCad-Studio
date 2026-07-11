@@ -9,8 +9,9 @@ import type { DrcViolationDraft } from "../types";
  * routed. One warning per net (NET_SHORT_CIRCUIT for diff-net overlap is
  * emitted by the clearance check).
  *
- * Limitation (shared with the ratsnest): footprint pads only; free pads and
- * mid-trace T-junctions are not yet part of the connectivity graph.
+ * Same-layer mid-trace T-junctions ARE part of the graph (endpoint on a
+ * sibling trace's interior unions them). Limitation (shared with the
+ * ratsnest): footprint pads only; free pads are not yet included.
  */
 export function checkConnectivity(ctx: DrcContext): DrcViolationDraft[] {
   const out: DrcViolationDraft[] = [];
