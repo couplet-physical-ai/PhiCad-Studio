@@ -87,6 +87,44 @@ function capLine(kind: LineKind, p: PointNm): { kind: LineKind; c: number } {
   }
 }
 
+/**
+ * Stable fan-out direction for lane assignment: the dominant octant of
+ * `from → toward`. Axis wins when one component is at least twice the other
+ * (large hysteresis regions), diagonal otherwise — small cursor jitter never
+ * flips the left normal, so lanes keep their sides while dragging.
+ */
+export function fanOutDir(fromNm: PointNm, towardNm: PointNm): PointNm {
+  const dx = towardNm.x - fromNm.x;
+  const dy = towardNm.y - fromNm.y;
+  if (dx === 0 && dy === 0) return { x: 1, y: 0 };
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  if (ax >= 2 * ay) return { x: Math.sign(dx), y: 0 };
+  if (ay >= 2 * ax) return { x: 0, y: Math.sign(dy) };
+  return { x: Math.sign(dx), y: Math.sign(dy) };
+}
+
+/** Euclidean proximity predicate (integer-safe; no sqrt). */
+export function tooCloseNm(
+  a: PointNm,
+  b: PointNm,
+  thresholdNm: number,
+): boolean {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  return dx * dx + dy * dy < thresholdNm * thresholdNm;
+}
+
+/** Drop consecutive duplicate points (commit-path hygiene). */
+export function dedupeConsecutive(points: readonly PointNm[]): PointNm[] {
+  const out: PointNm[] = [];
+  for (const p of points) {
+    const prev = out[out.length - 1];
+    if (!prev || prev.x !== p.x || prev.y !== p.y) out.push(p);
+  }
+  return out;
+}
+
 export interface OffsetLaneResult {
   pointsNm: PointNm[];
   /** False when the offset degenerates (U-turn, miter blow-up, reversal). */

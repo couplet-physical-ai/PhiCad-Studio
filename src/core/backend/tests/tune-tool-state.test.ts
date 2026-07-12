@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   initialTuneToolState,
+  slicePolylineByArcLengthNm,
   tuneToolReducer,
   TUNE_DEFAULT_AMPLITUDE_NM,
   TUNE_DEFAULT_SPACING_NM,
@@ -97,6 +98,52 @@ describe("tuneToolReducer", () => {
     expect(
       tuneToolReducer(initialTuneToolState, { kind: "freeze-span" }),
     ).toEqual(initialTuneToolState);
+  });
+});
+
+describe("slicePolylineByArcLengthNm", () => {
+  const L = [
+    { x: 0, y: 0 },
+    { x: 10_000_000, y: 0 },
+    { x: 10_000_000, y: 10_000_000 },
+  ];
+
+  test("interpolates window endpoints onto their segments", () => {
+    expect(slicePolylineByArcLengthNm(L, 2_000_000, 14_000_000)).toEqual([
+      { x: 2_000_000, y: 0 },
+      { x: 10_000_000, y: 0 },
+      { x: 10_000_000, y: 4_000_000 },
+    ]);
+  });
+
+  test("reversed and clamped inputs normalize", () => {
+    expect(slicePolylineByArcLengthNm(L, 14_000_000, 2_000_000)).toEqual(
+      slicePolylineByArcLengthNm(L, 2_000_000, 14_000_000),
+    );
+    // Past-the-end clamps to the last vertex.
+    expect(
+      slicePolylineByArcLengthNm(L, 15_000_000, 99_000_000),
+    ).toEqual([
+      { x: 10_000_000, y: 5_000_000 },
+      { x: 10_000_000, y: 10_000_000 },
+    ]);
+  });
+
+  test("collapsed window and degenerate polylines return []", () => {
+    expect(slicePolylineByArcLengthNm(L, 5_000_000, 5_000_000)).toEqual([]);
+    expect(slicePolylineByArcLengthNm([], 0, 1)).toEqual([]);
+    expect(slicePolylineByArcLengthNm([{ x: 0, y: 0 }], 0, 1)).toEqual([]);
+  });
+
+  test("diagonal segments slice on the diagonal", () => {
+    const D = [
+      { x: 0, y: 0 },
+      { x: 10_000_000, y: 10_000_000 },
+    ];
+    const lenNm = Math.sqrt(2) * 10_000_000;
+    const mid = slicePolylineByArcLengthNm(D, lenNm / 2, lenNm);
+    expect(mid[0]).toEqual({ x: 5_000_000, y: 5_000_000 });
+    expect(mid[mid.length - 1]).toEqual({ x: 10_000_000, y: 10_000_000 });
   });
 });
 

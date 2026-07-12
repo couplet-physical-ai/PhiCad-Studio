@@ -74,6 +74,49 @@ export function distanceAlongPolylineNm(
   return along;
 }
 
+/**
+ * Sub-polyline between two arc-length positions (nm) — the painted tune
+ * span. Endpoints are interpolated onto their containing segments (rounded
+ * to integer nm); a collapsed window returns [].
+ */
+export function slicePolylineByArcLengthNm(
+  polyline: readonly PointNm[],
+  startNm: number,
+  endNm: number,
+): PointNm[] {
+  if (polyline.length < 2) return [];
+  const lo = Math.max(0, Math.min(startNm, endNm));
+  const hi = Math.max(startNm, endNm);
+  if (hi <= lo) return [];
+  const out: PointNm[] = [];
+  const push = (p: PointNm): void => {
+    const prev = out[out.length - 1];
+    if (!prev || prev.x !== p.x || prev.y !== p.y) out.push(p);
+  };
+  let walked = 0;
+  for (let i = 1; i < polyline.length; i += 1) {
+    const a = polyline[i - 1]!;
+    const b = polyline[i]!;
+    const len = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+    if (len === 0) continue;
+    const segStart = walked;
+    walked += len;
+    if (walked < lo) continue;
+    if (segStart > hi) break;
+    const t0 = Math.max(0, (lo - segStart) / len);
+    const t1 = Math.min(1, (hi - segStart) / len);
+    push({
+      x: Math.round(a.x + (b.x - a.x) * t0),
+      y: Math.round(a.y + (b.y - a.y) * t0),
+    });
+    push({
+      x: Math.round(a.x + (b.x - a.x) * t1),
+      y: Math.round(a.y + (b.y - a.y) * t1),
+    });
+  }
+  return out.length >= 2 ? out : [];
+}
+
 export const TUNE_DEFAULT_AMPLITUDE_NM = 2_000_000;
 export const TUNE_DEFAULT_SPACING_NM = 1_000_000;
 const AMPLITUDE_MIN_NM = 200_000;

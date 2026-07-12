@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   assignLaneOffsets,
   buildBundleLanes,
+  dedupeConsecutive,
+  fanOutDir,
   offsetPolylineNm,
+  tooCloseNm,
 } from "../../../shared/pcb-routing/bundle-geometry";
 import {
   polylineLength,
@@ -106,6 +109,56 @@ describe("assignLaneOffsets", () => {
       pitchNm: 1 * MM,
     });
     expect(offsets).toEqual([-500_000, 500_000]);
+  });
+});
+
+describe("fanOutDir", () => {
+  test("dominant axis wins at ≥2:1, diagonal between", () => {
+    const from = p(0, 0);
+    expect(fanOutDir(from, p(10, 4))).toEqual({ x: 1, y: 0 });
+    expect(fanOutDir(from, p(-10, 4))).toEqual({ x: -1, y: 0 });
+    expect(fanOutDir(from, p(4, 10))).toEqual({ x: 0, y: 1 });
+    expect(fanOutDir(from, p(10, 6))).toEqual({ x: 1, y: 1 });
+    expect(fanOutDir(from, p(-6, -10))).toEqual({ x: -1, y: -1 });
+  });
+
+  test("stable under cursor jitter inside an octant", () => {
+    // 1 µm wiggles around a mostly-horizontal drag never flip the direction,
+    // so lane ranking (left-normal projection) cannot reshuffle mid-drag.
+    const from = p(0, 0);
+    const base = fanOutDir(from, p(10, 3));
+    for (const [jx, jy] of [
+      [1_000, 0],
+      [-1_000, 1_000],
+      [0, -1_000],
+      [1_000, 1_000],
+    ] as const) {
+      expect(
+        fanOutDir(from, { x: 10 * MM + jx, y: 3 * MM + jy }),
+      ).toEqual(base);
+    }
+  });
+
+  test("zero vector falls back to +x", () => {
+    expect(fanOutDir(p(1, 1), p(1, 1))).toEqual({ x: 1, y: 0 });
+  });
+});
+
+describe("tooCloseNm", () => {
+  test("strict Euclidean threshold", () => {
+    expect(tooCloseNm(p(0, 0), p(1, 0), 1 * MM)).toBe(false); // exactly at
+    expect(tooCloseNm(p(0, 0), { x: MM - 1, y: 0 }, 1 * MM)).toBe(true);
+    expect(tooCloseNm(p(0, 0), p(1, 1), 1 * MM)).toBe(false); // √2 mm away
+    expect(tooCloseNm(p(0, 0), p(1, 1), 2 * MM)).toBe(true);
+  });
+});
+
+describe("dedupeConsecutive", () => {
+  test("drops consecutive duplicates only", () => {
+    expect(
+      dedupeConsecutive([p(0, 0), p(0, 0), p(1, 0), p(1, 0), p(0, 0)]),
+    ).toEqual([p(0, 0), p(1, 0), p(0, 0)]);
+    expect(dedupeConsecutive([])).toEqual([]);
   });
 });
 

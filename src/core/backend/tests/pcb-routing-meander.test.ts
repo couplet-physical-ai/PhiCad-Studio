@@ -109,7 +109,7 @@ describe("generateMeander", () => {
     expect(short.achievedExtraNm).toBeLessThan(50 * MM);
   });
 
-  test("multi-segment baseline meanders each axis leg; diagonals pass through", () => {
+  test("multi-segment baseline meanders across axis and diagonal legs", () => {
     const baseline = [p(0, 0), p(10, 0), p(14, 4), p(14, 14)];
     const result = generateMeander(
       input({
@@ -125,9 +125,58 @@ describe("generateMeander", () => {
       polylineLength(result.pointsNm) - polylineLength(baseline),
       6,
     );
-    // The diagonal leg's endpoints survive untouched.
+    // Segment boundary vertices survive untouched (U's never cross them).
     expect(result.pointsNm).toContainEqual(p(10, 0));
     expect(result.pointsNm).toContainEqual(p(14, 4));
+  });
+
+  test("diagonal-only baseline gets integer-exact 45-valid U's", () => {
+    const baseline = [p(0, 0), p(14, 14)];
+    const result = generateMeander(
+      input({
+        baselinePointsNm: baseline,
+        spanStartNm: 0,
+        spanEndNm: polylineLength(baseline),
+        mode: "manhattan-45",
+        targetExtraNm: 6 * MM,
+      }),
+    );
+    expect(result.status).toBe("ok");
+    expect(validatePath(result.pointsNm, "manhattan-45")).toBeNull();
+    // Every vertex stays exact integer nm (lattice-frame construction).
+    for (const pt of result.pointsNm) {
+      expect(Number.isInteger(pt.x)).toBe(true);
+      expect(Number.isInteger(pt.y)).toBe(true);
+    }
+    expect(result.achievedExtraNm).toBeCloseTo(
+      polylineLength(result.pointsNm) - polylineLength(baseline),
+      6,
+    );
+    // Within one pitch-quantum of the target.
+    expect(Math.abs(result.achievedExtraNm - 6 * MM)).toBeLessThanOrEqual(
+      1 * MM + 4,
+    );
+    expect(result.pointsNm[0]).toEqual(p(0, 0));
+    expect(result.pointsNm[result.pointsNm.length - 1]).toEqual(p(14, 14));
+  });
+
+  test("fully fenced span reports blocked, not span-too-small", () => {
+    // Keep-outs hug the baseline on BOTH sides — every U position exists but
+    // none can clear even at the amplitude floor.
+    const obstacles: ObstacleRectNm[] = [
+      { minX: -1 * MM, minY: 100_000, maxX: 21 * MM, maxY: 5 * MM, id: "up" },
+      {
+        minX: -1 * MM,
+        minY: -5 * MM,
+        maxX: 21 * MM,
+        maxY: -100_000,
+        id: "down",
+      },
+    ];
+    const result = generateMeander(input({ obstacles }));
+    expect(result.status).toBe("blocked");
+    expect(result.pointsNm).toEqual(STRAIGHT_20MM);
+    expect(result.achievedExtraNm).toBe(0);
   });
 
   test("deterministic across repeated runs", () => {
@@ -136,9 +185,12 @@ describe("generateMeander", () => {
     expect(two).toEqual(one);
   });
 
-  test("zero target returns the baseline as ok", () => {
-    const result = generateMeander(input({ targetExtraNm: 0 }));
-    expect(result.achievedExtraNm).toBe(0);
-    expect(result.status).toBe("span-too-small");
+  test("zero/negative target reports target-met with the baseline", () => {
+    for (const targetExtraNm of [0, -3 * MM]) {
+      const result = generateMeander(input({ targetExtraNm }));
+      expect(result.achievedExtraNm).toBe(0);
+      expect(result.status).toBe("target-met");
+      expect(result.pointsNm).toEqual(STRAIGHT_20MM);
+    }
   });
 });

@@ -1038,6 +1038,23 @@ function SelectionHandle({ x, y }: { x: number; y: number }): ReactElement {
   );
 }
 
+/** Amber ring over a collected bundle pad — in-scene collection feedback. */
+function BundlePadMarker({ x, y }: { x: number; y: number }): ReactElement {
+  return (
+    <mesh position={[x, y, 0]} renderOrder={RENDER_ORDER.SELECTION + 1}>
+      <ringGeometry args={[0.45, 0.6, 24]} />
+      <meshBasicMaterial
+        color="#f59e0b"
+        transparent
+        opacity={0.9}
+        depthTest={false}
+        depthWrite={false}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
 function SelectionOutlineMaterial(): ReactElement {
   const { theme } = useCanvasTheme();
   return (
@@ -1183,10 +1200,27 @@ interface PcbSceneProps {
    */
   tunePreview?: AutoroutePreviewTrace | null;
   /**
-   * Bundle-routing ghost lanes — the live N-lane preview while the user
-   * routes the shared centerline. Committed-look, like routePreview.
+   * Painted tune span — a translucent halo over the swept stretch of the
+   * tuned trace, visible even when no serpentine proposal exists.
    */
-  bundlePreview?: AutoroutePreviewTrace[] | null;
+  tuneSpanPreview?: AutoroutePreviewTrace | null;
+  /**
+   * Bundle-routing ghost lanes — the live N-lane preview while the user
+   * routes the shared centerline. `ok` lanes render committed-look;
+   * `degraded` lanes (offset couldn't be built for the current cursor —
+   * stale last-good geometry shown instead) render amber so they never
+   * blink out mid-drag. Both batched into one LineSegments2 each.
+   */
+  bundlePreview?: {
+    layer: PcbCopperLayerId;
+    widthMm: number;
+    okPolylinesNm: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>;
+    degradedPolylinesNm: ReadonlyArray<
+      ReadonlyArray<{ x: number; y: number }>
+    >;
+  } | null;
+  /** Collected bundle pads (mm) — amber rings mark them in-scene. */
+  bundlePadsMm?: ReadonlyArray<{ id: string; x: number; y: number }> | null;
   /**
    * Uncommitted vias of the active route session, rendered by ViaLayer
    * alongside real vias (ids are `pending:`-namespaced; excluded from pour
@@ -1262,7 +1296,9 @@ export function PcbScene({
   routePendingPreview = null,
   autoFinishPreview = null,
   tunePreview = null,
+  tuneSpanPreview = null,
   bundlePreview = null,
+  bundlePadsMm = null,
   routePendingVias = null,
   previewBasePlacements = null,
   previewFromMarkers = null,
@@ -1579,6 +1615,16 @@ export function PcbScene({
           opacity={0.45}
         />
       ) : null}
+      {tuneSpanPreview ? (
+        <TracePreviewLayer
+          pointsNm={tuneSpanPreview.pointsNm}
+          layer={tuneSpanPreview.layer}
+          widthMm={tuneSpanPreview.widthMm}
+          mirror={mirror}
+          opacity={0.35}
+          colorOverride="#38bdf8"
+        />
+      ) : null}
       {tunePreview ? (
         <TracePreviewLayer
           pointsNm={tunePreview.pointsNm}
@@ -1588,15 +1634,24 @@ export function PcbScene({
           opacity={0.6}
         />
       ) : null}
-      {bundlePreview?.map((t, i) => (
+      {bundlePreview && bundlePreview.okPolylinesNm.length > 0 ? (
         <TracePreviewLayer
-          key={`bundle-preview-${i}`}
-          pointsNm={t.pointsNm}
-          layer={t.layer}
-          widthMm={t.widthMm}
+          polylinesNm={bundlePreview.okPolylinesNm}
+          layer={bundlePreview.layer}
+          widthMm={bundlePreview.widthMm}
           mirror={mirror}
         />
-      ))}
+      ) : null}
+      {bundlePreview && bundlePreview.degradedPolylinesNm.length > 0 ? (
+        <TracePreviewLayer
+          polylinesNm={bundlePreview.degradedPolylinesNm}
+          layer={bundlePreview.layer}
+          widthMm={bundlePreview.widthMm}
+          mirror={mirror}
+          colorOverride="#f59e0b"
+          opacity={0.7}
+        />
+      ) : null}
       <group scale={[sceneScaleX, 1, 1]}>
         <FitBoardOnMount
           outline={projection.board.outline}
@@ -1862,6 +1917,9 @@ export function PcbScene({
             excludePadIds={routeGuide.excludePadIds}
           />
         ) : null}
+        {bundlePadsMm?.map((pad) => (
+          <BundlePadMarker key={pad.id} x={pad.x} y={pad.y} />
+        ))}
         {(alignmentGuides.length > 0 || alignmentSpacing.length > 0) &&
         isPcbLayerVisible(visibleLayers, "Metadata") ? (
           <AlignmentGuideLayer

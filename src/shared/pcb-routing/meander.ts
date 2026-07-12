@@ -6,13 +6,16 @@ import type { ObstacleRectNm, PointNm, RouteMode } from "./types";
  * Serpentine (meander) generator for length tuning — KiCad pns_meander model
  * with turtle-built U shapes, no arcs.
  *
- * v1 scope:
- * - U's are placed only on AXIS-ALIGNED baseline segments (the dominant case;
- *   diagonal 45° segments pass through untouched).
- * - Mode validity is per-segment (validate45/90Path check segments, not
- *   corners): square U's are valid in both modes; 45-mode additionally gets
- *   chamfered corners (diagonal cuts).
- * - Deterministic: fixed shrink ladder, integer-nm geometry, no randomness.
+ * Geometry model: each baseline segment defines a LATTICE FRAME (u, n) of
+ * integer step vectors — u along the segment, n perpendicular. Vertices are
+ * `a + u·k + n·m` with integer k, m, so coordinates stay exact integer nm on
+ * BOTH axis segments (|u| = 1 nm) and 45° diagonal segments (|u| = √2 nm;
+ * pitch/amplitude are quantized to step units). On a diagonal frame the U
+ * legs land on the two diagonal families and the chamfers become axis
+ * segments — every emitted segment is manhattan-45-valid per construction.
+ * 90-mode traces contain no diagonal segments, so their path is unchanged.
+ *
+ * Deterministic: fixed shrink ladder, integer-nm geometry, no randomness.
  */
 export interface MeanderInput {
   /** Trace geometry at tune start (integer nm). */
@@ -38,7 +41,16 @@ export interface MeanderResult {
   pointsNm: PointNm[];
   /** Numerically-exact extra length of pointsNm vs the baseline (nm). */
   achievedExtraNm: number;
-  status: "ok" | "too-short" | "span-too-small";
+  status:
+    | "ok"
+    /** Placed everything possible but the span can't reach the target. */
+    | "too-short"
+    /** No U fits between span start and end (span shorter than one pitch). */
+    | "span-too-small"
+    /** Net already at/over target — nothing to add. */
+    | "target-met"
+    /** U positions existed but every one was obstacle-blocked. */
+    | "blocked";
 }
 
 /** Shrink ladder tried per U until it clears the obstacle field. */
@@ -71,23 +83,24 @@ function polylineBlocked(
 }
 
 /**
- * One U between baseline offsets [t0, t0+pitch] on an axis segment.
- * `dir` is the unit axis direction, `normal` the (alternating) unit normal.
- * 45-mode chamfers the four corners with cut c = min(A/2, pitch/4) (floored);
- * 90-mode emits the plain square U. Returns interior vertices only (the
- * baseline entry/exit points are added by the caller).
+ * One U between lattice offsets [0, pitch] of the frame anchored at `origin`.
+ * `u`/`n` are the frame's integer step vectors (axis or diagonal), pitch and
+ * amplitude are in STEP UNITS. 45-mode chamfers the four corners with cut
+ * c = min(A/2, pitch/4) (floored) — on an axis frame the chamfers are
+ * diagonal segments, on a diagonal frame they are axis segments; both valid.
+ * 90-mode (axis frames only) emits the plain square U.
  */
 function buildU(
   origin: PointNm,
-  dir: PointNm,
-  normal: PointNm,
+  u: PointNm,
+  n: PointNm,
   pitch: number,
   amplitude: number,
   mode: RouteMode,
 ): PointNm[] {
-  const at = (t: number, s: number): PointNm => ({
-    x: origin.x + dir.x * t + normal.x * s,
-    y: origin.y + dir.y * t + normal.y * s,
+  const at = (k: number, m: number): PointNm => ({
+    x: origin.x + u.x * k + n.x * m,
+    y: origin.y + u.y * k + n.y * m,
   });
   if (mode === "manhattan-45") {
     const c = Math.min(Math.floor(amplitude / 2), Math.floor(pitch / 4));
@@ -112,95 +125,111 @@ function buildU(
 
 /**
  * Generate a serpentine over the requested span. Walks the baseline; each
- * axis-aligned segment overlapping the span is packed with alternating-side
- * U's until `targetExtraNm` is met. The final U's amplitude is trimmed by
- * integer binary search so the achieved extra lands on target. U's that
- * cannot clear the obstacle field even at `minAmplitudeNm` are skipped
- * (straight run) and the shortfall is reported via `status`/`achievedExtraNm`.
+ * segment with a lattice frame (axis always; diagonal in 45-mode) overlapping
+ * the span is packed with alternating-side U's until `targetExtraNm` is met.
+ * The final U's amplitude is trimmed by integer binary search so the achieved
+ * extra lands on target. U's that cannot clear the obstacle field even at
+ * `minAmplitudeNm` are skipped (straight run) and the shortfall is reported
+ * via `status`/`achievedExtraNm`.
  */
 export function generateMeander(input: MeanderInput): MeanderResult {
   const base = input.baselinePointsNm;
   const baseLen = pathLen(base);
+  if (input.targetExtraNm <= 0) {
+    return {
+      pointsNm: [...base],
+      achievedExtraNm: 0,
+      status: "target-met",
+    };
+  }
   const spanStart = Math.max(0, Math.min(input.spanStartNm, input.spanEndNm));
   const spanEnd = Math.min(baseLen, Math.max(input.spanStartNm, input.spanEndNm));
-  const pitch = Math.max(2, Math.round(input.spacingNm));
-  const maxAmp = Math.max(2, Math.round(input.amplitudeNm));
-  const minAmp = Math.max(2, Math.min(Math.round(input.minAmplitudeNm), maxAmp));
+  const pitchNm = Math.max(2, Math.round(input.spacingNm));
 
   const out: PointNm[] = [base[0]!];
   let walked = 0;
-  let remaining = Math.max(0, input.targetExtraNm);
+  let remaining = input.targetExtraNm;
   let side = 1;
   let placedAny = false;
-
-  const extraOf = (u: readonly PointNm[]): number => pathLen(u) - pitch;
+  let hadWindow = false;
 
   for (let i = 1; i < base.length; i += 1) {
     const a = base[i - 1]!;
     const b = base[i]!;
     const len = segLen(a, b);
-    const axis = a.x === b.x || a.y === b.y;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const axis = dx === 0 || dy === 0;
+    const diagonal = !axis && Math.abs(dx) === Math.abs(dy);
+    const frameOk = axis || (diagonal && input.mode === "manhattan-45");
     const overlapStart = Math.max(spanStart, walked);
     const overlapEnd = Math.min(spanEnd, walked + len);
-    if (!axis || remaining <= 0 || overlapEnd - overlapStart < pitch) {
+    if (!frameOk || remaining <= 0 || overlapEnd - overlapStart < pitchNm) {
       out.push(b);
       walked += len;
       continue;
     }
-    const dir: PointNm = {
-      x: Math.sign(b.x - a.x),
-      y: Math.sign(b.y - a.y),
-    };
-    const normalBase: PointNm = { x: -dir.y, y: dir.x };
-    let t = Math.round(overlapStart - walked);
-    const tMax = Math.round(overlapEnd - walked);
+    // Lattice frame: unit step 1 nm on axis segments, √2 nm on diagonals.
+    const u: PointNm = { x: Math.sign(dx), y: Math.sign(dy) };
+    const nBase: PointNm = { x: -u.y, y: u.x };
+    const stepLen = axis ? 1 : Math.SQRT2;
+    const latticeLen = axis ? len : Math.abs(dx);
+    const pitch = Math.max(2, Math.round(pitchNm / stepLen));
+    const maxAmp = Math.max(2, Math.round(input.amplitudeNm / stepLen));
+    const minAmp = Math.max(
+      2,
+      Math.min(Math.round(input.minAmplitudeNm / stepLen), maxAmp),
+    );
+    const extraOf = (pts: readonly PointNm[]): number =>
+      pathLen(pts) - pitch * stepLen;
+
+    let t = Math.round((overlapStart - walked) / stepLen);
+    const tMax = Math.min(
+      latticeLen,
+      Math.round((overlapEnd - walked) / stepLen),
+    );
+    if (t + pitch <= tMax) hadWindow = true;
     while (t + pitch <= tMax && remaining > 0) {
       const origin: PointNm = {
-        x: a.x + dir.x * t,
-        y: a.y + dir.y * t,
+        x: a.x + u.x * t,
+        y: a.y + u.y * t,
       };
-      const normal: PointNm = {
-        x: normalBase.x * side,
-        y: normalBase.y * side,
-      };
+      const n: PointNm = { x: nBase.x * side, y: nBase.y * side };
       // Amplitude for this U: full, unless the remaining target needs less —
       // then binary-search the amplitude whose extra hits the remainder.
       let amp = maxAmp;
-      if (extraOf(buildU(origin, dir, normal, pitch, amp, input.mode)) >
-          remaining) {
+      if (extraOf(buildU(origin, u, n, pitch, amp, input.mode)) > remaining) {
         let lo = minAmp;
         let hi = maxAmp;
         while (lo < hi) {
           const mid = Math.floor((lo + hi) / 2);
-          const extra = extraOf(
-            buildU(origin, dir, normal, pitch, mid, input.mode),
-          );
+          const extra = extraOf(buildU(origin, u, n, pitch, mid, input.mode));
           if (extra < remaining) lo = mid + 1;
           else hi = mid;
         }
         amp = lo;
       }
       // Obstacle shrink ladder; skip the U entirely when even the floor hits.
-      let u: PointNm[] | null = null;
+      let uPts: PointNm[] | null = null;
       for (const factor of SHRINK_STEPS) {
         const tryAmp = Math.max(minAmp, Math.floor(amp * factor));
-        const candidate = buildU(origin, dir, normal, pitch, tryAmp, input.mode);
+        const candidate = buildU(origin, u, n, pitch, tryAmp, input.mode);
         if (!polylineBlocked(candidate, input.obstacles)) {
-          u = candidate;
+          uPts = candidate;
           break;
         }
         if (tryAmp === minAmp) break;
       }
-      if (u) {
+      if (uPts) {
         // Drop the U's entry vertex when it coincides with our current end.
         const last = out[out.length - 1]!;
-        const first = u[0]!;
+        const first = uPts[0]!;
         if (last.x === first.x && last.y === first.y) {
-          out.push(...u.slice(1));
+          out.push(...uPts.slice(1));
         } else {
-          out.push(...u);
+          out.push(...uPts);
         }
-        remaining -= extraOf(u);
+        remaining -= extraOf(uPts);
         placedAny = true;
         side = -side;
       }
@@ -228,11 +257,11 @@ export function generateMeander(input: MeanderInput): MeanderResult {
     return {
       pointsNm: [...base],
       achievedExtraNm: 0,
-      status: "span-too-small",
+      status: hadWindow ? "blocked" : "span-too-small",
     };
   }
   // Quantization slack: one pitch-worth of extra is the placement quantum.
-  const quantum = Math.max(4, pitch);
+  const quantum = Math.max(4, pitchNm);
   return {
     pointsNm: deduped,
     achievedExtraNm: achieved,

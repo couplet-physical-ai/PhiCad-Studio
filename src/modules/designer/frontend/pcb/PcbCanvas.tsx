@@ -177,6 +177,7 @@ import { nearestRatsnestPad } from "./tools/route-target";
 import {
   distanceAlongPolylineNm,
   initialTuneToolState,
+  slicePolylineByArcLengthNm,
   tuneToolReducer,
 } from "./tools/tune-tool-state";
 import { buildTuneHudModel } from "./tools/tune-hud-model";
@@ -192,6 +193,9 @@ import { BundleHud, type BundleHudModel } from "./BundleHud";
 import {
   assignLaneOffsets,
   buildBundleLanes,
+  dedupeConsecutive,
+  fanOutDir,
+  tooCloseNm,
 } from "../../../../shared/pcb-routing/bundle-geometry";
 import {
   padWorldPositionMm,
@@ -418,8 +422,13 @@ function MeasureHintStrip({ active }: { active: boolean }): ReactElement {
 
 export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   const gridEnabled = props.gridVisible ?? false;
-  const snap = (v: number) => snapMm(v, gridEnabled);
-  const snapPoint = (p: PcbPointMm) => snapPointMm(p, gridEnabled);
+  // Stable identities — several per-pointer-move memos (bundlePreview, …)
+  // list these as deps; plain arrows would invalidate them on EVERY render.
+  const snap = useCallback((v: number) => snapMm(v, gridEnabled), [gridEnabled]);
+  const snapPoint = useCallback(
+    (p: PcbPointMm) => snapPointMm(p, gridEnabled),
+    [gridEnabled],
+  );
 
   const workspace = usePcbWorkspace({
     backendURL: props.backendURL,
@@ -533,12 +542,19 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     initialTuneToolState,
   );
   const [tuneTargetInputOpen, setTuneTargetInputOpen] = useState(false);
+  // Trace under the cursor while the Tune tool is idle — pick affordance.
+  const [tuneHoverTraceId, setTuneHoverTraceId] = useState<string | null>(
+    null,
+  );
   // Bundle-routing session (pcb.bundleRouting) + commit-block reason.
   const [bundleState, dispatchBundle] = useReducer(
     bundleToolReducer,
     initialBundleToolState,
   );
   const [bundleBlocked, setBundleBlocked] = useState<string | null>(null);
+  // Last valid geometry per bundle pad — degraded lanes render this (amber)
+  // instead of blinking out when the cursor makes an offset degenerate.
+  const bundleLastGoodRef = useRef<Map<string, PointNm[]>>(new Map());
   const [measureShowDeltas, setMeasureShowDeltas] = useState(false);
   const [focusedLayer, setFocusedLayer] = useState<PcbCopperLayerId | null>(
     null,
@@ -1454,7 +1470,11 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         designRules: projection.board.designRules,
       });
       // Broad-phase: copper within the source→target corridor + headroom.
-      // This box also bounds how far the A* corridor can grow.
+      // This box also bounds how far the A* corridor can grow. Copper beyond
+      // it is invisible to the search (the corridor can outgrow the box when
+      // edge obstacles extend it), so a proposal can theoretically cross
+      // unqueried copper — accepted: the accept path re-runs the full DRC
+      // gate before committing, so it fails visible, never silent.
       const corridorPadMm = 5;
       const box = {
         minX: Math.min(sourceMm.x, target.centerMm.x) - corridorPadMm,
@@ -1555,6 +1575,26 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   }, [autoFinishNotice]);
 
   // ---- Length-Tune tool (pcb.lengthTuning) ----------------------------
+
+  /** Trace under the cursor on any VISIBLE copper layer, active first —
+   * the Tune pick adopts the trace's own layer, so cross-layer clicks work. */
+  const hitTraceAnyVisibleLayer = useCallback(
+    (cursor: PcbPointMm) => {
+      const order = [
+        activeCopperLayer,
+        ...(["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"] as const).filter(
+          (l) => l !== activeCopperLayer,
+        ),
+      ];
+      for (const layer of order) {
+        if (!isCopperLayerVisible(visibleLayers, layer)) continue;
+        const hit = hitTrace(tracesRef.current, cursor, layer);
+        if (hit) return hit;
+      }
+      return null;
+    },
+    [activeCopperLayer, visibleLayers],
+  );
 
   const tunedTrace = useMemo(() => {
     if (tuneState.kind !== "tuning" || !workspace.projection) return null;
@@ -1734,11 +1774,12 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     });
   }, [cursorMm, toolMode, tuneState]);
 
-  // Leaving tune mode always drops the session + inline editor.
+  // Leaving tune mode always drops the session + inline editor + hover.
   useEffect(() => {
     if (toolMode !== "tune") {
       dispatchTune({ kind: "cancel" });
       setTuneTargetInputOpen(false);
+      setTuneHoverTraceId(null);
     }
   }, [toolMode]);
 
@@ -1777,6 +1818,37 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       widthMm: tunedTrace.widthMm,
     };
   }, [tuneProposal, tunedTrace]);
+
+  // Painted span halo — always visible while tuning, independent of whether
+  // a proposal exists (the missing-feedback fix: sweeping is now visible
+  // even with no target set or a blocked/at-target generator).
+  const sceneTuneSpan = useMemo(() => {
+    if (tuneState.kind !== "tuning" || !tunedTrace) return null;
+    const span = slicePolylineByArcLengthNm(
+      tuneState.session.baselinePointsNm,
+      tuneState.session.spanStartNm,
+      tuneState.session.spanEndNm,
+    );
+    if (span.length < 2) return null;
+    return {
+      pointsNm: span,
+      layer: tunedTrace.layer,
+      widthMm: tunedTrace.widthMm * 1.6,
+    };
+  }, [tunedTrace, tuneState]);
+
+  // Tune-idle hover rides the selection channel (TraceLayer emphasis)
+  // without touching the real selection state.
+  const sceneSelection = useMemo(() => {
+    if (
+      toolMode === "tune" &&
+      tuneHoverTraceId !== null &&
+      tuneState.kind !== "tuning"
+    ) {
+      return { ...emptyPcbSelection(), traceIds: new Set([tuneHoverTraceId]) };
+    }
+    return selection;
+  }, [selection, toolMode, tuneHoverTraceId, tuneState]);
 
   // ---- Bundle routing (pcb.bundleRouting) ------------------------------
 
@@ -1822,20 +1894,35 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
    * Ghost lanes: centerline = pad centroid → waypoints → snapped cursor;
    * each collected pad gets a monotone lane offset of the centerline plus a
    * short elbow connector from its pad center to the lane start.
+   *
+   * Drag stability: lanes are NEVER dropped mid-drag. A lane whose offset
+   * degenerates for the current cursor (leg shorter than the miter needs)
+   * comes back `degraded: true` carrying its last valid geometry — the scene
+   * tints it amber. The fan-out frame comes from `fanOutDir` (centroid →
+   * first waypoint, frozen once routing), not from the posture-"auto" first
+   * render segment, so lanes cannot swap sides as the cursor crosses octants.
    */
   const bundlePreview = useMemo(() => {
     if (toolMode !== "bundle" || bundleState.kind !== "bundling") return null;
     const s = bundleState.session;
     if (s.pads.length < 2) return null;
-    const anchors: PointNm[] = [bundleAnchorNm(s), ...s.waypointsNm];
-    if (cursorMm) anchors.push(pointMmToNm(snapPoint(cursorMm)));
+    const centroid = bundleAnchorNm(s);
+    const anchors: PointNm[] = [centroid, ...s.waypointsNm];
+    // The widest lane sits (N−1)/2 pitches off-center; a cursor closer than
+    // that (+1 pitch margin) to the last anchor cannot host valid miters —
+    // hold the lanes at the last stable anchor instead of collapsing them.
+    const maxOffsetNm = ((s.pads.length - 1) / 2) * s.pitchNm;
+    if (cursorMm) {
+      const cursorNm = pointMmToNm(snapPoint(cursorMm));
+      const lastAnchor = anchors[anchors.length - 1]!;
+      if (!tooCloseNm(lastAnchor, cursorNm, maxOffsetNm + s.pitchNm)) {
+        anchors.push(cursorNm);
+      }
+    }
     if (anchors.length < 2) return null;
     const centerline = buildPreviewPath(anchors, s.segmentMode, "auto");
     if (centerline.length < 2) return null;
-    const dirNm = {
-      x: Math.sign(centerline[1]!.x - centerline[0]!.x),
-      y: Math.sign(centerline[1]!.y - centerline[0]!.y),
-    };
+    const dirNm = fanOutDir(centroid, s.waypointsNm[0] ?? anchors[1]!);
     const offsets = assignLaneOffsets({
       padPointsNm: s.pads.map((pad) => pad.centerNm),
       dirNm,
@@ -1846,23 +1933,31 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       laneOffsetsNm: offsets,
       mode: s.segmentMode,
     });
+    const cache = bundleLastGoodRef.current;
     const fullLanes = s.pads.map((pad, i) => {
       const lane = lanes[i]!;
-      if (!lane.ok || lane.pointsNm.length < 2) {
-        return { pad, pointsNm: [] as PointNm[], ok: false };
+      if (lane.ok && lane.pointsNm.length >= 2) {
+        const connector = buildPreviewPath(
+          [pad.centerNm, lane.pointsNm[0]!],
+          s.segmentMode,
+          "auto",
+        );
+        const pointsNm = dedupeConsecutive([
+          ...connector,
+          ...lane.pointsNm.slice(1),
+        ]);
+        cache.set(pad.padId, pointsNm);
+        return { pad, pointsNm, degraded: false };
       }
-      const connector = buildPreviewPath(
-        [pad.centerNm, lane.pointsNm[0]!],
-        s.segmentMode,
-        "auto",
-      );
+      // Degenerate offset — show the last valid lane; centerline as the
+      // cold-start fallback (never the blown-up miter geometry, which spikes).
       return {
         pad,
-        pointsNm: [...connector, ...lane.pointsNm.slice(1)],
-        ok: true,
+        pointsNm: cache.get(pad.padId) ?? centerline,
+        degraded: true,
       };
     });
-    return { lanes: fullLanes, allOk: fullLanes.every((l) => l.ok) };
+    return { lanes: fullLanes, allOk: fullLanes.every((l) => !l.degraded) };
   }, [bundleState, cursorMm, snapPoint, toolMode]);
 
   /**
@@ -1933,7 +2028,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   }, [bundlePreview, bundleState, padToNet, workspace]);
 
   // Session-scoped: leaving bundle mode drops everything; any session change
-  // clears a stale block reason.
+  // clears a stale block reason; the last-good lane cache dies with the session.
   useEffect(() => {
     if (toolMode !== "bundle") {
       dispatchBundle({ kind: "cancel" });
@@ -1942,6 +2037,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   }, [toolMode]);
   useEffect(() => {
     setBundleBlocked(null);
+    if (bundleState.kind !== "bundling") bundleLastGoodRef.current.clear();
   }, [bundleState]);
 
   const bundleHudModel = useMemo<BundleHudModel | null>(() => {
@@ -1963,20 +2059,32 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       routing: s.waypointsNm.length > 0,
       pitchMm: s.pitchNm / NM_PER_MM,
       diffPair,
-      blockedReason: bundleBlocked,
     };
-  }, [bundleBlocked, bundleState]);
+  }, [bundleState]);
+
+  // Amber rings over collected pads — the in-scene collection feedback.
+  const sceneBundlePads = useMemo(() => {
+    if (toolMode !== "bundle" || bundleState.kind !== "bundling") return null;
+    return bundleState.session.pads.map((pad) => ({
+      id: pad.padId,
+      x: pad.centerNm.x / NM_PER_MM,
+      y: pad.centerNm.y / NM_PER_MM,
+    }));
+  }, [bundleState, toolMode]);
 
   const sceneBundlePreview = useMemo(() => {
     if (!bundlePreview || bundleState.kind !== "bundling") return null;
     const s = bundleState.session;
-    return bundlePreview.lanes
-      .filter((lane) => lane.ok)
-      .map((lane) => ({
-        pointsNm: lane.pointsNm,
-        layer: s.layer,
-        widthMm: s.widthMm,
-      }));
+    return {
+      layer: s.layer,
+      widthMm: s.widthMm,
+      okPolylinesNm: bundlePreview.lanes
+        .filter((lane) => !lane.degraded)
+        .map((lane) => lane.pointsNm),
+      degradedPolylinesNm: bundlePreview.lanes
+        .filter((lane) => lane.degraded)
+        .map((lane) => lane.pointsNm),
+    };
   }, [bundlePreview, bundleState]);
 
   /**
@@ -2276,6 +2384,19 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             bundleState.kind === "idle" ||
             bundleState.session.waypointsNm.length === 0;
           if (anchor.onPad && anchor.padId !== undefined && collecting) {
+            // SMD pads live on one copper side; lanes route on the active
+            // layer — reject cross-side pads instead of silently mis-bundling
+            // (through-hole pads span the stack: layer === null passes).
+            if (
+              anchor.layer !== null &&
+              anchor.layer !== undefined &&
+              anchor.layer !== activeCopperLayer
+            ) {
+              setBundleBlocked(
+                `Pad is on ${anchor.layer} — switch the active layer to bundle it`,
+              );
+              return;
+            }
             const netName = anchor.netId
               ? (workspace.projection?.netNames[anchor.netId] ?? null)
               : null;
@@ -2356,7 +2477,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             dispatchTune({ kind: "freeze-span" });
             return;
           }
-          const hit = hitTrace(tracesRef.current, cursor, activeCopperLayer);
+          const hit = hitTraceAnyVisibleLayer(cursor);
           if (hit) {
             dispatchTune({
               kind: "start",
@@ -2869,6 +2990,17 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         }
 
         if (toolMode === "measure") {
+          workspace.hoverNet(null);
+          return;
+        }
+        // Tune-idle hover: emphasize the trace under the cursor (any visible
+        // copper layer) so the pick target is obvious before clicking.
+        if (toolMode === "tune") {
+          const hoverId =
+            tuneState.kind === "tuning"
+              ? null
+              : (hitTraceAnyVisibleLayer(cursor)?.trace.id ?? null);
+          setTuneHoverTraceId((prev) => (prev === hoverId ? prev : hoverId));
           workspace.hoverNet(null);
           return;
         }
@@ -4137,19 +4269,14 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         maxX: Math.max(headStartNm.x, cursorNm.x) / NM_PER_MM + headPadMm,
         maxY: Math.max(headStartNm.y, cursorNm.y) / NM_PER_MM + headPadMm,
       };
-      const walk = walkaroundHead({
-        headStartNm,
-        headEndNm: cursorNm,
-        obstacles: buildRouteObstacles({
+      const obstaclesFor = (b: typeof box) =>
+        buildRouteObstacles({
           traces: [
-            ...projectionIndex.queryTraces(box),
+            ...projectionIndex.queryTraces(b),
             ...pendingRouteGeometry.traces,
           ],
-          placements: projectionIndex.queryPlacements(box),
-          vias: [
-            ...projectionIndex.queryVias(box),
-            ...pendingRouteGeometry.vias,
-          ],
+          placements: projectionIndex.queryPlacements(b),
+          vias: [...projectionIndex.queryVias(b), ...pendingRouteGeometry.vias],
           layer: session.layer,
           netId: session.netId,
           padNetMap: padToNet,
@@ -4159,11 +4286,40 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           ...(session.startPadId !== undefined
             ? { excludePadIds: new Set([session.startPadId]) }
             : {}),
-        }),
+        });
+      const walkInput = {
+        headStartNm,
+        headEndNm: cursorNm,
         mode: session.segmentMode,
         posture: session.posture,
         previousChoice: walkChoiceRef.current,
-      });
+      };
+      let walk = walkaroundHead({ ...walkInput, obstacles: obstaclesFor(box) });
+      if (walk.status === "detour") {
+        // Detour corners wrap the hit cluster's AABB and can leave the
+        // head-bbox query window — copper out there was never queried, so
+        // the detour wasn't checked against it. Re-run once over the
+        // detour's own (union) window; runs only on collision frames.
+        let minX = box.minX;
+        let minY = box.minY;
+        let maxX = box.maxX;
+        let maxY = box.maxY;
+        for (const p of walk.anchorsNm) {
+          minX = Math.min(minX, p.x / NM_PER_MM - headPadMm);
+          minY = Math.min(minY, p.y / NM_PER_MM - headPadMm);
+          maxX = Math.max(maxX, p.x / NM_PER_MM + headPadMm);
+          maxY = Math.max(maxY, p.y / NM_PER_MM + headPadMm);
+        }
+        const grew =
+          minX < box.minX || minY < box.minY || maxX > box.maxX ||
+          maxY > box.maxY;
+        if (grew) {
+          walk = walkaroundHead({
+            ...walkInput,
+            obstacles: obstaclesFor({ minX, minY, maxX, maxY }),
+          });
+        }
+      }
       if (walk.status === "detour") {
         detourAnchorsNm = walk.anchorsNm;
         walkChoice = {
@@ -4557,7 +4713,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         >
           <PcbScene
             projection={workspace.projection}
-            selection={selection}
+            selection={sceneSelection}
             outlineOverride={
               boardResizeSession?.currentRect ?? committedOutlineOverride
             }
@@ -4576,7 +4732,9 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             routePendingVias={pendingRouteGeometry.vias}
             autoFinishPreview={sceneAutoFinishPreview}
             tunePreview={sceneTunePreview}
+            tuneSpanPreview={sceneTuneSpan}
             bundlePreview={sceneBundlePreview}
+            bundlePadsMm={sceneBundlePads}
             previewBasePlacements={proposedEffective}
             previewFromMarkers={placePreviewFromMarkers}
             routeFocusActive={routeState.kind === "routing"}
@@ -5056,7 +5214,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             />
           ) : null}
           {toolMode === "bundle" && !previewActive ? (
-            <BundleHud model={bundleHudModel} />
+            <BundleHud model={bundleHudModel} notice={bundleBlocked} />
           ) : null}
         </>
       ) : null}

@@ -13,7 +13,13 @@ import {
 const NM_TO_MM = 1 / 1_000_000;
 
 interface TracePreviewLayerProps {
-  pointsNm: Array<{ x: number; y: number }>;
+  /** Single polyline. Mutually exclusive with `polylinesNm`. */
+  pointsNm?: Array<{ x: number; y: number }>;
+  /**
+   * Many polylines batched into ONE LineSegments2 (bundle lanes) — one
+   * allocation per update instead of one per lane.
+   */
+  polylinesNm?: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>;
   layer: PcbCopperLayerId;
   /** Width of the in-flight trace (mm). Renders at true world-width. */
   widthMm: number;
@@ -21,6 +27,8 @@ interface TracePreviewLayerProps {
   mirror?: boolean;
   /** Dim for not-yet-accepted proposals (auto-finish). Default 1 = committed look. */
   opacity?: number;
+  /** Tint override (degraded bundle lanes); default = the layer's copper color. */
+  colorOverride?: string;
 }
 
 /**
@@ -30,24 +38,28 @@ interface TracePreviewLayerProps {
  */
 export function TracePreviewLayer({
   pointsNm,
+  polylinesNm,
   layer,
   widthMm,
   mirror = false,
   opacity = 1,
+  colorOverride,
 }: TracePreviewLayerProps): ReactElement | null {
-  const baseColor = copperLayerColor(layer);
+  const baseColor = colorOverride ?? copperLayerColor(layer);
   const xScale = mirror ? -1 : 1;
   const positions = useMemo(() => {
-    if (pointsNm.length < 2) return null;
+    const polylines = polylinesNm ?? (pointsNm ? [pointsNm] : []);
     const out: number[] = [];
-    for (let i = 1; i < pointsNm.length; i += 1) {
-      const a = pointsNm[i - 1]!;
-      const b = pointsNm[i]!;
-      out.push(a.x * NM_TO_MM * xScale, a.y * NM_TO_MM, 0);
-      out.push(b.x * NM_TO_MM * xScale, b.y * NM_TO_MM, 0);
+    for (const line of polylines) {
+      for (let i = 1; i < line.length; i += 1) {
+        const a = line[i - 1]!;
+        const b = line[i]!;
+        out.push(a.x * NM_TO_MM * xScale, a.y * NM_TO_MM, 0);
+        out.push(b.x * NM_TO_MM * xScale, b.y * NM_TO_MM, 0);
+      }
     }
     return out.length > 0 ? new Float32Array(out) : null;
-  }, [pointsNm, xScale]);
+  }, [pointsNm, polylinesNm, xScale]);
 
   return (
     <PreviewSegmentGroup

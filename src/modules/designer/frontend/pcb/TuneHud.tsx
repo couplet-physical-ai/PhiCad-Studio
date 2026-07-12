@@ -130,6 +130,17 @@ export function TuneHud({
             sweep along the trace to place serpentines
           </span>
         ) : null}
+        {model.meanderStatus === "target-met" ? (
+          <span className="text-emerald-600 dark:text-emerald-400">
+            already at target — nothing to add
+          </span>
+        ) : null}
+        {model.meanderStatus === "blocked" ? (
+          <span className="text-amber-600 dark:text-amber-400">
+            keep-outs block serpentines here — sweep another span or lower
+            amplitude
+          </span>
+        ) : null}
       </div>
       <div className="flex items-center gap-2 text-[10px] text-slate-400 dark:text-slate-500">
         <span>
@@ -144,7 +155,7 @@ export function TuneHud({
         <span>
           <kbd className="font-sans">,/.</kbd> pitch
         </span>
-        <span>
+        <span className={model.canApply ? "" : "opacity-40"}>
           <kbd className="font-sans">Enter</kbd> apply
         </span>
         <span>
