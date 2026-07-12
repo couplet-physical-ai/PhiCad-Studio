@@ -1,6 +1,6 @@
 # Handoff — Cloud Copilot → local compiler agent
 
-Session · 2026-07-08 · branch `master` (OpenPCB repo)
+Session · 2026-07-08 · branch `master` (OpenPCB repo) · **Updated 2026-07-12 (S1):** all work below is now COMMITTED in `31d4caf` "wip: pre-P1 baseline" and pushed; tree is clean.
 
 > This handoff covers ONE effort: reworking the AI copilot from a whole-design-sync
 > cloud agent into a **local-first compiler agent**. It is separate from the other
@@ -91,9 +91,8 @@ All green: `bun test` on the two test files + `npm run typecheck` (tsc -b) clean
 
 ## Pointers
 
-- Tasks → `TODO.md` (my section is at the very top). State → `CURRENT_STATE.md` (top section).
+- Tasks → `TODO.md` (compiler section is second; route-tool program is now on top). State → `CURRENT_STATE.md`.
   Full context/decisions → `~/.claude/plans/act-as-expert-on-snug-nest.md`.
-- **Caution:** the OpenPCB working tree has many OTHER modified files from unrelated prior
-  work (knowledge module, cors, feature-flags, cloud-run-service, designer autoroute, …).
-  MY changes are ONLY: `library-tools.ts`, `assistant-library-tools.test.ts`, the new
-  `compiler/` dir, and `assistant-compiler.test.ts`. Do not commit the rest as if it were mine.
+- The old "many OTHER uncommitted files" caution no longer applies — everything was
+  committed in `31d4caf` (2026-07-10) and the tree is clean/pushed. P1.3 is scheduled
+  as session S3 (`docs/sessions/S3-openpcb-compiler-p13.md`).

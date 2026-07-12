@@ -1,3 +1,5 @@
+> **Unmerged local branch (S1 note, 2026-07-12):** `integ/trace-drag` — 6 commits (~1.9k lines: trace segment drag editing, vertex handles, 555-blinker fab fixture + tests). Unpushed; push then integrate or rebase. Do not delete.
+
 # Route Tool Evolution (active 2026-07-11)
 
 > Plan (7 phases, UX-first): `~/.claude-personal/plans/act-as-expert-on-snoopy-sketch.md`.
