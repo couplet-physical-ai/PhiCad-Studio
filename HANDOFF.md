@@ -70,19 +70,18 @@ All green: `bun test` on the two test files + `npm run typecheck` (tsc -b) clean
 3. `cd /Users/andrejvysny/workspace/openpcb/OpenPCB` and verify green:
    - `bun test src/core/backend/tests/assistant-compiler.test.ts src/core/backend/tests/assistant-library-tools.test.ts`
    - `npm run typecheck`
-4. **Next task: P1.3 — the `compile_circuit(IR)` AiTool** (the integration capstone). It ties
-   the pipeline to the agent loop: Ajv-validate IR → resolve block roles→componentIds via the
-   LibrarySDK resolver → `expandCircuit → lowerNetlist → applyCompiledPlan` → run ERC over the
-   composed result + report violations → return a model-friendly result; register in
-   `openpcb-tool-registry.ts` with clarify-first/installed-only/schematic-only guards.
-   - Pattern to copy: `library-tools.ts` `makeLibrarySearchComponentsTool` (AiTool shape +
-     how it pulls the SDK from ctx), `designer-tools.ts` `finalizeAndMaybeApply` (write-tool
-     proposal + auto-apply gate), `openpcb-tool-registry.ts` (registration).
-   - Role resolution: block roles are "resistor"/"led" → search the library, take top hit
-     (now correct after the P0 fix). Reuse `searchAndRankComponents` or `library.searchComponents`.
-5. After P1.3: live **5-LED smoke** end-to-end (MEMORY: OpenCode/DeepSeek, low token budget) —
-   `apply.ts` is only tested against a *fake* DesignerSDK so far; the smoke validates real-
-   designer command fidelity.
+4. ~~P1.3 `compile_circuit(IR)` AiTool~~ — **DONE (S3, 2026-07-12)**, proven live: real-backend
+   E2E `src/core/backend/tests/assistant-compiler-live.test.ts` + scripted 5-LED smoke on the
+   dev DB (ERC clean, UI-undoable). Live path exposed and fixed: lowering one-row layout
+   shorted LEDs (pin-on-wire junction), apply history session was invisible to UI undo,
+   exact-name ranking lost to "IR LED 5 mm" on richer libraries. See `TODO.md` Done + S3
+   outcome in `../docs/sessions/ROADMAP.md`.
+5. ~~Live 5-LED smoke~~ — scripted variant **DONE (S3)**; the LLM-in-the-loop variant
+   (OpenCode/DeepSeek or local oMLX, low token budget) is deferred — no provider was up
+   during S3; exact procedure recorded in the ROADMAP S3 outcome.
+6. **Next task: more primitive blocks** (decoupling, pull-up/down, RC) in `compiler/blocks.ts`
+   — each must respect the layout invariant documented in `compiler/lowering.ts` (auto-routes
+   must not graze foreign pins). Then P2 data recipes.
 
 ## Open questions
 
@@ -94,5 +93,5 @@ All green: `bun test` on the two test files + `npm run typecheck` (tsc -b) clean
 - Tasks → `TODO.md` (compiler section is second; route-tool program is now on top). State → `CURRENT_STATE.md`.
   Full context/decisions → `~/.claude/plans/act-as-expert-on-snug-nest.md`.
 - The old "many OTHER uncommitted files" caution no longer applies — everything was
-  committed in `31d4caf` (2026-07-10) and the tree is clean/pushed. P1.3 is scheduled
-  as session S3 (`docs/sessions/S3-openpcb-compiler-p13.md`).
+  committed in `31d4caf` (2026-07-10) and the tree is clean/pushed. P1.3 shipped in
+  session S3 (2026-07-12, `docs/sessions/S3-openpcb-compiler-p13.md`).

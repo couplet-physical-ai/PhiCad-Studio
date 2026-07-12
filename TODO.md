@@ -65,7 +65,7 @@
 
 ## Now
 
-- [ ] **P1.3 `compile_circuit(IR)` AiTool** — Ajv-validate IR → resolve roles→componentIds (LibrarySDK) → `expandCircuit → lowerNetlist → applyCompiledPlan` → ERC gate + report → register in `openpcb-tool-registry.ts` + clarify-first/installed-only/schematic-only guards.
+- [ ] More primitive blocks (decoupling, pull-up/down, RC)
 
 ## Done (all green: bun test + tsc -b)
 
@@ -74,12 +74,14 @@
 - [x] P1.2a lowering `ResolvedNetlist → CompiledPlan` (`compiler/lowering.ts`)
 - [x] P1.2b live apply + apply-time pin resolution (`compiler/apply.ts`) — tested vs a fake DesignerSDK
 - [x] Atomic place+wire — rescoped: apply-time deferred resolution (provisional-index infeasible; place_part owns ref/pin ids)
+- [x] **P1.3 `compile_circuit(IR)` AiTool** (S3, 2026-07-12) — tool + registration were in `31d4caf`; S3 proved it live: real-backend E2E (`tests/assistant-compiler-live.test.ts`, bootstrapped runtime + pinned beta.2 CoreLibrary pack) + scripted 5-LED smoke on the dev DB (10 parts, VCC/GND 5 pins each, ERC clean). Ajv validation is central (registry compiles inputSchema; run-loop validates pre-execute). Live-path fixes: per-block column layout in `lowering.ts` (one-row grid let a straight R→A route pass through LED.K — pin-on-wire junction shorted every LED into GND); apply session → `designer-ui-session` (was a private session — compiled circuits invisible to UI undo); exact-name ranking vs per-candidate queries (plain "led" tied all led-tagged parts and alphabetics picked "IR LED 5 mm").
 
 ## Next
 
-- [ ] P1.3 (above) then live 5-LED smoke (OpenCode/DeepSeek) — real-designer fidelity (apply only fake-tested so far)
+- [ ] LLM-in-the-loop 5-LED smoke (deferred from S3 — no provider up; procedure in `../docs/sessions/ROADMAP.md` S3 outcome). Scripted smoke done.
 - [ ] More primitive blocks (decoupling, pull-up/down, RC)
 - [ ] P2 data recipes + additive editing · P3 edit reconciliation · cloud stateless tools + model gateway · golden-IR/fixture/telemetry validation
+- [ ] History batch-undo grouping for compiled circuits — `groupId` is dataset-capture-only today; one Cmd+Z per command (40 for the 5-LED build)
 - [ ] (deprioritized) `get_design_state` completion-pressure read
 
 ---

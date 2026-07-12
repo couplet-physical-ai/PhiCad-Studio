@@ -16,10 +16,11 @@ Last verified: **2026-07-12** (S1 docs reconciliation) · effort narratives: `HA
 
 ## Active program 2 — Cloud Copilot → local compiler agent (see `HANDOFF.md`)
 
-- **Committed** in `31d4caf`: P0 resolver category-scoring fix + P1 compiler pipeline (`src/modules/assistant/backend/compiler/{ir,units,blocks,expander,lowering,apply}.ts`) + 11 golden tests + LDR regression tests. `bun test` on both test files + `npm run typecheck` green at commit time.
+- **P1 complete incl. P1.3 (S3, 2026-07-12).** Pipeline + `compile_circuit` AiTool committed (`31d4caf`); S3 proved the apply path against a REAL backend: live E2E `src/core/backend/tests/assistant-compiler-live.test.ts` (bootstrapped ModuleRuntime + pinned beta.2 CoreLibrary pack — role resolution, expand→lower→apply, nets, ERC, undo, stale-revision, tool execute) + scripted 5-LED smoke on the dev DB ("S3 Smoke — 5 LED indicators (v2)": 10 parts, 15 wires, 10 ports, VCC/GND 5 pins each, ERC clean, UI-undoable).
+- **S3 live-path fixes:** `lowering.ts` per-block column layout (one-row grid shorted every LED: straight R→A route through LED.K = pin-on-wire junction); `apply.ts` history session → `designer-ui-session` (compiled circuits were invisible to UI undo); `library-tools.ts` exact-name scoring per candidate query (plain "led" resolved to "IR LED 5 mm" on richer libraries). "Single undoable batch" claim removed — `groupId` is capture-only; batch-undo grouping is backlog.
 - **Key decisions (locked):** compiler model (LLM→IR→expand+ERC) · local-first brain, cloud=tools+gateway · hybrid recipes (code primitives + data functional blocks) · IR internal, DesignerCommand batch on wire · param calc in expander · auto-apply non-destructive / gate destructive / ERC auto-correct ≤N · guardrails clarify-first + installed-only + schematic-only.
-- **Blockers:** none. `apply.ts` validated only vs a fake DesignerSDK — needs a live 5-LED smoke.
-- **Next:** P1.3 `compile_circuit(IR)` AiTool — scheduled as session **S3** (`docs/sessions/S3-openpcb-compiler-p13.md`).
+- **Blockers:** none. LLM-in-the-loop smoke deferred (no provider up during S3); procedure in `docs/sessions/ROADMAP.md` S3 outcome.
+- **Next:** more primitive blocks (decoupling, pull-up/down, RC), then P2 data recipes.
 
 ## Cloud Teams / Sharing — desktop integration (historic; backlog)
 
