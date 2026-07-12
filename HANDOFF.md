@@ -76,9 +76,9 @@ All green: `bun test` on the two test files + `npm run typecheck` (tsc -b) clean
    shorted LEDs (pin-on-wire junction), apply history session was invisible to UI undo,
    exact-name ranking lost to "IR LED 5 mm" on richer libraries. See `TODO.md` Done + S3
    outcome in `../docs/sessions/ROADMAP.md`.
-5. ~~Live 5-LED smoke~~ — scripted variant **DONE (S3)**; the LLM-in-the-loop variant
-   (OpenCode/DeepSeek or local oMLX, low token budget) is deferred — no provider was up
-   during S3; exact procedure recorded in the ROADMAP S3 outcome.
+5. ~~Live 5-LED smoke~~ — **DONE (S3, both variants)**: scripted, then LLM-in-the-loop via
+   OpenCode Zen / `deepseek-v4-flash-free` (happy path + edge cases; found+fixed additive
+   grid stacking + silent 1-pin-net/floating-port shrink). Record: ROADMAP S3 outcome.
 6. **Next task: more primitive blocks** (decoupling, pull-up/down, RC) in `compiler/blocks.ts`
    — each must respect the layout invariant documented in `compiler/lowering.ts` (auto-routes
    must not graze foreign pins). Then P2 data recipes.

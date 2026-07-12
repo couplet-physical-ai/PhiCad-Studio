@@ -78,10 +78,11 @@
 
 ## Next
 
-- [ ] LLM-in-the-loop 5-LED smoke (deferred from S3 — no provider up; procedure in `../docs/sessions/ROADMAP.md` S3 outcome). Scripted smoke done.
+- [x] LLM-in-the-loop 5-LED smoke (2026-07-12, OpenCode Zen / `deepseek-v4-flash-free`) — happy path + edge cases green; found+fixed additive-recompile grid stacking (origin now offsets below existing parts) and silent circuit shrink (1-pin nets / floating block ports now warn + flag `partial`). Full record: `../docs/sessions/ROADMAP.md` S3 outcome.
 - [ ] More primitive blocks (decoupling, pull-up/down, RC)
 - [ ] P2 data recipes + additive editing · P3 edit reconciliation · cloud stateless tools + model gateway · golden-IR/fixture/telemetry validation
 - [ ] History batch-undo grouping for compiled circuits — `groupId` is dataset-capture-only today; one Cmd+Z per command (40 for the 5-LED build)
+- [ ] compile_circuit polish: tool-description hint to reuse existing rail names when extending a design (rails merge by name only); `designer_resolve_design` by-UUID lookup (name-only today)
 - [ ] (deprioritized) `get_design_state` completion-pressure read
 
 ---
