@@ -18,16 +18,38 @@ export function checkConstraints(ctx: DrcContext): DrcViolationDraft[] {
       });
     }
   }
-  // A via must span at least two valid copper layers for this stackup.
+  // Pads on an explicit copper layer that isn't valid for this stackup.
+  for (const pad of ctx.pads) {
+    if (pad.declaredLayerInvalid) {
+      out.push({
+        code: "PAD_LAYER_MISMATCH",
+        ruleClass: "constraint",
+        severity: "error",
+        message: `Pad is on a copper layer not valid for a ${layerCount}-layer board`,
+        anchors: [pad.anchor],
+        locationMm: pad.center,
+        // Non-waivable: the pad is checked on all layers as a fallback, and a
+        // waivable "invalid layer" note could hide that geometry (B5-VIA-MASK).
+        waivable: false,
+      });
+    }
+  }
+  // A via must span at least two valid copper layers for this stackup. The via
+  // is still collision-checked on all valid layers (clamp-with-fallback), so
+  // this error is non-waivable — waiving it must not hide the via's copper.
   for (const vg of ctx.vias) {
-    if (vg.layers.length < 2) {
+    if (vg.layerSpanInvalid || vg.viaTypeInvalid) {
+      const message = vg.layerSpanInvalid
+        ? `Via does not span two valid copper layers (${vg.via.fromLayer} → ${vg.via.toLayer}) for a ${layerCount}-layer board`
+        : `Via span ${vg.via.fromLayer} → ${vg.via.toLayer} is invalid for a "${vg.via.viaType}" via on a ${layerCount}-layer board`;
       out.push({
         code: "VIA_LAYER_SPAN",
         ruleClass: "constraint",
         severity: "error",
-        message: `Via does not span two valid copper layers (${vg.via.fromLayer} → ${vg.via.toLayer}) for a ${layerCount}-layer board`,
+        message,
         anchors: [{ kind: "via", viaId: vg.via.id }],
         locationMm: vg.center,
+        waivable: false,
       });
     }
   }

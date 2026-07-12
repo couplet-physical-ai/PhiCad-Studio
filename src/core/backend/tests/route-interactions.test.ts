@@ -131,4 +131,69 @@ describe("resolveRouteClickAction", () => {
       }),
     ).toBe("finish");
   });
+
+  test("modifier click on a compatible pad proposes auto-finish", () => {
+    expect(
+      resolveRouteClickAction({
+        routing: true,
+        anchor: padAnchor("net-1"),
+        sessionNetId: "net-1",
+        clickCount: 1,
+        autoFinishModifier: true,
+      }),
+    ).toBe("auto-finish");
+    // Net-less pad / net-less session are pad-finish-compatible → auto-finish.
+    expect(
+      resolveRouteClickAction({
+        routing: true,
+        anchor: padAnchor(null),
+        sessionNetId: "net-1",
+        clickCount: 1,
+        autoFinishModifier: true,
+      }),
+    ).toBe("auto-finish");
+  });
+
+  test("modifier click never proposes on incompatible or non-pad anchors", () => {
+    // Different-net pad stays a waypoint (no silent short, no proposal).
+    expect(
+      resolveRouteClickAction({
+        routing: true,
+        anchor: padAnchor("net-2"),
+        sessionNetId: "net-1",
+        clickCount: 1,
+        autoFinishModifier: true,
+      }),
+    ).toBe("waypoint");
+    // Free space with the modifier is still a plain waypoint.
+    expect(
+      resolveRouteClickAction({
+        routing: true,
+        anchor: freeAnchor,
+        sessionNetId: "net-1",
+        clickCount: 1,
+        autoFinishModifier: true,
+      }),
+    ).toBe("waypoint");
+    // Same-net copper (non-pad) keeps its strict-match finish semantics.
+    expect(
+      resolveRouteClickAction({
+        routing: true,
+        anchor: { onPad: false, netId: "net-1" },
+        sessionNetId: "net-1",
+        clickCount: 1,
+        autoFinishModifier: true,
+      }),
+    ).toBe("finish");
+    // Idle click starts a session even with the modifier held.
+    expect(
+      resolveRouteClickAction({
+        routing: false,
+        anchor: padAnchor("net-1"),
+        sessionNetId: null,
+        clickCount: 1,
+        autoFinishModifier: true,
+      }),
+    ).toBe("start");
+  });
 });

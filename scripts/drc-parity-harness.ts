@@ -3,96 +3,62 @@
 // as JSON, so cloud-auto-router's Python legality oracle can be cross-checked against
 // it (conservative envelope: anything the oracle marks legal, this must NOT error).
 //
-//   echo '<fixture json>' | bun run scripts/drc-parity-harness.ts
+//   echo '<fixture json>' | bun run scripts/drc-parity-harness.ts [--verbose]
 //
-// Fixture shape (coords are integer nanometers; widths/clearances are mm):
+// Fixture schema v2 (all keys optional; a v1 fixture parses byte-identically).
+// Coords are integer nanometers unless the key says Mm; widths/clearances are mm:
 //   {
-//     "fabricator": "custom",                  // optional, default "custom" (no FAB warnings)
-//     "clearance":  { "traceToTraceMm": 0.25 } // optional overrides of designRules.clearance
-//     "minimums":   { ... },                   // optional overrides of designRules.minimums
-//     "layerCount": 2,                          // optional
+//     "schemaVersion": 2,                       // informational
+//     "fabricator": "custom",                  // default "custom" (no FAB warnings)
+//     "clearance":  { "traceToTraceMm": 0.25 } // overrides of designRules.clearance
+//     "minimums":   { ... },                   // overrides of designRules.minimums
+//     "layerCount": 2,
+//     "boardThicknessMm": 1.6,
+//     "outline": { "kind": "rect", ... },      // full PcbBoardOutline; default 200×200 rect
+//     "cutouts": [{ "id", "shape": { ... } }],
+//     "netClasses": [ ...PcbNetClass ],        // REPLACES the default classes when given
+//     "perNetClassAssignments": { "n1": "wide" },
+//     "viewState": { "copperFillLayers": ["F.Cu"], "copperFillPourNetIds": {...} },
 //     "traces": [{ "id","netId","netClassId","layer","widthMm","pointsNm":[[x,y],...] }],
-//     "vias":   [{ "id","netId","centerMm":[x,y],"diameterMm","drillMm","fromLayer","toLayer" }],
+//     "vias":   [{ "id","netId","centerMm":[x,y],"diameterMm","drillMm","fromLayer","toLayer",
+//                  "viaType","protection" }],
+//     "placements": [{ "id","reference","positionMm":{x,y},"rotationDeg","mirrored","layer",
+//                      "pads": [ ...FootprintRenderSourcePad ] }],
+//     "padNets":  { "U1|1": "n1" },
+//     "freePads": [ ...PcbFreePad ], "freeHoles": [ ...PcbFreeHole ],
+//     "zones": [ ...PcbZone ], "overlayTexts": [...], "overlayShapes": [...],
+//     "computeRatsnest": true,                 // derive projection.ratsnest from
+//                                              // placements+padNets via the real
+//                                              // computeRatsnest (pour-blind)
 //     "netNames": { "n1": "NET_A" }
 //   }
+//
+// Output (stable v1 shape): {"errors","warnings","violations":[{"code","severity"}]}
+// With --verbose each violation also carries id/message/layer/location/measured/required.
 import { runDrc } from "../src/modules/designer/backend/drc/drc-engine";
-import { createDefaultPcbBoardSettings } from "../src/modules/designer/backend/pcb/pcb-defaults";
-import type {
-  DesignerPcbProjection,
-  PcbBoardSettings,
-  PcbTrace,
-  PcbVia,
-} from "../src/sdks/designer";
+import { fixtureToProjection } from "../src/core/backend/tests/helpers/drc-golden";
 
-const TS = "2026-01-01T00:00:00.000Z";
-const NM = 1_000_000;
-
+const verbose = process.argv.includes("--verbose");
 const fixture = JSON.parse(await Bun.stdin.text());
+const report = runDrc(fixtureToProjection(fixture));
 
-const board: PcbBoardSettings = createDefaultPcbBoardSettings(TS);
-board.fabricator = fixture.fabricator ?? "custom";
-if (fixture.clearance)
-  Object.assign(board.designRules.clearance, fixture.clearance);
-if (fixture.minimums)
-  Object.assign(board.designRules.minimums, fixture.minimums);
-if (fixture.layerCount) board.layerCount = fixture.layerCount;
-// widen the outline so fixture geometry is never accidentally off-board / near the edge
-board.outline = {
-  kind: "rect",
-  widthMm: 200,
-  heightMm: 200,
-  centerMm: { x: 0, y: 0 },
-};
-
-const traces: PcbTrace[] = (fixture.traces ?? []).map((t: any) => ({
-  id: t.id,
-  netId: t.netId ?? null,
-  netClassId: t.netClassId ?? "default",
-  layer: t.layer ?? "F.Cu",
-  widthMm: t.widthMm,
-  segmentMode: t.segmentMode ?? "manhattan-90",
-  pointsNm: t.pointsNm.map(([x, y]: [number, number]) => ({ x, y })),
-}));
-
-const vias: PcbVia[] = (fixture.vias ?? []).map((v: any) => ({
-  id: v.id,
-  netId: v.netId ?? null,
-  netClassId: v.netClassId ?? "default",
-  centerMm: { x: v.centerMm[0] / NM, y: v.centerMm[1] / NM },
-  diameterMm: v.diameterMm,
-  drillMm: v.drillMm,
-  fromLayer: v.fromLayer ?? "F.Cu",
-  toLayer: v.toLayer ?? "B.Cu",
-  viaType: "through",
-  protection: "tented",
-  provenance: "route",
-}));
-
-const projection: DesignerPcbProjection = {
-  designId: "parity",
-  revision: 1,
-  board,
-  placements: [],
-  traces,
-  vias,
-  freeHoles: [],
-  freePads: [],
-  overlayTexts: [],
-  overlayShapes: [],
-  zones: [],
-  ratsnest: [],
-  netNames: fixture.netNames ?? {},
-  warnings: [],
-};
-
-const report = runDrc(projection);
 console.log(
   JSON.stringify({
     errors: report.summary.errors,
     warnings: report.summary.warnings,
-    violations: report.violations.map((v) => ({
-      code: v.code,
-      severity: v.severity,
-    })),
+    violations: report.violations.map((v) =>
+      verbose
+        ? {
+            code: v.code,
+            severity: v.severity,
+            id: v.id,
+            message: v.message,
+            layer: v.layer ?? null,
+            locationMm: v.locationMm ?? null,
+            measuredMm: v.measuredMm ?? null,
+            requiredMm: v.requiredMm ?? null,
+          }
+        : { code: v.code, severity: v.severity },
+    ),
   }),
 );

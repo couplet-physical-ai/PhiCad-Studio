@@ -14,6 +14,17 @@ interface RouteHudProps {
   onWidthInputClose: () => void;
   /** Shown when widthSource !== "netclass" — one click back to the class. */
   onResetWidthToNetClass: () => void;
+  /** Non-null after a finish attempt was blocked by the DRC commit gate. */
+  blockedConflictCount: number | null;
+  /** Session-scoped override: commit despite clearance conflicts. */
+  allowDrcViolations: boolean;
+  onToggleAllowDrcViolations: () => void;
+  /** Active auto-finish proposal (dimmed path awaiting explicit accept). */
+  autoFinishProposal?: { lengthMm: number; targetName: string | null } | null;
+  onAcceptAutoFinish?: () => void;
+  onDismissAutoFinish?: () => void;
+  /** Transient auto-finish failure notice ("No clean path — route manually"). */
+  autoFinishNotice?: string | null;
 }
 
 function formatMm(value: number): string {
@@ -33,6 +44,13 @@ export function RouteHud({
   onWidthInputSubmit,
   onWidthInputClose,
   onResetWidthToNetClass,
+  blockedConflictCount,
+  allowDrcViolations,
+  onToggleAllowDrcViolations,
+  autoFinishProposal = null,
+  onAcceptAutoFinish,
+  onDismissAutoFinish,
+  autoFinishNotice = null,
 }: RouteHudProps): ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -124,9 +142,32 @@ export function RouteHud({
             {model.viaOverridden ? "*" : ""}
           </span>
         ) : null}
-        <span className="text-slate-500 dark:text-slate-400">
-          {model.lengthMm.toFixed(1)} mm
-        </span>
+        {model.lengthTarget ? (
+          <span
+            title={`Length match '${model.lengthTarget.groupName}' — net total vs target ±${model.lengthTarget.toleranceMm.toFixed(2)} mm`}
+            className={
+              Math.abs(model.lengthTarget.totalMm - model.lengthTarget.targetMm) <=
+              model.lengthTarget.toleranceMm
+                ? "font-medium text-emerald-600 dark:text-emerald-400"
+                : "font-medium text-amber-600 dark:text-amber-400"
+            }
+          >
+            {model.lengthTarget.totalMm.toFixed(1)} /{" "}
+            {model.lengthTarget.targetMm.toFixed(1)} mm
+          </span>
+        ) : (
+          <span className="text-slate-500 dark:text-slate-400">
+            {model.lengthMm.toFixed(1)} mm
+          </span>
+        )}
+        {model.detourActive ? (
+          <span
+            title="Ghost is bending around an obstacle (walkaround)"
+            className="rounded-full border border-sky-300 px-1.5 text-[10px] font-medium text-sky-600 dark:border-sky-800 dark:text-sky-400"
+          >
+            detour
+          </span>
+        ) : null}
         <span
           className={
             clean
@@ -139,6 +180,68 @@ export function RouteHud({
             : `${model.drcConflictCount} conflict${model.drcConflictCount === 1 ? "" : "s"}`}
         </span>
       </div>
+      {autoFinishProposal ? (
+        <div
+          role="status"
+          className="flex items-center gap-2 text-[11px] text-sky-600 dark:text-sky-400"
+        >
+          Proposed path
+          {autoFinishProposal.targetName
+            ? ` to ${autoFinishProposal.targetName}`
+            : ""}{" "}
+          ({autoFinishProposal.lengthMm.toFixed(1)} mm) —
+          <button
+            type="button"
+            className="rounded border border-sky-300 px-1.5 py-0.5 hover:bg-sky-50 dark:border-sky-800 dark:hover:bg-sky-950"
+            onClick={onAcceptAutoFinish}
+          >
+            Enter accept
+          </button>
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            onClick={onDismissAutoFinish}
+          >
+            Esc dismiss
+          </button>
+        </div>
+      ) : null}
+      {autoFinishNotice ? (
+        <div
+          role="status"
+          className="text-[11px] text-amber-600 dark:text-amber-400"
+        >
+          {autoFinishNotice}
+        </div>
+      ) : null}
+      {blockedConflictCount !== null && !allowDrcViolations ? (
+        <div
+          role="alert"
+          className="flex items-center gap-2 text-[11px] text-red-600 dark:text-red-400"
+        >
+          Commit blocked: {blockedConflictCount} clearance conflict
+          {blockedConflictCount === 1 ? "" : "s"} — fix the route or
+          <button
+            type="button"
+            className="rounded border border-red-300 px-1.5 py-0.5 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950"
+            onClick={onToggleAllowDrcViolations}
+          >
+            allow violations
+          </button>
+        </div>
+      ) : null}
+      {allowDrcViolations ? (
+        <div className="flex items-center gap-2 text-[11px] text-amber-600 dark:text-amber-400">
+          DRC override ON — commits may violate clearance
+          <button
+            type="button"
+            className="rounded border border-amber-300 px-1.5 py-0.5 hover:bg-amber-50 dark:border-amber-800 dark:hover:bg-amber-950"
+            onClick={onToggleAllowDrcViolations}
+          >
+            re-enable gate
+          </button>
+        </div>
+      ) : null}
       <div className="flex items-center gap-2 text-[10px] text-slate-400 dark:text-slate-500">
         {model.hints.map((h) => (
           <span key={h.keys}>

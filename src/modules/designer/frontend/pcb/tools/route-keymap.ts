@@ -13,6 +13,8 @@ export interface RouteKeyBinding {
   primary?: boolean;
   /** Only meaningful while a session is active (hidden when idle). */
   requiresSession?: boolean;
+  /** Only shown when the pcb.routeAutoFinish feature flag is enabled. */
+  requiresAutoFinish?: boolean;
 }
 
 export const ROUTE_KEY_BINDINGS: readonly RouteKeyBinding[] = [
@@ -21,20 +23,30 @@ export const ROUTE_KEY_BINDINGS: readonly RouteKeyBinding[] = [
   { keys: "W", label: "width", primary: true, requiresSession: true },
   { keys: "⌫", label: "back", primary: true, requiresSession: true },
   { keys: "Esc", label: "cancel", primary: true, requiresSession: true },
+  {
+    keys: "Tab",
+    label: "auto-finish",
+    requiresSession: true,
+    requiresAutoFinish: true,
+  },
   { keys: "/", label: "posture", requiresSession: true },
   { keys: "⇧Space", label: "45°/90°", requiresSession: true },
   { keys: "T/B", label: "layer" },
-  { keys: "Alt", label: "no snap", requiresSession: true },
+  { keys: "⇧", label: "no snap", requiresSession: true },
+  { keys: "Alt", label: "no guides", requiresSession: true },
 ];
 
 /** Hints applicable to the current tool state, compact set first. */
 export function routeKeyHints(input: {
   routing: boolean;
   primaryOnly: boolean;
+  /** pcb.routeAutoFinish flag state; hides Tab hint when off. Default off. */
+  autoFinish?: boolean;
 }): readonly RouteKeyBinding[] {
   return ROUTE_KEY_BINDINGS.filter(
     (b) =>
       (input.routing || !b.requiresSession) &&
-      (!input.primaryOnly || b.primary === true),
+      (!input.primaryOnly || b.primary === true) &&
+      (input.autoFinish === true || !b.requiresAutoFinish),
   );
 }

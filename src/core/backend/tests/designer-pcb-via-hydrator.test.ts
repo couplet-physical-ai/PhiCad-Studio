@@ -126,8 +126,9 @@ describe("Fab preset validation", () => {
   });
 
   test("JLCPCB 2L flags below-min drill", () => {
+    // 2026-07 capability floor: 0.15 mm mechanical drill (P8 refresh).
     const violations = validateViaAgainstFab(
-      { diameterMm: 0.6, drillMm: 0.2 },
+      { diameterMm: 0.6, drillMm: 0.1 },
       "jlcpcb_2l",
     );
     expect(violations.find((v) => v.rule === "minDrillMm")).toBeDefined();
@@ -141,9 +142,19 @@ describe("Fab preset validation", () => {
     expect(violations).toEqual([]);
   });
 
-  test("JLCPCB 4L flags 0.2/0.45 via for sub-AR (0.125 < 0.15)", () => {
+  test("JLCPCB 4L accepts its own minimum via 0.2/0.45 (AR 0.125 ≥ 0.05)", () => {
+    // P8 (audit B2-2): via annular floor is the VIA rule (0.05/side), not the
+    // PTH component-hole rule — the preset's minimal via no longer self-flags.
     const violations = validateViaAgainstFab(
       { diameterMm: 0.45, drillMm: 0.2 },
+      "jlcpcb_4l",
+    );
+    expect(violations).toEqual([]);
+  });
+
+  test("JLCPCB 4L flags a genuinely sub-annular via (0.04 < 0.05)", () => {
+    const violations = validateViaAgainstFab(
+      { diameterMm: 0.28, drillMm: 0.2 },
       "jlcpcb_4l",
     );
     expect(violations.find((v) => v.rule === "minAnnularRingMm")).toBeDefined();

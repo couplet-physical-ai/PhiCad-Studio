@@ -22,8 +22,7 @@ import {
 } from "../drc-context";
 import type { DrcViolationDraft } from "../types";
 
-/** Overlap tolerance for short detection (0.1 µm). */
-const SHORT_EPS_MM = 1e-4;
+import { below, SHORT_EPS_MM } from "../../pcb/tolerance";
 
 function sameNet(a: string | null, b: string | null): boolean {
   return a !== null && b !== null && a === b;
@@ -40,10 +39,11 @@ function midpoint(a: PcbPointMm, b: PcbPointMm): PcbPointMm {
 /**
  * Copper clearance + short detection for trace↔trace / trace↔pad / trace↔via on
  * shared copper layers (different nets). One geometric pass yields three
- * outcomes per pair:
- *   gap ≤ 0 (different known nets) → NET_SHORT_CIRCUIT (error)
- *   gap < required                → <pair>_CLEARANCE     (error)
- *   required ≤ gap < fabMin        → FAB_CLEARANCE        (warning)
+ * outcomes per pair (lower tiers use below() — exact-spec geometry passes and
+ * sub-eps deficits are float noise; P1 epsilon unification):
+ *   gap ≤ SHORT_EPS (different known nets) → NET_SHORT_CIRCUIT (error)
+ *   below(gap, required)                   → <pair>_CLEARANCE  (error)
+ *   below(gap, fabMin)                     → FAB_CLEARANCE     (warning)
  * `required = max(designRule, netClassA, netClassB)`; net class can only tighten.
  */
 export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
@@ -75,6 +75,9 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
         code: "NET_SHORT_CIRCUIT",
         ruleClass: "connectivity",
         severity: "error",
+        // A waivable dead short is the audit's headline failure class — never
+        // let a user waiver hide one.
+        waivable: false,
         message: `Short circuit: ${params.label} on different nets overlap`,
         anchors: [
           ...params.anchors,
@@ -86,7 +89,7 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
         measuredMm: Math.max(0, gap),
         requiredMm: required,
       });
-    } else if (gap < required) {
+    } else if (below(gap, required)) {
       out.push({
         code: params.clearanceCode,
         ruleClass: "clearance",
@@ -98,7 +101,7 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
         measuredMm: gap,
         requiredMm: required,
       });
-    } else if (fabMin > 0 && gap < fabMin) {
+    } else if (fabMin > 0 && below(gap, fabMin)) {
       out.push({
         code: "FAB_CLEARANCE",
         ruleClass: "manufacturability",
@@ -122,12 +125,15 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
       if (b.pointsMm.length < 2) continue;
       if (a.layer !== b.layer) continue;
       if (sameNet(a.netId, b.netId)) continue;
-      const required = Math.max(
-        clr.traceToTraceMm,
-        ctx.netClassClearanceMm(a.netId, a.netClassId),
-        ctx.netClassClearanceMm(b.netId, b.netClassId),
+      const required = ctx.clearanceFor(
+        "traceToTrace",
+        a.layer,
+        a.netId,
+        a.mid,
+        b.netId,
+        b.mid,
       );
-      if (aabbGap(a.bounds, b.bounds) > Math.max(required, fabMin)) continue;
+      if (aabbGap(a.bounds, b.bounds) > Math.max(required, fabMin, SHORT_EPS_MM)) continue;
       const closest = polylineToPolylineClosestPoints(a.pointsMm, b.pointsMm);
       const gap = closest.distance - (a.halfWidthMm + b.halfWidthMm);
       emit({
@@ -155,12 +161,15 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
     for (const pad of ctx.pads) {
       if (!pad.layers.includes(t.layer)) continue;
       if (sameNet(t.netId, pad.netId)) continue;
-      const required = Math.max(
-        clr.traceToPadMm,
-        ctx.netClassClearanceMm(t.netId, t.netClassId),
-        ctx.netClassClearanceMm(pad.netId),
+      const required = ctx.clearanceFor(
+        "traceToPad",
+        t.layer,
+        t.netId,
+        t.mid,
+        pad.netId,
+        pad.center,
       );
-      if (aabbGap(t.bounds, pad.bounds) > Math.max(required, fabMin)) continue;
+      if (aabbGap(t.bounds, pad.bounds) > Math.max(required, fabMin, SHORT_EPS_MM)) continue;
       const gap =
         polylineToPolygonDistance(t.pointsMm, pad.ring) - t.halfWidthMm;
       emit({
@@ -183,12 +192,15 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
     for (const vg of ctx.vias) {
       if (!vg.layers.includes(t.layer)) continue;
       if (sameNet(t.netId, vg.netId)) continue;
-      const required = Math.max(
-        clr.traceToViaMm,
-        ctx.netClassClearanceMm(t.netId, t.netClassId),
-        ctx.netClassClearanceMm(vg.netId, vg.netClassId),
+      const required = ctx.clearanceFor(
+        "traceToVia",
+        t.layer,
+        t.netId,
+        t.mid,
+        vg.netId,
+        vg.center,
       );
-      if (aabbGap(t.bounds, vg.bounds) > Math.max(required, fabMin)) continue;
+      if (aabbGap(t.bounds, vg.bounds) > Math.max(required, fabMin, SHORT_EPS_MM)) continue;
       const gap =
         pointToPolylineDistance(vg.center, t.pointsMm).distance -
         (t.halfWidthMm + vg.radiusMm);
@@ -216,13 +228,19 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
       const b = ctx.vias[j]!;
       if (!layersOverlap(a.layers, b.layers)) continue;
       if (sameNet(a.netId, b.netId)) continue;
-      const required = Math.max(
-        clr.viaToViaMm,
-        ctx.netClassClearanceMm(a.netId, a.netClassId),
-        ctx.netClassClearanceMm(b.netId, b.netClassId),
+      const sharedViaLayerForRule =
+        a.layers.find((l) => b.layers.includes(l)) ?? a.layers[0] ?? "F.Cu";
+      const required = ctx.clearanceFor(
+        "viaToVia",
+        sharedViaLayerForRule,
+        a.netId,
+        a.center,
+        b.netId,
+        b.center,
       );
-      if (aabbGap(a.bounds, b.bounds) > Math.max(required, fabMin)) continue;
+      if (aabbGap(a.bounds, b.bounds) > Math.max(required, fabMin, SHORT_EPS_MM)) continue;
       const gap = distance(a.center, b.center) - (a.radiusMm + b.radiusMm);
+      const sharedViaLayer = a.layers.find((l) => b.layers.includes(l));
       emit({
         netA: a.netId,
         netB: b.netId,
@@ -234,7 +252,7 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
           { kind: "via", viaId: b.via.id },
         ],
         location: midpoint(a.center, b.center),
-        layer: a.layers[0] ?? "F.Cu",
+        layer: sharedViaLayer ?? a.layers[0] ?? "F.Cu",
         label: "two vias",
       });
     }
@@ -256,12 +274,15 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
       const sharedLayer = a.layers.find((l) => b.layers.includes(l));
       if (!sharedLayer) continue;
       if (sameNet(a.netId, b.netId)) continue;
-      const required = Math.max(
-        clr.padToPadMm,
-        ctx.netClassClearanceMm(a.netId),
-        ctx.netClassClearanceMm(b.netId),
+      const required = ctx.clearanceFor(
+        "padToPad",
+        sharedLayer,
+        a.netId,
+        a.center,
+        b.netId,
+        b.center,
       );
-      if (aabbGap(a.bounds, b.bounds) > Math.max(required, fabMin)) continue;
+      if (aabbGap(a.bounds, b.bounds) > Math.max(required, fabMin, SHORT_EPS_MM)) continue;
       const gap = polygonToPolygonDistance(a.ring, b.ring);
       emit({
         netA: a.netId,
@@ -285,12 +306,15 @@ export function checkClearance(ctx: DrcContext): DrcViolationDraft[] {
       const sharedLayer = pad.layers.find((l) => vg.layers.includes(l));
       if (!sharedLayer) continue;
       if (sameNet(pad.netId, vg.netId)) continue;
-      const required = Math.max(
-        clr.traceToViaMm,
-        ctx.netClassClearanceMm(pad.netId),
-        ctx.netClassClearanceMm(vg.netId, vg.netClassId),
+      const required = ctx.clearanceFor(
+        "padToVia",
+        sharedLayer,
+        pad.netId,
+        pad.center,
+        vg.netId,
+        vg.center,
       );
-      if (aabbGap(pad.bounds, vg.bounds) > Math.max(required, fabMin)) continue;
+      if (aabbGap(pad.bounds, vg.bounds) > Math.max(required, fabMin, SHORT_EPS_MM)) continue;
       const gap = circleToPolygonDistance(vg.center, vg.radiusMm, pad.ring);
       emit({
         netA: pad.netId,

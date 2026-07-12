@@ -19,12 +19,26 @@ export const CODE_LABEL: Record<DrcRuleCode, string> = {
   UNCONNECTED_NET: "Unconnected net",
   NET_SHORT_CIRCUIT: "Short circuit",
   TRACE_LAYER_MISMATCH: "Trace on invalid layer",
+  PAD_LAYER_MISMATCH: "Pad on invalid layer",
+  NETCLASS_TRACE_WIDTH: "Trace narrower than net class",
+  NETCLASS_VIA_DIAMETER: "Via smaller than net class",
+  NETCLASS_VIA_DRILL: "Via drill smaller than net class",
+  HOLE_TO_BOARD_EDGE: "Hole too close to board edge",
+  TRACK_DANGLING: "Dangling trace",
+  VIA_DANGLING: "Dangling via",
+  CREEPAGE_DISTANCE: "Creepage/clearance below IPC-2221",
+  TRACE_CURRENT_WIDTH: "Trace too narrow for current",
+  DIFF_PAIR_GAP: "Diff-pair gap off target",
+  DIFF_PAIR_SKEW: "Diff-pair length skew",
+  DIFF_PAIR_UNCOUPLED_LENGTH: "Diff-pair uncoupled run too long",
   PLACED_PART_MISSING_FOOTPRINT: "Missing footprint",
   FAB_TRACE_WIDTH: "Trace below fab minimum",
   FAB_CLEARANCE: "Clearance below fab minimum",
   FAB_ANNULAR_RING: "Annular below fab minimum",
+  FAB_HOLE_TO_HOLE: "Hole spacing below fab minimum",
   FAB_DRILL: "Drill below fab minimum",
   FAB_PAD: "Via pad below fab minimum",
+  NET_LENGTH_OUT_OF_RANGE: "Net length out of range",
   VIA_TO_VIA_CLEARANCE: "Via-to-via clearance",
   PAD_TO_PAD_CLEARANCE: "Pad-to-pad clearance",
   PAD_TO_VIA_CLEARANCE: "Pad-to-via clearance",
@@ -68,6 +82,17 @@ export function resolveAnchorLabel(
       return (
         projection?.netNames[anchor.netId] ?? `net ${anchor.netId.slice(0, 6)}`
       );
+    case "zone": {
+      const zone = projection?.zones.find((z) => z.id === anchor.zoneId);
+      return zone?.netName
+        ? `zone ${zone.netName}`
+        : `zone ${anchor.zoneId.slice(0, 6)}`;
+    }
+    case "diffPair": {
+      const p = projection?.netNames[anchor.pNetId] ?? anchor.pNetId.slice(0, 4);
+      const n = projection?.netNames[anchor.nNetId] ?? anchor.nNetId.slice(0, 4);
+      return `pair ${p}/${n}`;
+    }
     case "boardEdge":
       return "board edge";
   }

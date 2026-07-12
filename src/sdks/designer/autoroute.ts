@@ -19,10 +19,8 @@ import type {
   DesignerPcbAddTraceCommand,
   DesignerPcbAddViaCommand,
   DesignerPcbAddTraceViaCommand,
-  PcbCopperLayerId,
   PcbDesignRules,
   PcbFabricatorId,
-  PcbLayerCount,
   PcbNetClass,
   PcbPointMm,
   PcbTraceSegmentMode,
@@ -50,10 +48,20 @@ export interface BoardGeometry {
   copperToEdgeMm: number;
 }
 
+/**
+ * Cloud auto-layout contract layer vocabulary — deliberately pinned to the
+ * 2/4-layer stackup the service supports, decoupled from the desktop's wider
+ * `PcbLayerCount`/`PcbCopperLayerId` (2..32, P2). Sending a 6+ layer board to
+ * cloud routing is a separate, not-yet-supported feature; the board-snapshot
+ * builder rejects such boards before they reach here.
+ */
+export type SnapshotLayerCount = 2 | 4;
+export type SnapshotCopperLayerId = "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+
 export interface Stackup {
-  layerCount: PcbLayerCount;
+  layerCount: SnapshotLayerCount;
   /** Z-ordered copper layers, e.g. ["F.Cu","B.Cu"]. */
-  copperLayers: PcbCopperLayerId[];
+  copperLayers: SnapshotCopperLayerId[];
   boardThicknessMm?: number;
 }
 
@@ -63,13 +71,21 @@ export interface SnapshotDesignRules {
   fabPresetId: PcbFabricatorId;
 }
 
-/** Net class as the service consumes it — identical to the desktop `PcbNetClass`. */
-export type SnapshotNetClass = PcbNetClass;
+/**
+ * Net class as the service consumes it — the desktop `PcbNetClass` minus
+ * desktop-only routing hints (diff-pair gap). The wire schema is pinned by
+ * board-snapshot.assert.ts; the snapshot builder strips extras so the
+ * cross-arch-deterministic cloud engine sees a byte-stable contract.
+ */
+export type SnapshotNetClass = Omit<
+  PcbNetClass,
+  "diffPairGapMm" | "voltageV" | "currentA"
+>;
 
 export interface SnapshotPlacement {
   id: string;
   reference: string;
-  layer: PcbCopperLayerId;
+  layer: SnapshotCopperLayerId;
   /**
    * Current component transform — consumed by cloud-auto-place (the autorouter ignores
    * these). The footprint ORIGIN (mm), absolute rotation (may be non-cardinal for KiCad
@@ -93,7 +109,7 @@ export interface PadOutline {
   placementId: string;
   padNumber: string;
   netId: string | null;
-  layer: PcbCopperLayerId;
+  layer: SnapshotCopperLayerId;
   /** Pre-polygonized world-space pad ring (mm, CCW). */
   ring: PcbPointMm[];
   isConnectable: boolean;
@@ -105,8 +121,8 @@ export interface ViaObstacle {
   centerMm: PcbPointMm;
   diameterMm: number;
   drillMm: number;
-  fromLayer: PcbCopperLayerId;
-  toLayer: PcbCopperLayerId;
+  fromLayer: SnapshotCopperLayerId;
+  toLayer: SnapshotCopperLayerId;
   /** Mechanical hole (no net, keepout on all layers). */
   isHoleOnly: boolean;
 }
@@ -115,7 +131,7 @@ export interface ExistingTrace {
   id: string;
   netId: string | null;
   netClassId: string;
-  layer: PcbCopperLayerId;
+  layer: SnapshotCopperLayerId;
   widthMm: number;
   /** Polyline in NANOMETERS. */
   pointsNm: PointNm[];
@@ -125,7 +141,7 @@ export interface ExistingTrace {
 /** Zone-filler island. Default-off from desktop requests until service deploy coordination flips it. */
 export interface PourIsland {
   islandId: string;
-  layer: PcbCopperLayerId;
+  layer: SnapshotCopperLayerId;
   pourNetId: string | null;
   /** Clipper2 rings (mm): [outer, hole1, ...]. */
   rings: PcbPointMm[][];

@@ -13,8 +13,10 @@ import type {
   PcbVia,
 } from "../../../sdks";
 import { placementMirrorX } from "../../../sdks/designer/pcb-helpers";
+import { copperLayersForCount, MAX_PCB_LAYER_COUNT } from "../../../sdks";
+import { resolvePadCopperLayers as sharedResolvePadCopperLayers } from "../pad-copper-layers";
+
 import { flattenCutout, flattenOutline } from "../pcb/outline-geometry";
-import { flipLayerSide } from "@openpcb/r3f-eda-canvas/scene/layer-side";
 import { padAperturePath } from "@openpcb/r3f-eda-canvas/scene/pad-aperture-geometry";
 import type { FootprintRenderSourcePad } from "../index";
 import { collectDrills } from "../pcb/pcb-drills";
@@ -42,12 +44,9 @@ import {
   union,
 } from "./copper-geometry-kernel";
 
-const ALL_COPPER_LAYERS: ReadonlySet<PcbCopperLayerId> = new Set([
-  "F.Cu",
-  "In1.Cu",
-  "In2.Cu",
-  "B.Cu",
-]);
+const ALL_COPPER_LAYERS: ReadonlySet<PcbCopperLayerId> = new Set(
+  copperLayersForCount(MAX_PCB_LAYER_COUNT),
+);
 
 /**
  * Copper layer(s) a pad's metal actually occupies, given the placement side.
@@ -60,25 +59,7 @@ function resolvePadCopperLayers(
   pad: FootprintRenderSourcePad,
   placement: PcbPlacedPart,
 ): ReadonlySet<PcbCopperLayerId> {
-  if (pad.layer === "*.Cu") return ALL_COPPER_LAYERS;
-  if (pad.drillDiameterMm && pad.drillDiameterMm > 0) return ALL_COPPER_LAYERS;
-
-  if (
-    pad.layer === "F.Cu" ||
-    pad.layer === "B.Cu" ||
-    pad.layer === "In1.Cu" ||
-    pad.layer === "In2.Cu"
-  ) {
-    const effective: PcbCopperLayerId =
-      placement.layer === "B.Cu"
-        ? (flipLayerSide(pad.layer) as PcbCopperLayerId)
-        : pad.layer;
-    return new Set([effective]);
-  }
-
-  const fallback: PcbCopperLayerId =
-    placement.layer === "B.Cu" ? "B.Cu" : "F.Cu";
-  return new Set([fallback]);
+  return sharedResolvePadCopperLayers(pad, placement, ALL_COPPER_LAYERS);
 }
 
 const DEFAULT_COPPER_FILL_CLEARANCE_MM = 0.5;

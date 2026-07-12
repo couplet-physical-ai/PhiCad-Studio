@@ -24,6 +24,7 @@ import type {
   PcbVia,
   PcbZone,
 } from "../../../../../sdks/designer";
+import { isCopperLayerId } from "../../../../../sdks/designer";
 import {
   insertPcbTrace,
   insertPcbVia,
@@ -248,10 +249,8 @@ export function insertPcbEntities(
 }
 
 function pickCopperLayer(layer: string): PcbCopperLayerId {
-  // Accept canonical KiCad copper-layer names; everything else falls back to F.Cu.
-  return (COPPER_LAYERS as readonly string[]).includes(layer)
-    ? (layer as PcbCopperLayerId)
-    : "F.Cu";
+  // Accept any valid copper-layer id (2–32 stackup); everything else → F.Cu.
+  return isCopperLayerId(layer) ? layer : "F.Cu";
 }
 
 function normalize360(value: number): number {

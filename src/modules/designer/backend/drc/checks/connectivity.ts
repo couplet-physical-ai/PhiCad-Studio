@@ -27,7 +27,7 @@ export function checkConnectivity(ctx: DrcContext): DrcViolationDraft[] {
     out.push({
       code: "UNCONNECTED_NET",
       ruleClass: "connectivity",
-      severity: "warning",
+      severity: "error",
       message: `Net "${name}" is not fully routed (${segs.length} airwire${segs.length > 1 ? "s" : ""} remaining)`,
       anchors: [{ kind: "net", netId }],
       locationMm: {

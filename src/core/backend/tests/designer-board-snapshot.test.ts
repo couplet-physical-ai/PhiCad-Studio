@@ -241,7 +241,12 @@ describe("buildBoardSnapshot", () => {
     expect(snapshot.pours).toEqual([]);
     expect(snapshot.stackup.copperLayers).toEqual(["F.Cu", "B.Cu"]);
     expect(snapshot.designRules.fabPresetId).toBe(proj.board.fabricator);
-    expect(snapshot.netClasses).toBe(proj.board.netClasses);
+    // Copied, not aliased: the builder strips desktop-only routing hints
+    // (diffPairGapMm) to keep the cloud wire schema byte-stable.
+    expect(snapshot.netClasses).toEqual(proj.board.netClasses);
+    expect(snapshot.netClasses.every((c) => !("diffPairGapMm" in c))).toBe(
+      true,
+    );
     expect(snapshot.ratsnest).toHaveLength(1);
     // outline is one ring of >=3 mm points (small magnitude)
     expect(snapshot.board.outline).toHaveLength(1);

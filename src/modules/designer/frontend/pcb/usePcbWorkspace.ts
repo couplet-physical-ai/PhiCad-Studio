@@ -571,6 +571,48 @@ export function usePcbWorkspace(params: {
     [dispatchCommand, refresh, refreshHistory],
   );
 
+  /**
+   * Atomic commit of a whole routing session (multi-layer runs + vias) as ONE
+   * `pcb_commit_route` — one revision, one undo entry, one refresh.
+   */
+  const commitRoute = useCallback(
+    async (input: {
+      traces: Array<{
+        layer: PcbCopperLayerId;
+        pointsNm: Array<{ x: number; y: number }>;
+        widthMm: number;
+        netId: string | null;
+        netClassId: string;
+        segmentMode: PcbTraceSegmentMode;
+      }>;
+      vias: Array<{
+        centerMm: PcbPointMm;
+        netId: string | null;
+        netClassId: string;
+        diameterMmOverride?: number;
+        drillMmOverride?: number;
+      }>;
+    }) => {
+      setError(null);
+      try {
+        const result = await dispatchCommand({
+          type: "pcb_commit_route",
+          traces: input.traces,
+          vias: input.vias,
+        });
+        if (!result.ok)
+          throw new Error(dispatchFailureMessage("Route", result));
+        await refresh();
+        await refreshHistory();
+        return result.createdEntityId;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Route commit failed");
+        throw err instanceof Error ? err : new Error("Route commit failed");
+      }
+    },
+    [dispatchCommand, refresh, refreshHistory],
+  );
+
   const deleteTrace = useCallback(
     async (traceId: string) => {
       setError(null);
@@ -914,6 +956,7 @@ export function usePcbWorkspace(params: {
     addTrace,
     addTraceVia,
     addVia,
+    commitRoute,
     deleteTrace,
     deleteVia,
     updateTraceGeometry,

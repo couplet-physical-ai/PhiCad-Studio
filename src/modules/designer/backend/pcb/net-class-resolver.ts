@@ -18,7 +18,7 @@ const POWER_NAMES = /^(VCC|VDD|VBAT|VBUS|VIN|VOUT)$/i;
 // Matches +3V3, +5V, -12V, +1V8, +0.9V, -0V9, etc.
 const POWER_VOLTAGE = /^[+-]\d+(\.\d+)?V\d*$/i;
 
-function classIdForName(
+export function classIdForName(
   name: string,
   available: ReadonlyArray<PcbNetClass>,
 ): string {
@@ -28,6 +28,24 @@ function classIdForName(
   if (POWER_NAMES.test(trimmed) && has("power")) return "power";
   if (POWER_VOLTAGE.test(trimmed) && has("power")) return "power";
   return available[0]?.id ?? "default";
+}
+
+/**
+ * True when the net name matches a class NAME PATTERN (GND/POWER/voltage) that
+ * resolves to an existing class — i.e. a genuine name match, NOT the
+ * array-order fallback. Lets callers distinguish "user named this GND" from
+ * "fell through to the first class".
+ */
+export function netNameMatchesClassPattern(
+  name: string,
+  available: ReadonlyArray<PcbNetClass>,
+): boolean {
+  const trimmed = name.trim();
+  const has = (id: string): boolean => available.some((c) => c.id === id);
+  if (GND_NAMES.test(trimmed) && has("gnd")) return true;
+  if ((POWER_NAMES.test(trimmed) || POWER_VOLTAGE.test(trimmed)) && has("power"))
+    return true;
+  return false;
 }
 
 export function resolveNetClassId(

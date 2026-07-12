@@ -12,12 +12,27 @@ import type {
   DrcAnchor,
   PcbCopperLayerId,
   PcbDesignRules,
+  DrcPairKind,
   PcbFabricatorId,
+  PcbLayerCount,
   PcbNetClass,
   PcbPointMm,
   PcbVia,
   RatsnestSegment,
 } from "../../../../sdks/designer";
+import {
+  copperLayersForCount,
+  isCopperLayerId,
+  isValidViaSpan,
+  viaSpanLayers,
+} from "../../../../sdks/designer";
+import {
+  areaMaskForPoint,
+  compileRuleSet,
+  resolveClearance,
+  type CompiledRuleSet,
+} from "../../../../shared/drc/rule-resolver";
+import { resolvePadCopperLayers } from "../../../../shared/rendering/pad-copper-layers";
 import { resolveNetClassId } from "../pcb/net-class-resolver";
 import { flattenCutout, flattenOutline } from "../pcb/outline-geometry";
 import {
@@ -31,28 +46,19 @@ import type { Point } from "../pcb/pcb-trace-geometry";
 
 /** Default minimums when a (pre-DRC) board lacks the optional rule field. */
 export const DEFAULT_HOLE_TO_HOLE_MM = 0.25;
+export const DEFAULT_HOLE_TO_BOARD_EDGE_MM = 0.3;
 export const DEFAULT_BOARD_THICKNESS_MM = 1.6;
 
 const NM_TO_MM = 1 / 1_000_000;
-const STACKUP_ORDER: PcbCopperLayerId[] = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"];
 
-/**
- * Geometric tolerance (mm) for minimum-rule comparisons. Floating-point sums
- * like `(0.3 - 0.1) / 2` land at `0.09999999999999999`, which would falsely
- * fail a `< 0.1` minimum. Treat `value < limit - DRC_EPS_MM` as the breach so
- * exact-spec geometry passes. 1e-6 mm = 1 nm — far below any real DRC value.
- */
-export const DRC_EPS_MM = 1e-6;
-
-/** True when `value` is below `limit` by more than the geometric tolerance. */
-export function below(value: number, limit: number, eps = DRC_EPS_MM): boolean {
-  return value < limit - eps;
-}
+// The tolerance policy moved to pcb/tolerance.ts (P1 epsilon unification) so
+// fab validators and creation gates share it; re-exported here because every
+// check imports it from the context module.
+export { below, DRC_EPS_MM } from "../pcb/tolerance";
 
 export interface DrcTrace {
   id: string;
   netId: string | null;
-  netClassId: string;
   layer: PcbCopperLayerId;
   widthMm: number;
   halfWidthMm: number;
@@ -68,21 +74,42 @@ export interface DrcPad {
   ring: PcbPointMm[];
   bounds: RingBounds;
   center: PcbPointMm;
+  /**
+   * True when the pad declared an explicit copper layer not valid for this
+   * stackup (e.g. In1.Cu on a 2-layer board). Flagged as PAD_LAYER_MISMATCH;
+   * such pads are still collision-checked on every valid layer (fallback) so
+   * they cannot mask a short (audit B5-PAD-LAYER, B5-VIA-MASK).
+   */
+  declaredLayerInvalid: boolean;
 }
 
 export interface DrcViaGeom {
   via: PcbVia;
   netId: string | null;
-  netClassId: string;
   center: PcbPointMm;
   radiusMm: number;
   layers: PcbCopperLayerId[];
   bounds: RingBounds;
+  /**
+   * True when the via's declared span resolves to no valid copper layers on
+   * this stackup. Flagged as VIA_LAYER_SPAN; the via is still checked on ALL
+   * valid layers (clamp-with-fallback) so its copper can't escape short
+   * detection (audit B5-VIA-MASK).
+   */
+  layerSpanInvalid: boolean;
+  /**
+   * True when the via's declared TYPE topology is invalid for the stackup
+   * (e.g. a "blind" via spanning both outer layers, a reversed span, or a
+   * non-adjacent microvia). Also surfaces as VIA_LAYER_SPAN.
+   */
+  viaTypeInvalid: boolean;
 }
 
 /** Any drilled hole (via barrel / TH pad / std-or-NPTH free pad / free hole). */
 export interface DrcHole {
   anchor: DrcAnchor;
+  /** Hole class: via barrel / plated component hole / non-plated hole. */
+  kind: "via" | "pth" | "npth";
   /** Net the hole's copper belongs to (null for mechanical / NPTH holes). */
   netId: string | null;
   center: PcbPointMm;
@@ -93,6 +120,12 @@ export interface DrcHole {
    * undefined for vias (checked via `DrcViaGeom`) and bare mechanical holes.
    */
   padOdMm?: number;
+  /**
+   * Slot centerline (mm) for oblong drills, so edge/spacing checks use the true
+   * slot geometry instead of a round-hole model (audit B2-5 template). Absent
+   * for round holes.
+   */
+  slot?: { a: PcbPointMm; b: PcbPointMm; widthMm: number };
 }
 
 export interface DrcContext {
@@ -110,23 +143,39 @@ export interface DrcContext {
   boardThicknessMm: number;
   /** Minimum edge-to-edge hole spacing (mm). */
   holeToHoleMm: number;
+  /** Minimum drill-edge-to-board-edge spacing (mm). */
+  holeToBoardEdgeMm: number;
   /** Flattened board outline ring (mm) + internal cutout rings. */
   outlineRing: Point[];
   cutoutRings: Point[][];
   ratsnest: RatsnestSegment[];
   netNames: Record<string, string>;
   /**
-   * Clearance contribution of an item's net class (mm), or 0 when the net /
-   * class is unknown. Net class can only *tighten* clearance; the board design
-   * rule is the floor (see `requiredClearanceMm` in checks/clearance.ts).
+   * Clearance contribution of a net's class (mm), or 0 when the net / class is
+   * unknown. Resolved LIVE from the net id every time (audit B3-2/B1-2): the
+   * stored `netClassId` on traces/vias is a creation-time hint that can go
+   * stale after a reassignment, so DRC never consults it. Net class can only
+   * *tighten* clearance; the board design rule is the floor.
    */
-  netClassClearanceMm(netId: string | null, netClassId?: string): number;
+  netClassClearanceMm(netId: string | null): number;
+  /** Resolved net-class id for a net (live; never the stored id). */
+  netClassIdOf(netId: string | null): string;
+  /**
+   * Effective clearance (mm) for a pair — implicit tier + scoped rules + floor
+   * (P6). `pointA`/`pointB` are representative locations for area-scope tests.
+   */
+  clearanceFor(
+    pairKind: DrcPairKind,
+    layer: PcbCopperLayerId,
+    aNetId: string | null,
+    pointA: PcbPointMm,
+    bNetId: string | null,
+    pointB: PcbPointMm,
+  ): number;
 }
 
 function copperLayerOf(layer: string): PcbCopperLayerId | null {
-  return (STACKUP_ORDER as string[]).includes(layer)
-    ? (layer as PcbCopperLayerId)
-    : null;
+  return isCopperLayerId(layer) ? layer : null;
 }
 
 function boundsOfPoints(points: readonly Point[], pad = 0): RingBounds {
@@ -141,30 +190,54 @@ function boundsOfPoints(points: readonly Point[], pad = 0): RingBounds {
 
 function viaLayers(
   via: PcbVia,
-  valid: Set<PcbCopperLayerId>,
+  layerCount: PcbLayerCount,
 ): PcbCopperLayerId[] {
-  const fromIdx = STACKUP_ORDER.indexOf(via.fromLayer);
-  const toIdx = STACKUP_ORDER.indexOf(via.toLayer);
-  if (fromIdx < 0 || toIdx < 0) return [];
-  const lo = Math.min(fromIdx, toIdx);
-  const hi = Math.max(fromIdx, toIdx);
-  const out: PcbCopperLayerId[] = [];
-  for (let i = lo; i <= hi; i += 1) {
-    const layer = STACKUP_ORDER[i]!;
-    if (valid.has(layer)) out.push(layer);
-  }
-  return out;
+  return viaSpanLayers(via.fromLayer, via.toLayer, layerCount);
+}
+
+/**
+ * Slot centerline for an oblong drill, or undefined for a round hole. The slot
+ * runs `lengthMm` along `angleDeg` through `center`; endpoints are inset by
+ * `widthMm/2` so a & b are the centers of the rounded caps.
+ */
+function slotCenterline(
+  center: PcbPointMm,
+  drillSlot: { lengthMm: number; widthMm: number; angleDeg: number } | null | undefined,
+): { a: PcbPointMm; b: PcbPointMm; widthMm: number } | undefined {
+  if (!drillSlot || drillSlot.lengthMm <= drillSlot.widthMm) return undefined;
+  const half = (drillSlot.lengthMm - drillSlot.widthMm) / 2;
+  const rad = (drillSlot.angleDeg * Math.PI) / 180;
+  const dx = Math.cos(rad) * half;
+  const dy = Math.sin(rad) * half;
+  return {
+    a: { x: center.x - dx, y: center.y - dy },
+    b: { x: center.x + dx, y: center.y + dy },
+    widthMm: drillSlot.widthMm,
+  };
 }
 
 export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
   const { board } = projection;
   const validCopperLayers = new Set<PcbCopperLayerId>(
-    board.layerCount === 4
-      ? ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
-      : ["F.Cu", "B.Cu"],
+    copperLayersForCount(board.layerCount),
   );
 
   const classById = new Map(board.netClasses.map((c) => [c.id, c]));
+  const compiledRules: CompiledRuleSet = compileRuleSet(board);
+  const classIdByNet = new Map<string, string>();
+  const netClassIdOf = (netId: string | null): string => {
+    if (!netId) return "";
+    const cached = classIdByNet.get(netId);
+    if (cached !== undefined) return cached;
+    const id = resolveNetClassId(
+      netNames[netId] ?? "",
+      board.netClasses,
+      board.perNetClassAssignments,
+      netId,
+    );
+    classIdByNet.set(netId, id);
+    return id;
+  };
   // Memoize net → clearance resolution: the O(n²) clearance loops query the
   // same net's class repeatedly, and resolveNetClassId re-scans every net class
   // per call. Cache the resolved clearance once per net id.
@@ -180,7 +253,6 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
     return {
       id: t.id,
       netId: t.netId,
-      netClassId: t.netClassId,
       layer: t.layer,
       widthMm: t.widthMm,
       halfWidthMm: half,
@@ -194,13 +266,25 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
   const holes: DrcHole[] = [];
   const padNets = projection.padNets ?? {};
   for (const placement of projection.placements) {
-    const placementCopper = copperLayerOf(placement.layer) ?? "F.Cu";
     for (const pad of placementPads(placement)) {
       const drill = pad.drillDiameterMm ?? 0;
       const isThroughHole = drill > 0;
-      const layers: PcbCopperLayerId[] = isThroughHole
+      // Shared resolver applies the B.Cu side-flip (audit B1-1) and *.Cu →
+      // all-layers (B1-6). A pad that named an explicit copper layer outside
+      // this stackup resolves to the placement side (fallback) but is flagged.
+      const resolved = resolvePadCopperLayers(pad, placement, validCopperLayers);
+      const declaredLayerInvalid =
+        !isThroughHole &&
+        pad.layer !== undefined &&
+        pad.layer !== "*.Cu" &&
+        isCopperLayerId(pad.layer) &&
+        !validCopperLayers.has(pad.layer);
+      // Clamp-with-fallback (audit B5-VIA-MASK, symmetric with vias): an
+      // invalid-layer pad is checked on ALL valid copper layers so its copper
+      // still collides with everything until repaired — never masks a short.
+      const layers: PcbCopperLayerId[] = declaredLayerInvalid
         ? [...validCopperLayers]
-        : [copperLayerOf(pad.layer ?? placement.layer) ?? placementCopper];
+        : [...resolved];
       const ring = padOutlineWorldMm(placement, pad);
       const center = padWorldPositionMm(placement, pad);
       const anchor: DrcAnchor = {
@@ -216,10 +300,12 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
         ring,
         bounds: ringBounds(ring),
         center,
+        declaredLayerInvalid,
       });
       if (isThroughHole) {
         holes.push({
           anchor,
+          kind: "pth",
           netId: padNetId,
           center,
           drillMm: drill,
@@ -235,19 +321,27 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
       (freePad.padType === "std" || freePad.padType === "hole")
     ) {
       const isStd = freePad.padType === "std";
+      const padSlot = slotCenterline(freePad.centerMm, freePad.drillSlot);
       holes.push({
         anchor: { kind: "freePad", freePadId: freePad.id },
+        kind: isStd ? "pth" : "npth",
         netId: isStd ? freePad.netId : null,
         center: freePad.centerMm,
         drillMm: drill,
         ...(isStd
           ? { padOdMm: Math.min(freePad.widthMm, freePad.heightMm) }
           : {}),
+        ...(padSlot ? { slot: padSlot } : {}),
       });
     }
     if (freePad.padType === "hole") continue; // NPTH: counted above, no copper
+    const isStd = freePad.padType === "std";
+    const declaredLayerInvalid =
+      !isStd &&
+      isCopperLayerId(freePad.layer) &&
+      !validCopperLayers.has(freePad.layer);
     const layers: PcbCopperLayerId[] =
-      freePad.padType === "std"
+      isStd || declaredLayerInvalid
         ? [...validCopperLayers]
         : [copperLayerOf(freePad.layer) ?? "F.Cu"];
     const ring = freePadOutlineWorldMm(freePad);
@@ -258,26 +352,41 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
       ring,
       bounds: ringBounds(ring),
       center: freePad.centerMm,
+      declaredLayerInvalid,
     });
   }
   for (const hole of projection.freeHoles) {
+    const holeSlot = slotCenterline(hole.centerMm, hole.drillSlot);
     holes.push({
       anchor: { kind: "freeHole", freeHoleId: hole.id },
+      kind: "npth",
       netId: null,
       center: hole.centerMm,
       drillMm: hole.drillMm,
+      ...(holeSlot ? { slot: holeSlot } : {}),
     });
   }
 
   const vias: DrcViaGeom[] = projection.vias.map((via) => {
     const radius = via.diameterMm / 2;
+    const span = viaLayers(via, board.layerCount);
+    const layerSpanInvalid = span.length < 2;
+    const viaTypeInvalid =
+      !layerSpanInvalid &&
+      !isValidViaSpan(via.fromLayer, via.toLayer, via.viaType, board.layerCount)
+        .ok;
+    // Clamp-with-fallback (audit B5-VIA-MASK): a layer-invalid via is checked
+    // on every valid copper layer so its physical barrel copper still collides
+    // with everything until repaired — it must not vanish from clearance/short.
+    const layers = layerSpanInvalid ? [...validCopperLayers] : span;
     return {
       via,
       netId: via.netId,
-      netClassId: via.netClassId,
       center: via.centerMm,
       radiusMm: radius,
-      layers: viaLayers(via, validCopperLayers),
+      layers,
+      layerSpanInvalid,
+      viaTypeInvalid,
       bounds: {
         minX: via.centerMm.x - radius,
         minY: via.centerMm.y - radius,
@@ -290,6 +399,7 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
   for (const vg of vias) {
     holes.push({
       anchor: { kind: "via", viaId: vg.via.id },
+      kind: "via",
       netId: vg.netId,
       center: vg.center,
       drillMm: vg.via.drillMm,
@@ -312,31 +422,55 @@ export function buildDrcContext(projection: DesignerPcbProjection): DrcContext {
     boardThicknessMm: board.boardThicknessMm ?? DEFAULT_BOARD_THICKNESS_MM,
     holeToHoleMm:
       board.designRules.minimums.holeToHoleMm ?? DEFAULT_HOLE_TO_HOLE_MM,
+    holeToBoardEdgeMm:
+      board.designRules.clearance.holeToBoardEdgeMm ??
+      DEFAULT_HOLE_TO_BOARD_EDGE_MM,
     outlineRing: flattenOutline(board.outline),
     cutoutRings: cutouts.map((c) => flattenCutout(c.shape)),
     ratsnest: projection.ratsnest,
     netNames,
-    netClassClearanceMm(netId, netClassId) {
-      if (netClassId) {
-        const c = classById.get(netClassId);
-        if (c) return c.clearanceMm;
+    netClassClearanceMm(netId) {
+      if (!netId) return 0;
+      const cached = clearanceByNetId.get(netId);
+      if (cached !== undefined) return cached;
+      const name = netNames[netId] ?? "";
+      const id = resolveNetClassId(
+        name,
+        board.netClasses,
+        board.perNetClassAssignments,
+        netId,
+      );
+      const c = classById.get(id);
+      const value = c ? c.clearanceMm : 0;
+      clearanceByNetId.set(netId, value);
+      return value;
+    },
+    netClassIdOf,
+    clearanceFor(pairKind, layer, aNetId, pointA, bNetId, pointB) {
+      // Implicit tier: pre-P6 max(boardRule, classA, classB) — reuses the
+      // memoized net-class clearance lookups above.
+      const implicitMax = Math.max(
+        compiledRules.boardClearanceByPairKind[pairKind] ?? 0,
+        this.netClassClearanceMm(aNetId),
+        this.netClassClearanceMm(bNetId),
+      );
+      // Fast path: no scoped rules ⇒ implicit tier only (floor is 0 pre-P6),
+      // byte-identical to the old max(...).
+      if (compiledRules.clearanceRules.length === 0) {
+        return Math.max(implicitMax, compiledRules.floorMm);
       }
-      if (netId) {
-        const cached = clearanceByNetId.get(netId);
-        if (cached !== undefined) return cached;
-        const name = netNames[netId] ?? "";
-        const id = resolveNetClassId(
-          name,
-          board.netClasses,
-          board.perNetClassAssignments,
-          netId,
-        );
-        const c = classById.get(id);
-        const value = c ? c.clearanceMm : 0;
-        clearanceByNetId.set(netId, value);
-        return value;
-      }
-      return 0;
+      const a = {
+        netId: aNetId,
+        netClassId: netClassIdOf(aNetId),
+        areaMask: areaMaskForPoint(compiledRules, pointA),
+      };
+      const b = {
+        netId: bNetId,
+        netClassId: netClassIdOf(bNetId),
+        areaMask: areaMaskForPoint(compiledRules, pointB),
+      };
+      return resolveClearance(compiledRules, pairKind, layer, a, b, implicitMax)
+        .mm;
     },
   };
 }

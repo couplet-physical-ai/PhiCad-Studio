@@ -1,9 +1,11 @@
 import {
   FAB_PRESETS,
+  validateHoleAgainstFab,
   validateTraceAgainstFab,
   validateViaAgainstFab,
 } from "../../pcb/fab-presets";
 import { below, type DrcContext } from "../drc-context";
+import { exceeds } from "../../pcb/tolerance";
 import type { DrcViolationDraft } from "../types";
 
 /**
@@ -119,7 +121,7 @@ export function checkManufacturability(ctx: DrcContext): DrcViolationDraft[] {
         layerCount > 1 ? (vg.layers.length - 1) / (layerCount - 1) : 1;
       const effectiveThicknessMm = ctx.boardThicknessMm * spanFraction;
       const ratio = effectiveThicknessMm / via.drillMm;
-      if (preset && ratio > preset.maxAspectRatio) {
+      if (preset && exceeds(ratio, preset.maxAspectRatio)) {
         out.push({
           code: "VIA_ASPECT_RATIO",
           ruleClass: "manufacturability",
@@ -161,6 +163,26 @@ export function checkManufacturability(ctx: DrcContext): DrcViolationDraft[] {
           locationMm: hole.center,
           measuredMm: annular,
           requiredMm: min.annularRingMm,
+        });
+      }
+    }
+    // Fab capability floors for PTH/NPTH drills + PTH annular rings (vias are
+    // validated with via-specific thresholds in the via loop above; P8 —
+    // audit B2-8: TH/free-hole drills previously got no fab check at all).
+    if (hole.kind !== "via") {
+      for (const fv of validateHoleAgainstFab(
+        { drillMm: hole.drillMm, padOdMm: hole.padOdMm },
+        ctx.fabricator,
+      )) {
+        out.push({
+          code: fv.rule === "minDrillMm" ? "FAB_DRILL" : "FAB_ANNULAR_RING",
+          ruleClass: "manufacturability",
+          severity: "warning",
+          message: fv.message,
+          anchors: [hole.anchor],
+          locationMm: hole.center,
+          measuredMm: fv.actualValue,
+          requiredMm: fv.fabValue,
         });
       }
     }

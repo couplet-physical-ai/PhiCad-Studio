@@ -88,10 +88,35 @@ export const FEATURE_FLAGS = {
     description:
       "Cloud Copilot chat mode (agent runs on the cloud-copilot service; proposals mirrored locally)",
   },
+  "pcb.advancedVias": {
+    availability: "dev",
+    description:
+      "Accept blind/buried/micro via spans in via commands (data + DRC only; no picker UI). Through vias stay the only kind the route tool emits.",
+  },
   "pcb.padShapeConnectivity": {
     availability: "dev",
     description:
       "Ratsnest/DRC connectivity accepts trace endpoints anywhere inside a pad's copper AABB, not only within 1 µm of pad center — removes false opens on KiCad imports. Graduate to 'all' after a bake cycle (shifts DRC results on existing designs).",
+  },
+  "pcb.routeAutoFinish": {
+    availability: "dev",
+    description:
+      "Route tool: Tab / Ctrl+Click proposes an A*-completed path to the target pad as an explicit-accept preview (never auto-commits).",
+  },
+  "pcb.routeWalkaround": {
+    availability: "dev",
+    description:
+      "Route tool: pending ghost segment locally bends around obstacles (walkaround-lite; no push-and-shove).",
+  },
+  "pcb.lengthTuning": {
+    availability: "dev",
+    description:
+      "Length matching: match-group rules + routed-length gauges + DRC length check + meander Tune tool.",
+  },
+  "pcb.bundleRouting": {
+    availability: "dev",
+    description:
+      "Bundle routing: collect same-side pads, route one centerline, commit N parallel lanes atomically (diff pairs auto-detected by _P/_N and +/- net-name suffixes).",
   },
   "dataset.capture": {
     availability: "prod",

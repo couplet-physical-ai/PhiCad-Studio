@@ -11,8 +11,10 @@ import type {
   LibraryComponentPlacementDetail,
   PcbBoardOutline,
   PcbBoardSettings,
+  PcbCopperLayerId,
   PcbTrace,
   PcbVia,
+  PcbViaType,
 } from "../../../sdks";
 import {
   insertPrimitiveRow,
@@ -24,6 +26,7 @@ import {
   serializePrimitivePayload,
 } from "./primitive-store";
 import { buildCreateWirePayload } from "./commands/create-wire";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { autoRouteWirePointsDetailed } from "./routing/wire-obstacles";
 import { applyAutoArrange } from "./layout/arrange-schematic";
 import {
@@ -120,6 +123,8 @@ import {
   validateViaAgainstFab,
 } from "./pcb/fab-presets";
 import { computeOutlineBboxMm } from "./pcb/outline-geometry";
+import { below } from "./pcb/tolerance";
+import { copperLayerIndex } from "../../../sdks/designer";
 import {
   insertVertexOnWire,
   parseWirePointsJson,
@@ -313,6 +318,65 @@ function buildPcbTraceForInsert(
   return { trace };
 }
 
+
+
+/**
+ * Resolve + validate the via's layer span. Default (and everything the
+ * interactive route tool emits) is a through via F.Cu→B.Cu. Non-through
+ * types (blind/buried/micro) are accepted data-only behind the
+ * `pcb.advancedVias` dev flag — no picker UI yet.
+ */
+function resolveViaSpan(
+  input: PcbViaInput,
+  board: PcbBoardSettings,
+):
+  | { fromLayer: PcbCopperLayerId; toLayer: PcbCopperLayerId; viaType: PcbViaType }
+  | { error: DesignerDispatchResult } {
+  const viaType = input.viaType ?? "through";
+  if (viaType === "through") {
+    // Through barrels always span the full stackup; an explicit span on a
+    // through via is rejected rather than silently rewritten.
+    if (
+      (input.fromLayer !== undefined && input.fromLayer !== "F.Cu") ||
+      (input.toLayer !== undefined && input.toLayer !== "B.Cu")
+    ) {
+      return {
+        error: invalidPcbVia("through vias always span F.Cu to B.Cu"),
+      };
+    }
+    return { fromLayer: "F.Cu", toLayer: "B.Cu", viaType };
+  }
+  if (!isFeatureEnabled("pcb.advancedVias")) {
+    return {
+      error: invalidPcbVia(
+        `via type "${viaType}" requires the pcb.advancedVias feature`,
+      ),
+    };
+  }
+  const fromLayer = input.fromLayer ?? "F.Cu";
+  const toLayer = input.toLayer ?? "B.Cu";
+  // Creation gate is permissive: enforce only the layer vocabulary + downward
+  // ordering here. Exact blind/buried/micro topology (which outer layers a
+  // type may touch) is a manufacturability concern surfaced as a DRC warning
+  // (audit B2-7), not a hard block on entering geometry — mirrors KiCad, which
+  // lets you draw an off-spec padstack and flags it at DRC.
+  const fromIdx = copperLayerIndex(fromLayer, board.layerCount);
+  const toIdx = copperLayerIndex(toLayer, board.layerCount);
+  if (fromIdx === null || toIdx === null) {
+    return {
+      error: invalidPcbVia(
+        `via span ${fromLayer}→${toLayer} is invalid for a ${board.layerCount}-layer board`,
+      ),
+    };
+  }
+  if (fromIdx >= toIdx) {
+    return {
+      error: invalidPcbVia("via span must go downward through the stackup"),
+    };
+  }
+  return { fromLayer, toLayer, viaType };
+}
+
 function buildPcbViaForInsert(
   input: PcbViaInput,
   board: PcbBoardSettings,
@@ -332,15 +396,17 @@ function buildPcbViaForInsert(
     return { error: invalidPcbVia("via diameter must exceed drill") };
   }
   const minimums = board.designRules.minimums;
-  if (diameterMm < minimums.viaDiameterMm) {
+  if (below(diameterMm, minimums.viaDiameterMm)) {
     return { error: invalidPcbVia("via diameter is below board minimum") };
   }
-  if (drillMm < minimums.viaDrillMm || drillMm < minimums.drillSizeMm) {
+  if (below(drillMm, minimums.viaDrillMm) || below(drillMm, minimums.drillSizeMm)) {
     return { error: invalidPcbVia("via drill is below board minimum") };
   }
-  if ((diameterMm - drillMm) / 2 < minimums.annularRingMm) {
+  if (below((diameterMm - drillMm) / 2, minimums.annularRingMm)) {
     return { error: invalidPcbVia("via annular ring is below board minimum") };
   }
+  const span = resolveViaSpan(input, board);
+  if ("error" in span) return span;
   const via: PcbVia = {
     id: crypto.randomUUID(),
     netId: input.netId,
@@ -348,9 +414,9 @@ function buildPcbViaForInsert(
     centerMm: input.centerMm,
     diameterMm,
     drillMm,
-    fromLayer: "F.Cu",
-    toLayer: "B.Cu",
-    viaType: "through",
+    fromLayer: span.fromLayer,
+    toLayer: span.toLayer,
+    viaType: span.viaType,
     protection: netClass.defaultViaProtection,
     provenance: "route",
   };
@@ -666,6 +732,38 @@ export function executeDesignerCommand({
     );
   }
 
+  if (command.type === "pcb_commit_route") {
+    if (command.traces.length === 0 && command.vias.length === 0) {
+      return invalidPcbTrace(
+        "pcb_commit_route requires at least one trace or via",
+      );
+    }
+    const board = ensurePcbBoardSettings(tx, designId, timestamp);
+    // Validate-all-then-insert-all: executor branches return error RESULTS
+    // (they don't throw), so inserting before every item is validated would
+    // persist a partial batch inside the committed transaction.
+    const traces = [];
+    for (const traceInput of command.traces) {
+      const built = buildPcbTraceForInsert(traceInput, board);
+      if ("error" in built) return built.error;
+      traces.push(built.trace);
+    }
+    const vias = [];
+    for (const viaInput of command.vias) {
+      const built = buildPcbViaForInsert(viaInput, board);
+      if ("error" in built) return built.error;
+      vias.push(built.via);
+    }
+    for (const trace of traces) insertPcbTrace(tx, designId, trace, timestamp);
+    for (const via of vias) insertPcbVia(tx, designId, via, timestamp);
+    // Single-id result contract (see pcb_add_trace_via): downstream consumers
+    // derive created copper from history patches, not this id.
+    return okResult(
+      bumpRevision(tx, designId, revision, timestamp),
+      traces[0]?.id ?? vias[0]?.id ?? null,
+    );
+  }
+
   if (command.type === "pcb_delete_trace") {
     const existing = loadPcbTraceById(tx, designId, command.traceId);
     if (!existing) return pcbTraceNotFound(command.traceId);
@@ -751,6 +849,10 @@ export function executeDesignerCommand({
       netClasses: command.netClasses,
       boardThicknessMm: command.boardThicknessMm,
       perNetClassAssignments: command.perNetClassAssignments,
+      lengthMatchGroups: command.lengthMatchGroups,
+      drcSeverityOverrides: command.drcSeverityOverrides,
+      drcRules: command.drcRules,
+      diffPairs: command.diffPairs,
       timestamp,
     });
     return okResult(bumpRevision(tx, designId, revision, timestamp), null);

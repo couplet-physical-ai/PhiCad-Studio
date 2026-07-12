@@ -37,6 +37,7 @@ import type {
   DesignerMovePrimitiveCommand,
   DesignerPcbAddTraceCommand,
   DesignerPcbAddTraceViaCommand,
+  DesignerPcbCommitRouteCommand,
   DesignerPcbAddViaCommand,
   DesignerPcbDeleteTraceCommand,
   DesignerPcbDeleteViaCommand,
@@ -51,6 +52,7 @@ import type {
   DesignerPcbSetViewStateCommand,
   DesignerPcbSetDesignRulesCommand,
   PcbDesignRules,
+  PcbLengthMatchGroup,
   PcbNetClass,
   DesignerPcbSetVisibleLayersCommand,
   DesignerPcbUpdateTraceGeometryCommand,
@@ -83,6 +85,7 @@ import type {
   DesignerUpdatePrimitiveTextCommand,
   DesignerUpsertLabelCommand,
   PcbCopperLayerId,
+  PcbViaType,
   PcbLayerId,
   PcbTraceSegmentMode,
   PcbBoardOutline,
@@ -93,6 +96,7 @@ import type {
   DesignerCommentSurface,
   DesignerCommentThread,
 } from "../../../sdks/designer";
+import { isCopperLayerId } from "../../../sdks/designer";
 import { resolveCaptureRuntime } from "./capture";
 import type { DesignerStore } from "./store";
 import { ulid } from "./capture/ulid";
@@ -1075,7 +1079,7 @@ function parsePcbSetActiveLayerCommand(
   raw: Record<string, unknown>,
 ): DesignerPcbSetActiveLayerCommand {
   const layer = asString(raw.layer);
-  if (!layer || !PCB_LAYER_VALUES.has(layer)) {
+  if (!layer || (!isCopperLayerId(layer) && !PCB_LAYER_VALUES.has(layer))) {
     throw new ValidationError(
       `command.layer must be a valid PcbLayerId (got ${JSON.stringify(layer)})`,
     );
@@ -1096,7 +1100,7 @@ function parsePcbSetVisibleLayersCommand(
   const visibleLayers: PcbLayerId[] = [];
   for (let i = 0; i < layersRaw.length; i++) {
     const layer = asString(layersRaw[i]);
-    if (!layer || !PCB_LAYER_VALUES.has(layer)) {
+    if (!layer || (!isCopperLayerId(layer) && !PCB_LAYER_VALUES.has(layer))) {
       throw new ValidationError(
         `command.visibleLayers[${i}] must be a valid PcbLayerId`,
       );
@@ -1196,7 +1200,6 @@ function parseCreateWireJunctionCommand(
   };
 }
 
-const PCB_COPPER_LAYERS = new Set<string>(["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]);
 const PCB_TRACE_SEGMENT_MODES = new Set<string>([
   "manhattan-90",
   "manhattan-45",
@@ -1206,9 +1209,9 @@ function parsePcbAddTraceCommand(
   raw: Record<string, unknown>,
 ): DesignerPcbAddTraceCommand {
   const layer = asString(raw.layer);
-  if (!layer || !PCB_COPPER_LAYERS.has(layer)) {
+  if (!layer || !isCopperLayerId(layer)) {
     throw new ValidationError(
-      "command.layer must be a copper layer (F.Cu / In1.Cu / In2.Cu / B.Cu)",
+      "command.layer must be a valid copper layer for the board stackup",
     );
   }
   const widthMm = asNumber(raw.widthMm);
@@ -1283,6 +1286,31 @@ function parsePcbAddViaCommand(
     }
     drillMmOverride = value;
   }
+  // Optional layer span + type (pcb.advancedVias). The executor validates
+  // span semantics (stackup order, layerCount, flag); the parser only checks
+  // the vocabulary.
+  const parseSpanLayer = (
+    value: unknown,
+    field: string,
+  ): PcbCopperLayerId | undefined => {
+    if (value === undefined || value === null) return undefined;
+    const s = asString(value);
+    if (isCopperLayerId(s)) {
+      return s;
+    }
+    throw new ValidationError(`command.${field} must be a copper layer id`);
+  };
+  const fromLayer = parseSpanLayer(raw.fromLayer, "fromLayer");
+  const toLayer = parseSpanLayer(raw.toLayer, "toLayer");
+  let viaType: PcbViaType | undefined;
+  if (raw.viaType !== undefined && raw.viaType !== null) {
+    const s = asString(raw.viaType);
+    if (s === "through" || s === "blind" || s === "buried" || s === "micro") {
+      viaType = s;
+    } else {
+      throw new ValidationError("command.viaType must be a via type");
+    }
+  }
   return {
     type: "pcb_add_via",
     centerMm: parsePointMm(raw.centerMm, "command.centerMm"),
@@ -1290,6 +1318,9 @@ function parsePcbAddViaCommand(
     netClassId,
     ...(diameterMmOverride !== undefined ? { diameterMmOverride } : {}),
     ...(drillMmOverride !== undefined ? { drillMmOverride } : {}),
+    ...(fromLayer !== undefined ? { fromLayer } : {}),
+    ...(toLayer !== undefined ? { toLayer } : {}),
+    ...(viaType !== undefined ? { viaType } : {}),
   };
 }
 
@@ -1326,6 +1357,69 @@ function parsePcbAddTraceViaCommand(
       : {}),
   };
   return { type: "pcb_add_trace_via", trace, via };
+}
+
+/** Sanity cap per array — a routing session never legitimately exceeds this. */
+const COMMIT_ROUTE_MAX_ITEMS = 500;
+
+function parsePcbCommitRouteCommand(
+  raw: Record<string, unknown>,
+): DesignerPcbCommitRouteCommand {
+  const rawTraces = Array.isArray(raw.traces) ? raw.traces : null;
+  const rawVias = Array.isArray(raw.vias) ? raw.vias : null;
+  if (!rawTraces || !rawVias) {
+    throw new ValidationError("command.traces and command.vias must be arrays");
+  }
+  if (rawTraces.length === 0 && rawVias.length === 0) {
+    throw new ValidationError(
+      "pcb_commit_route requires at least one trace or via",
+    );
+  }
+  if (
+    rawTraces.length > COMMIT_ROUTE_MAX_ITEMS ||
+    rawVias.length > COMMIT_ROUTE_MAX_ITEMS
+  ) {
+    throw new ValidationError(
+      `pcb_commit_route accepts at most ${COMMIT_ROUTE_MAX_ITEMS} traces and ${COMMIT_ROUTE_MAX_ITEMS} vias`,
+    );
+  }
+  const traces = rawTraces.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new ValidationError(`command.traces[${index}] must be an object`);
+    }
+    const parsed = parsePcbAddTraceCommand(record);
+    return {
+      layer: parsed.layer,
+      pointsNm: parsed.pointsNm,
+      widthMm: parsed.widthMm,
+      netId: parsed.netId,
+      netClassId: parsed.netClassId,
+      segmentMode: parsed.segmentMode,
+    };
+  });
+  const vias = rawVias.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new ValidationError(`command.vias[${index}] must be an object`);
+    }
+    const parsed = parsePcbAddViaCommand(record);
+    return {
+      centerMm: parsed.centerMm,
+      netId: parsed.netId,
+      netClassId: parsed.netClassId,
+      ...(parsed.diameterMmOverride !== undefined
+        ? { diameterMmOverride: parsed.diameterMmOverride }
+        : {}),
+      ...(parsed.drillMmOverride !== undefined
+        ? { drillMmOverride: parsed.drillMmOverride }
+        : {}),
+      ...(parsed.fromLayer !== undefined ? { fromLayer: parsed.fromLayer } : {}),
+      ...(parsed.toLayer !== undefined ? { toLayer: parsed.toLayer } : {}),
+      ...(parsed.viaType !== undefined ? { viaType: parsed.viaType } : {}),
+    };
+  });
+  return { type: "pcb_commit_route", traces, vias };
 }
 
 function parsePcbDeleteTraceCommand(
@@ -1414,6 +1508,38 @@ function parsePcbSetDesignRulesCommand(
       string,
       string
     >;
+  }
+  if (raw.lengthMatchGroups !== undefined) {
+    if (!Array.isArray(raw.lengthMatchGroups)) {
+      throw new ValidationError("command.lengthMatchGroups must be an array");
+    }
+    // Shape-only forward; updatePcbDesignRules drops malformed entries.
+    command.lengthMatchGroups = raw.lengthMatchGroups as PcbLengthMatchGroup[];
+  }
+  if (raw.drcSeverityOverrides !== undefined) {
+    if (!asRecord(raw.drcSeverityOverrides)) {
+      throw new ValidationError(
+        "command.drcSeverityOverrides must be an object",
+      );
+    }
+    // Shape-only forward; updatePcbDesignRules validates each entry.
+    command.drcSeverityOverrides =
+      raw.drcSeverityOverrides as DesignerPcbSetDesignRulesCommand["drcSeverityOverrides"];
+  }
+  if (raw.drcRules !== undefined) {
+    if (!Array.isArray(raw.drcRules)) {
+      throw new ValidationError("command.drcRules must be an array");
+    }
+    // Shape-only forward; updatePcbDesignRules validates each rule.
+    command.drcRules =
+      raw.drcRules as DesignerPcbSetDesignRulesCommand["drcRules"];
+  }
+  if (raw.diffPairs !== undefined) {
+    if (!Array.isArray(raw.diffPairs)) {
+      throw new ValidationError("command.diffPairs must be an array");
+    }
+    command.diffPairs =
+      raw.diffPairs as DesignerPcbSetDesignRulesCommand["diffPairs"];
   }
   const thickness = asNumber(raw.boardThicknessMm);
   if (thickness !== null) command.boardThicknessMm = thickness;
@@ -1513,7 +1639,7 @@ function parseCopperLayerOrThrow(
   field: string,
 ): PcbCopperLayerId {
   const s = asString(raw);
-  if (s === "F.Cu" || s === "In1.Cu" || s === "In2.Cu" || s === "B.Cu") {
+  if (isCopperLayerId(s)) {
     return s;
   }
   throw new ValidationError(`${field} must be a copper layer id`);
@@ -2045,6 +2171,9 @@ function parseCommandEnvelope(body: unknown): DesignerCommandEnvelope {
     case "pcb_add_trace_via":
       command = parsePcbAddTraceViaCommand(commandRecord);
       break;
+    case "pcb_commit_route":
+      command = parsePcbCommitRouteCommand(commandRecord);
+      break;
     case "pcb_delete_trace":
       command = parsePcbDeleteTraceCommand(commandRecord);
       break;
@@ -2481,6 +2610,7 @@ export function registerRoutes(
     const options = {
       ignoredRuleClasses: view?.drcIgnoredRuleClasses ?? [],
       waivedIds: view?.drcWaivedViolationIds ?? [],
+      severityOverrides: projection.board.drcSeverityOverrides,
     };
     const report = runDrc(projection, options);
     await store.saveDrcResult(designId, report, options);
@@ -2655,6 +2785,7 @@ export function registerRoutes(
           ? runDrc(projection, {
               ignoredRuleClasses: view?.drcIgnoredRuleClasses ?? [],
               waivedIds: view?.drcWaivedViolationIds ?? [],
+              severityOverrides: projection.board.drcSeverityOverrides,
             })
           : null;
         return success({ appliedCount, failures, drc });
@@ -2783,6 +2914,7 @@ export function registerRoutes(
           ? runDrc(projection, {
               ignoredRuleClasses: view?.drcIgnoredRuleClasses ?? [],
               waivedIds: view?.drcWaivedViolationIds ?? [],
+              severityOverrides: projection.board.drcSeverityOverrides,
             })
           : null;
         return success({ appliedCount, failures, drc });

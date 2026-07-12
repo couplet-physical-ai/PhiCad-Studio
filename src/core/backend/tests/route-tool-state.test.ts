@@ -50,6 +50,30 @@ describe("routeToolReducer", () => {
     expect(c.session.waypointsNm.length).toBe(1);
   });
 
+  test("commit-waypoints appends an ordered batch with dedupe", () => {
+    const a = routeToolReducer(initialRouteToolState, startEvent);
+    const b = routeToolReducer(a, {
+      kind: "commit-waypoints",
+      pointsNm: [
+        { x: 0, y: 0 }, // duplicate of the anchor — dropped
+        { x: 1_000_000, y: 0 },
+        { x: 1_000_000, y: 0 }, // consecutive duplicate — dropped
+        { x: 1_000_000, y: 2_000_000 },
+      ],
+    });
+    if (b.kind !== "routing") throw new Error("expected routing");
+    expect(b.session.waypointsNm).toEqual([
+      { x: 1_000_000, y: 0 },
+      { x: 1_000_000, y: 2_000_000 },
+    ]);
+    // All-duplicate batch is a no-op returning the same state object.
+    const c = routeToolReducer(b, {
+      kind: "commit-waypoints",
+      pointsNm: [{ x: 1_000_000, y: 2_000_000 }],
+    });
+    expect(c).toBe(b);
+  });
+
   test("step-back removes last waypoint, then exits to idle", () => {
     const a = routeToolReducer(initialRouteToolState, startEvent);
     const b = routeToolReducer(a, {
@@ -73,6 +97,11 @@ describe("routeToolReducer", () => {
       kind: "rebase-layer",
       layer: "B.Cu",
       anchorNm: { x: 2_000_000, y: 0 },
+      runPointsNm: [
+        { x: 0, y: 0 },
+        { x: 2_000_000, y: 0 },
+      ],
+      via: { centerNm: { x: 2_000_000, y: 0 } },
     });
     if (b.kind !== "routing") throw new Error("expected routing");
     expect(b.session.layer).toBe("B.Cu");
@@ -83,6 +112,13 @@ describe("routeToolReducer", () => {
     expect(b.session.netId).toBe(null);
     expect(b.session.netClassId).toBe("default");
     expect(b.session.segmentMode).toBe("manhattan-45");
+    // Finished run + via accumulated in the boundary log (F.Cu at old width).
+    expect(b.session.boundaries).toHaveLength(1);
+    expect(b.session.boundaries[0]!.run?.layer).toBe("F.Cu");
+    expect(b.session.boundaries[0]!.via?.centerNm).toEqual({
+      x: 2_000_000,
+      y: 0,
+    });
   });
 
   test("set-via-diameter and set-via-drill update overrides", () => {
@@ -118,9 +154,14 @@ describe("routeToolReducer", () => {
       kind: "rebase-layer",
       layer: "B.Cu",
       anchorNm: { x: 2_000_000, y: 0 },
+      runPointsNm: [],
+      via: { centerNm: { x: 2_000_000, y: 0 }, diameterMmOverride: 1.2 },
     });
     if (b.kind !== "routing") throw new Error("expected routing");
     expect(b.session.viaDiameterMmOverride).toBe(1.2);
+    // Via-only boundary (no segments before the drop): no run recorded.
+    expect(b.session.boundaries).toHaveLength(1);
+    expect(b.session.boundaries[0]!.run).toBeUndefined();
   });
 
   test("set-mode toggles segment mode", () => {
@@ -163,6 +204,7 @@ describe("routeToolReducer", () => {
       kind: "rebase",
       anchorNm: { x: 10, y: 10 },
       widthMm: 0.5,
+      runPointsNm: [],
     });
     if (c.kind !== "routing") throw new Error("expected routing");
     expect(c.session.widthSource).toBe("manual");
@@ -171,6 +213,7 @@ describe("routeToolReducer", () => {
       anchorNm: { x: 20, y: 20 },
       widthMm: 0.25,
       widthSource: "netclass",
+      runPointsNm: [],
     });
     if (d.kind !== "routing") throw new Error("expected routing");
     expect(d.session.widthSource).toBe("netclass");
@@ -240,6 +283,10 @@ describe("routeToolReducer", () => {
       kind: "rebase",
       anchorNm: { x: 1_000_000, y: 0 },
       widthMm: 0.5,
+      runPointsNm: [
+        { x: 0, y: 0 },
+        { x: 1_000_000, y: 0 },
+      ],
     });
     if (c.kind !== "routing") throw new Error("expected routing");
     expect(c.session.anchorNm).toEqual({ x: 1_000_000, y: 0 });
@@ -248,5 +295,78 @@ describe("routeToolReducer", () => {
     expect(c.session.layer).toBe("F.Cu"); // preserved
     expect(c.session.netClassId).toBe("default"); // preserved
     expect(c.session.posture).toBe("auto"); // preserved
+    // Old-width run recorded as a boundary.
+    expect(c.session.boundaries).toHaveLength(1);
+    expect(c.session.boundaries[0]!.run?.widthMm).toBe(0.25);
+  });
+
+  test("step-back pops across boundaries: reopens the run behind a via", () => {
+    const a = routeToolReducer(initialRouteToolState, startEvent);
+    const b = routeToolReducer(a, {
+      kind: "commit-waypoint",
+      pointNm: { x: 1_000_000, y: 0 },
+    });
+    const runStart = { x: 0, y: 0 };
+    const runEnd = { x: 2_000_000, y: 0 };
+    const run = [runStart, runEnd];
+    const c = routeToolReducer(b, {
+      kind: "rebase-layer",
+      layer: "B.Cu",
+      anchorNm: { x: 2_000_000, y: 0 },
+      runPointsNm: run,
+      via: { centerNm: { x: 2_000_000, y: 0 } },
+    });
+    // Backspace right after the via: reopen the F.Cu run, via gone.
+    const d = routeToolReducer(c, { kind: "step-back" });
+    if (d.kind !== "routing") throw new Error("expected routing");
+    expect(d.session.layer).toBe("F.Cu");
+    expect(d.session.anchorNm).toEqual(runStart);
+    expect(d.session.waypointsNm).toEqual([runEnd]);
+    expect(d.session.boundaries).toEqual([]);
+    // Two more step-backs: drop the waypoint, then idle.
+    const e = routeToolReducer(d, { kind: "step-back" });
+    if (e.kind !== "routing") throw new Error("expected routing");
+    expect(e.session.waypointsNm).toEqual([]);
+    expect(routeToolReducer(e, { kind: "step-back" }).kind).toBe("idle");
+  });
+
+  test("step-back on a via-only boundary restores the pre-via layer", () => {
+    const a = routeToolReducer(initialRouteToolState, startEvent);
+    const b = routeToolReducer(a, {
+      kind: "rebase-layer",
+      layer: "B.Cu",
+      anchorNm: { x: 0, y: 0 },
+      runPointsNm: [],
+      via: { centerNm: { x: 0, y: 0 } },
+    });
+    const c = routeToolReducer(b, { kind: "step-back" });
+    if (c.kind !== "routing") throw new Error("expected routing");
+    expect(c.session.layer).toBe("F.Cu");
+    expect(c.session.anchorNm).toEqual({ x: 0, y: 0 });
+    expect(c.session.boundaries).toEqual([]);
+  });
+
+  test("width-split boundary restores the old width on step-back", () => {
+    const a = routeToolReducer(initialRouteToolState, startEvent);
+    const b = routeToolReducer(a, {
+      kind: "commit-waypoint",
+      pointNm: { x: 1_000_000, y: 0 },
+    });
+    const c = routeToolReducer(b, {
+      kind: "rebase",
+      anchorNm: { x: 1_000_000, y: 0 },
+      widthMm: 0.5,
+      widthSource: "preset",
+      runPointsNm: [
+        { x: 0, y: 0 },
+        { x: 1_000_000, y: 0 },
+      ],
+    });
+    const d = routeToolReducer(c, { kind: "step-back" });
+    if (d.kind !== "routing") throw new Error("expected routing");
+    expect(d.session.widthMm).toBe(0.25);
+    expect(d.session.widthSource).toBe("netclass");
+    expect(d.session.layer).toBe("F.Cu");
+    expect(d.session.waypointsNm).toEqual([{ x: 1_000_000, y: 0 }]);
   });
 });

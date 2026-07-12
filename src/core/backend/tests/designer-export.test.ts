@@ -822,8 +822,8 @@ describe("export orchestrator", () => {
   });
 
   test("preflight warns on a hole below the fab-preset minimum drill", () => {
-    const proj = fixtureProjection(); // fabricator jlcpcb_2l → min drill 0.3
-    proj.vias[0]!.drillMm = 0.15;
+    const proj = fixtureProjection(); // fabricator jlcpcb_2l → min drill 0.15 (2026-07, P8)
+    proj.vias[0]!.drillMm = 0.1;
     const result = buildExportBundle(proj, null);
     expect(result.warnings.some((w) => /minimum drill/i.test(w))).toBe(true);
   });

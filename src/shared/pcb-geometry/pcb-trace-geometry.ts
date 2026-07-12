@@ -277,6 +277,19 @@ export function distance(a: Point, b: Point): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+/**
+ * Euclidean polyline length, unit-agnostic (nm in → nm out, mm in → mm out).
+ * Shared by the backend DRC length check, the frontend routed-length gauges
+ * and the route HUD.
+ */
+export function polylineLength(points: ReadonlyArray<Point>): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += distance(points[i - 1]!, points[i]!);
+  }
+  return total;
+}
+
 /** Returns closest point on segment AB to P, plus the squared distance. */
 export function projectPointToSegment(
   point: Point,

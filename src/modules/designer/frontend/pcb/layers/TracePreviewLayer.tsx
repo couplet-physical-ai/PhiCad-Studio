@@ -1,4 +1,5 @@
 import { useThree } from "@react-three/fiber";
+import { copperLayerColor } from "../pcb-layer-colors";
 import { useEffect, useMemo, type ReactElement } from "react";
 import * as THREE from "three";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
@@ -6,7 +7,6 @@ import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import type { PcbCopperLayerId } from "../../../../../sdks";
 import {
-  PCB_TRACE_COLORS,
   RENDER_ORDER,
 } from "../../../../../shared/frontend/canvas/layers";
 
@@ -19,6 +19,8 @@ interface TracePreviewLayerProps {
   widthMm: number;
   /** Pre-mirror X coordinates (use when parent group has no negative scale). */
   mirror?: boolean;
+  /** Dim for not-yet-accepted proposals (auto-finish). Default 1 = committed look. */
+  opacity?: number;
 }
 
 /**
@@ -31,8 +33,9 @@ export function TracePreviewLayer({
   layer,
   widthMm,
   mirror = false,
+  opacity = 1,
 }: TracePreviewLayerProps): ReactElement | null {
-  const baseColor = PCB_TRACE_COLORS[layer];
+  const baseColor = copperLayerColor(layer);
   const xScale = mirror ? -1 : 1;
   const positions = useMemo(() => {
     if (pointsNm.length < 2) return null;
@@ -51,7 +54,7 @@ export function TracePreviewLayer({
       positions={positions}
       widthMm={widthMm}
       color={baseColor}
-      opacity={1}
+      opacity={opacity}
     />
   );
 }

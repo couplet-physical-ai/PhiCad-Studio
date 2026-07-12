@@ -7,6 +7,7 @@ import {
   useState,
   type ReactElement,
 } from "react";
+import { copperLayerColor } from "./pcb-layer-colors";
 import { createPortal } from "react-dom";
 import type {
   DesignerCommand,
@@ -19,6 +20,8 @@ import type {
   PcbCopperLayerId,
   PcbPlacedPart,
   PcbPointMm,
+  PcbTrace,
+  PcbVia,
   PlacePayloadSummary,
   PlacementResultEnvelope,
 } from "../../../../sdks";
@@ -167,7 +170,41 @@ import {
   PCB_TRACE_COLORS,
 } from "../../../../shared/frontend/canvas/layers";
 import { RouteHud } from "./RouteHud";
-import { buildRouteHudModel } from "./tools/route-hud-model";
+import { buildRouteHudModel, routeLengthMm } from "./tools/route-hud-model";
+import { buildPcbSpatialIndex, pointQueryBox } from "./spatial-index";
+import { nextRouteLayer } from "./tools/route-layer";
+import { nearestRatsnestPad } from "./tools/route-target";
+import {
+  distanceAlongPolylineNm,
+  initialTuneToolState,
+  tuneToolReducer,
+} from "./tools/tune-tool-state";
+import { buildTuneHudModel } from "./tools/tune-hud-model";
+import { TuneHud } from "./TuneHud";
+import {
+  bundleAnchorNm,
+  bundleToolReducer,
+  initialBundleToolState,
+  type BundlePad,
+} from "./tools/bundle-tool-state";
+import { diffPairPartnerName } from "./tools/diff-pair";
+import { BundleHud, type BundleHudModel } from "./BundleHud";
+import {
+  assignLaneOffsets,
+  buildBundleLanes,
+} from "../../../../shared/pcb-routing/bundle-geometry";
+import {
+  padWorldPositionMm,
+  placementPads,
+} from "../../../../shared/pcb-geometry/pad-geometry";
+import { generateMeander } from "../../../../shared/pcb-routing/meander";
+import { routeAutoFinish } from "../../../../shared/pcb-routing/auto-finish";
+import { walkaroundHead } from "../../../../shared/pcb-routing/walkaround";
+import {
+  buildRouteObstacles,
+  resolveRouteClearancesMm,
+} from "../../../../shared/pcb-routing/route-obstacles";
+import { useFeatureFlag } from "@/feature-flags";
 import { FlipHorizontal2 } from "lucide-react";
 import { openContextMenu } from "../../../../shared/frontend/context-menu";
 import type { ContextMenuGroup } from "../../../../shared/frontend/context-menu";
@@ -222,7 +259,15 @@ function keepTracePrefixForReroute(
   return keep;
 }
 
-type ToolMode = "select" | "route" | "measure" | "hole" | "pad" | "text";
+type ToolMode =
+  | "select"
+  | "route"
+  | "measure"
+  | "hole"
+  | "pad"
+  | "text"
+  | "tune"
+  | "bundle";
 
 /** Default drill size for the "drop mounting hole" tool. 3.2 mm matches an
  * M3 plus-clearance hole, the most common mechanical mount. */
@@ -471,10 +516,29 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   );
   // Inline custom-width editor in the route HUD (Alt+W / click the width).
   const [widthInputOpen, setWidthInputOpen] = useState(false);
+  // DRC commit gate: a finish attempt with clearance conflicts is blocked
+  // (session survives) unless the user explicitly allows violations.
+  // Session-scoped — both reset when the session ends.
+  const [allowDrcViolations, setAllowDrcViolations] = useState(false);
+  const [blockedConflictCount, setBlockedConflictCount] = useState<
+    number | null
+  >(null);
   const [measureState, dispatchMeasure] = useReducer(
     measureToolReducer,
     initialMeasureToolState,
   );
+  // Length-Tune tool session (pcb.lengthTuning) + its inline target editor.
+  const [tuneState, dispatchTune] = useReducer(
+    tuneToolReducer,
+    initialTuneToolState,
+  );
+  const [tuneTargetInputOpen, setTuneTargetInputOpen] = useState(false);
+  // Bundle-routing session (pcb.bundleRouting) + commit-block reason.
+  const [bundleState, dispatchBundle] = useReducer(
+    bundleToolReducer,
+    initialBundleToolState,
+  );
+  const [bundleBlocked, setBundleBlocked] = useState<string | null>(null);
   const [measureShowDeltas, setMeasureShowDeltas] = useState(false);
   const [focusedLayer, setFocusedLayer] = useState<PcbCopperLayerId | null>(
     null,
@@ -485,6 +549,31 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   const [autoroutePreview, setAutoroutePreview] = useState<
     AutoroutePreviewTrace[] | null
   >(null);
+  // Auto-finish (pcb.routeAutoFinish): Tab / Ctrl+Click computes an A*
+  // completion of the active route, held here as an explicit-accept proposal
+  // (dimmed preview). Accept = Enter/click → finishRoute; Esc dismisses.
+  const autoFinishEnabled = useFeatureFlag("pcb.routeAutoFinish");
+  const [autoFinishProposal, setAutoFinishProposal] = useState<{
+    extraAnchorsNm: PointNm[];
+    finalAnchorNm: PointNm;
+    /** Full rendered path (session anchors → target) for preview + length. */
+    pathNm: PointNm[];
+    targetPadId: string;
+    targetName: string | null;
+  } | null>(null);
+  const [autoFinishNotice, setAutoFinishNotice] = useState<string | null>(null);
+  // Walkaround-lite (pcb.routeWalkaround): the ghost head bends around the
+  // obstacle cluster it would collide with. Refs (not state) — the detour is
+  // recomputed per pointer move inside the routePreview memo; clicks read the
+  // last computed anchors, hysteresis reads the last side pick.
+  const walkaroundEnabled = useFeatureFlag("pcb.routeWalkaround");
+  const lengthTuningEnabled = useFeatureFlag("pcb.lengthTuning");
+  const bundleRoutingEnabled = useFeatureFlag("pcb.bundleRouting");
+  const walkChoiceRef = useRef<{
+    clusterSignature: string;
+    side: "cw" | "ccw";
+  } | null>(null);
+  const walkDetourRef = useRef<PointNm[] | null>(null);
   // Unified Auto-Layout run: sequences place → route reusing the two dialogs +
   // the place-preview infra below as review surfaces.
   const autoLayout = useAutoLayoutRun();
@@ -621,6 +710,10 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   const alignmentIndexRef = useRef<AlignmentIndex | null>(null);
   const draggedInitialBBoxRef = useRef<BoundsMm | null>(null);
   const altHeldRef = useRef(false);
+  // Shift suppresses object + guide snapping for free placement (KiCad
+  // parity); grid snap stays active. Ref like altHeldRef — the suppression
+  // takes effect on the next pointer move.
+  const shiftHeldRef = useRef(false);
   const alignmentGuidesEnabled = usePcbViewStore(
     (s) => s.viewState.alignmentGuidesVisible ?? true,
   );
@@ -922,22 +1015,93 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     [mirrorActive],
   );
 
-  // Snap target derived from cursor + nearby primitives. Tolerance is a
-  // fixed world-mm radius (0.5mm) so the indicator stays consistent at any
-  // zoom without piping viewport state through here. A future Phase 3 swap
-  // can switch to screen-px tolerance once the rbush index lands.
-  const snapTarget = useMemo<SnapTarget | null>(() => {
-    if (!cursorMm) return null;
+  // Uncommitted session geometry as pseudo projection objects so snapping,
+  // guides, rendering and the copper-finish hit-test treat accumulated runs
+  // like real copper until the atomic commit lands. Ids are namespaced
+  // `pending:` — they never reach the backend.
+  const pendingRouteGeometry = useMemo(() => {
+    const empty = { traces: [] as PcbTrace[], vias: [] as PcbVia[] };
+    if (routeState.kind !== "routing") return empty;
+    const session = routeState.session;
+    if (session.boundaries.length === 0) return empty;
+    const netClass = workspace.projection?.board.netClasses.find(
+      (nc) => nc.id === session.netClassId,
+    );
+    const traces: PcbTrace[] = [];
+    const vias: PcbVia[] = [];
+    session.boundaries.forEach((b, i) => {
+      if (b.run) {
+        traces.push({
+          id: `pending:trace:${i}`,
+          netId: session.netId,
+          netClassId: session.netClassId,
+          layer: b.run.layer,
+          widthMm: b.run.widthMm,
+          pointsNm: b.run.pointsNm,
+          segmentMode: b.run.segmentMode,
+        });
+      }
+      if (b.via) {
+        vias.push({
+          id: `pending:via:${i}`,
+          netId: session.netId,
+          netClassId: session.netClassId,
+          centerMm: {
+            x: b.via.centerNm.x / NM_PER_MM,
+            y: b.via.centerNm.y / NM_PER_MM,
+          },
+          diameterMm:
+            b.via.diameterMmOverride ?? netClass?.viaDiameterMm ?? 0.8,
+          drillMm: b.via.drillMmOverride ?? netClass?.viaDrillMm ?? 0.4,
+          fromLayer: "F.Cu",
+          toLayer: "B.Cu",
+          viaType: "through",
+          protection: netClass?.defaultViaProtection ?? "tented",
+          provenance: "route",
+        });
+      }
+    });
+    return { traces, vias };
+  }, [routeState, workspace.projection?.board.netClasses]);
+
+  // Broad-phase rbush index over committed copper, rebuilt per projection.
+  // Prefilters the brute-force snap/DRC predicates — they stay authoritative.
+  const projectionIndex = useMemo(() => {
     if (!workspace.projection) return null;
-    return findSnapTarget({
-      cursorMm,
-      toleranceMm: 0.5,
+    return buildPcbSpatialIndex({
       placements: workspace.projection.placements,
       traces: workspace.projection.traces,
       vias: workspace.projection.vias,
+    });
+  }, [workspace.projection]);
+
+  // Snap target derived from cursor + nearby primitives (committed AND
+  // pending session copper). Tolerance is screen-px derived (8px / zoom),
+  // matching the guides engine, so snapping feels identical at any zoom.
+  const snapTarget = useMemo<SnapTarget | null>(() => {
+    if (!cursorMm) return null;
+    if (!workspace.projection || !projectionIndex) return null;
+    if (shiftHeldRef.current) return null;
+    const toleranceMm = SNAP_THRESHOLD_PX / drcZoomRef.current;
+    const box = pointQueryBox(cursorMm, toleranceMm);
+    return findSnapTarget({
+      cursorMm,
+      toleranceMm,
+      placements: projectionIndex.queryPlacements(box),
+      traces: [
+        ...projectionIndex.queryTraces(box),
+        ...pendingRouteGeometry.traces,
+      ],
+      vias: [...projectionIndex.queryVias(box), ...pendingRouteGeometry.vias],
       activeLayer: activeCopperLayer,
     });
-  }, [cursorMm, workspace.projection, activeCopperLayer]);
+  }, [
+    cursorMm,
+    workspace.projection,
+    projectionIndex,
+    activeCopperLayer,
+    pendingRouteGeometry,
+  ]);
 
   const resolveMeasureAnchor = useCallback(
     (cursor: PcbPointMm): MeasureAnchor => {
@@ -1111,6 +1275,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         base.onPad ||
         snapTarget !== null ||
         altHeldRef.current ||
+        shiftHeldRef.current ||
         !alignmentGuidesEnabledRef.current ||
         !workspace.projection
       ) {
@@ -1128,121 +1293,727 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         cursorMm: cursor,
         posture: session.posture,
         placements: workspace.projection.placements,
-        traces: workspace.projection.traces,
-        vias: workspace.projection.vias,
+        traces: [
+          ...workspace.projection.traces,
+          ...pendingRouteGeometry.traces,
+        ],
+        vias: [...workspace.projection.vias, ...pendingRouteGeometry.vias],
         activeLayer: session.layer,
         netId: session.netId,
         toleranceMm: SNAP_THRESHOLD_PX / drcZoomRef.current,
       });
       return snapPointMm ? { ...base, pointMm: snapPointMm } : base;
     },
-    [resolveAnchor, routeState, snapTarget, workspace.projection],
+    [
+      pendingRouteGeometry,
+      resolveAnchor,
+      routeState,
+      snapTarget,
+      workspace.projection,
+    ],
   );
 
-  // Commit the current routing session as a `pcb_add_trace` command. Anchors
-  // are resolved through the corner-mode + posture-aware preview builder so
-  // the path matches what the user sees as the ghost.
-  const commitTrace = useCallback(
-    async (session: RouteSession, finalAnchorNm: PointNm) => {
-      const committedAnchors = sessionAnchors(session);
-      const path = buildPreviewPath(
-        [...committedAnchors, finalAnchorNm],
+  /**
+   * Finish the session through `finalAnchorNm`: assemble every accumulated
+   * run + via plus the final run into ONE atomic `pcb_commit_route` (one
+   * revision, one undo entry). On rejection the WHOLE session survives —
+   * nothing was persisted, the commit is atomic.
+   */
+  const finishRoute = useCallback(
+    async (
+      session: RouteSession,
+      finalAnchorNm: PointNm,
+      // Accepted auto-finish proposals inject their A* anchors here; the run
+      // still flows through the exact same builder + gate + atomic commit.
+      extraAnchorsNm: readonly PointNm[] = [],
+    ): Promise<void> => {
+      const finalRun = buildPreviewPath(
+        [...sessionAnchors(session), ...extraAnchorsNm, finalAnchorNm],
         session.segmentMode,
         session.posture,
       );
-      if (path.length < 2) return null;
-      return await workspace.addTrace({
-        layer: session.layer,
-        pointsNm: path,
-        widthMm: session.widthMm,
-        netId: session.netId,
-        netClassId: session.netClassId,
-        segmentMode: session.segmentMode,
-      });
-    },
-    [workspace],
-  );
-
-  /**
-   * Commit the session through `finalAnchorNm` and end it on success. A path
-   * with < 2 distinct points keeps the session alive (nothing to commit), as
-   * does a backend rejection (workspace.error is set) so the user can adjust
-   * and retry instead of losing the route.
-   */
-  const finishRoute = useCallback(
-    async (session: RouteSession, finalAnchorNm: PointNm): Promise<void> => {
+      const traces = [
+        ...session.boundaries
+          .filter((b) => b.run)
+          .map((b) => ({
+            layer: b.run!.layer,
+            pointsNm: b.run!.pointsNm,
+            widthMm: b.run!.widthMm,
+            netId: session.netId,
+            netClassId: session.netClassId,
+            segmentMode: b.run!.segmentMode,
+          })),
+        ...(finalRun.length >= 2
+          ? [
+              {
+                layer: session.layer,
+                pointsNm: finalRun,
+                widthMm: session.widthMm,
+                netId: session.netId,
+                netClassId: session.netClassId,
+                segmentMode: session.segmentMode,
+              },
+            ]
+          : []),
+      ];
+      const vias = session.boundaries
+        .filter((b) => b.via)
+        .map((b) => ({
+          centerMm: {
+            x: b.via!.centerNm.x / NM_PER_MM,
+            y: b.via!.centerNm.y / NM_PER_MM,
+          },
+          netId: session.netId,
+          netClassId: session.netClassId,
+          ...(b.via!.diameterMmOverride !== undefined
+            ? { diameterMmOverride: b.via!.diameterMmOverride }
+            : {}),
+          ...(b.via!.drillMmOverride !== undefined
+            ? { drillMmOverride: b.via!.drillMmOverride }
+            : {}),
+        }));
+      if (traces.length === 0 && vias.length === 0) return;
+      // DRC commit gate: never persist a clearance violation by default.
+      // Checks EVERY run (accumulated + final) against committed copper;
+      // same-net copper is exempt inside runLiveDrc.
+      if (!allowDrcViolations && workspace.projection) {
+        const board = workspace.projection.board;
+        let conflictCount = 0;
+        for (const t of traces) {
+          conflictCount += runLiveDrc({
+            traceNm: t.pointsNm,
+            traceWidthMm: t.widthMm,
+            netId: session.netId,
+            layer: t.layer,
+            traces: workspace.projection.traces,
+            placements: workspace.projection.placements,
+            padNetMap: padToNet,
+            netClasses: board.netClasses,
+            netClassId: session.netClassId,
+            designRules: board.designRules,
+          }).length;
+        }
+        if (conflictCount > 0) {
+          setBlockedConflictCount(conflictCount);
+          return;
+        }
+      }
+      setBlockedConflictCount(null);
       try {
-        const created = await commitTrace(session, finalAnchorNm);
-        if (created !== null) dispatchRoute({ kind: "cancel" });
+        await workspace.commitRoute({ traces, vias });
+        dispatchRoute({ kind: "cancel" });
       } catch {
-        // commitTrace surfaced the failure via workspace error state; the
-        // session intentionally survives.
+        // Rejection surfaced via the workspace error toast; the session
+        // intentionally survives for adjust-and-retry.
       }
     },
-    [commitTrace],
+    [allowDrcViolations, padToNet, workspace],
   );
 
   /**
-   * Smart Via: commit segments-so-far on the current layer, drop a via at the
-   * cursor, then rebase the session onto the target layer. Mirrors the `+`/`-`
-   * keyboard shortcut behaviour. The trace commit is a no-op when the path has
-   * < 2 distinct points (e.g. via dropped immediately after `start`).
+   * Compute an auto-finish proposal from the route head to `explicitTarget`
+   * (Ctrl/Cmd+Click pad) or the nearest open same-net ratsnest pad (Tab).
+   * Pure local search over clearance-inflated obstacles; result is a dimmed
+   * preview the user must explicitly accept — never a commit.
+   */
+  const runAutoFinish = useCallback(
+    (explicitTarget?: { padId: string; centerMm: PcbPointMm }): void => {
+      if (routeState.kind !== "routing") return;
+      const projection = workspace.projection;
+      if (!projection || !projectionIndex) return;
+      const session = routeState.session;
+      const anchors = sessionAnchors(session);
+      const sourceNm = anchors[anchors.length - 1]!;
+      const sourceMm = {
+        x: sourceNm.x / NM_PER_MM,
+        y: sourceNm.y / NM_PER_MM,
+      };
+      const target =
+        explicitTarget ??
+        (session.netId
+          ? nearestRatsnestPad({
+              ratsnest: projection.ratsnest,
+              netId: session.netId,
+              fromMm: cursorMm ?? sourceMm,
+              ...(session.startPadId
+                ? { excludePadIds: new Set([session.startPadId]) }
+                : {}),
+            })
+          : null);
+      if (!target) {
+        setAutoFinishNotice("No open target pad on this net");
+        return;
+      }
+      const targetNm = pointMmToNm(target.centerMm);
+      const netClass =
+        projection.board.netClasses.find(
+          (nc) => nc.id === session.netClassId,
+        ) ?? null;
+      const clearances = resolveRouteClearancesMm({
+        netClass,
+        designRules: projection.board.designRules,
+      });
+      // Broad-phase: copper within the source→target corridor + headroom.
+      // This box also bounds how far the A* corridor can grow.
+      const corridorPadMm = 5;
+      const box = {
+        minX: Math.min(sourceMm.x, target.centerMm.x) - corridorPadMm,
+        minY: Math.min(sourceMm.y, target.centerMm.y) - corridorPadMm,
+        maxX: Math.max(sourceMm.x, target.centerMm.x) + corridorPadMm,
+        maxY: Math.max(sourceMm.y, target.centerMm.y) + corridorPadMm,
+      };
+      const excludePadIds = new Set<string>([target.padId]);
+      if (session.startPadId) excludePadIds.add(session.startPadId);
+      const obstacles = buildRouteObstacles({
+        traces: [
+          ...projectionIndex.queryTraces(box),
+          ...pendingRouteGeometry.traces,
+        ],
+        placements: projectionIndex.queryPlacements(box),
+        vias: [...projectionIndex.queryVias(box), ...pendingRouteGeometry.vias],
+        layer: session.layer,
+        netId: session.netId,
+        padNetMap: padToNet,
+        traceClearanceMm: clearances.traceClearanceMm,
+        padClearanceMm: clearances.padClearanceMm,
+        routeWidthMm: session.widthMm,
+        excludePadIds,
+      });
+      const result = routeAutoFinish({
+        sourceNm,
+        targetNm,
+        obstacles,
+        mode: session.segmentMode,
+        posture: session.posture,
+        caps: {
+          // Keep the grid fine enough for pad-pitch corridors.
+          maxStepNm: Math.round(
+            (clearances.traceClearanceMm + session.widthMm) * NM_PER_MM,
+          ),
+        },
+      });
+      if (result.status !== "ok") {
+        setAutoFinishProposal(null);
+        setAutoFinishNotice(
+          result.status === "target-blocked"
+            ? "Target pad is boxed in — route manually"
+            : "No clean path — route manually",
+        );
+        return;
+      }
+      const pathNm = buildPreviewPath(
+        [...anchors, ...result.anchorsNm, targetNm],
+        session.segmentMode,
+        session.posture,
+      );
+      const [placementId, padNumber] = target.padId.split("|");
+      const reference = projection.placements.find(
+        (pl) => pl.id === placementId,
+      )?.reference;
+      setAutoFinishNotice(null);
+      setAutoFinishProposal({
+        extraAnchorsNm: result.anchorsNm,
+        finalAnchorNm: targetNm,
+        pathNm,
+        targetPadId: target.padId,
+        targetName: reference ? `${reference}.${padNumber}` : null,
+      });
+    },
+    [
+      cursorMm,
+      padToNet,
+      pendingRouteGeometry,
+      projectionIndex,
+      routeState,
+      workspace.projection,
+    ],
+  );
+
+  /** Accept = finish the whole route through the proposal's target pad. */
+  const acceptAutoFinish = useCallback((): void => {
+    if (routeState.kind !== "routing" || !autoFinishProposal) return;
+    const proposal = autoFinishProposal;
+    setAutoFinishProposal(null);
+    void finishRoute(
+      routeState.session,
+      proposal.finalAnchorNm,
+      proposal.extraAnchorsNm,
+    );
+  }, [autoFinishProposal, finishRoute, routeState]);
+
+  // A proposal is anchored at the session's committed anchors — ANY session
+  // change (waypoint, via, width, posture, layer, step-back, end) stales it.
+  useEffect(() => {
+    setAutoFinishProposal(null);
+  }, [routeState]);
+
+  // Transient failure notice, auto-dismissed.
+  useEffect(() => {
+    if (!autoFinishNotice) return;
+    const timer = setTimeout(() => setAutoFinishNotice(null), 2500);
+    return () => clearTimeout(timer);
+  }, [autoFinishNotice]);
+
+  // ---- Length-Tune tool (pcb.lengthTuning) ----------------------------
+
+  const tunedTrace = useMemo(() => {
+    if (tuneState.kind !== "tuning" || !workspace.projection) return null;
+    return (
+      workspace.projection.traces.find(
+        (t) => t.id === tuneState.session.traceId,
+      ) ?? null
+    );
+  }, [tuneState, workspace.projection]);
+
+  // Group rule for the tuned trace's net (longest targets exclude that net).
+  const tuneGroupTarget = useMemo(() => {
+    if (!tunedTrace || tunedTrace.netId === null || !workspace.projection) {
+      return null;
+    }
+    const netId = tunedTrace.netId;
+    const group = (workspace.projection.board.lengthMatchGroups ?? []).find(
+      (g) => g.netIds.includes(netId),
+    );
+    if (!group) return null;
+    const lengthByNet = new Map<string, number>();
+    for (const t of workspace.projection.traces) {
+      if (t.netId === null || !group.netIds.includes(t.netId)) continue;
+      lengthByNet.set(
+        t.netId,
+        (lengthByNet.get(t.netId) ?? 0) + routeLengthMm(t.pointsNm),
+      );
+    }
+    const targetMm =
+      group.target.kind === "absolute"
+        ? group.target.mm
+        : Math.max(
+            0,
+            ...group.netIds
+              .filter((n) => n !== netId)
+              .map((n) => lengthByNet.get(n) ?? 0),
+          );
+    if (targetMm <= 0) return null;
+    return { name: group.name, targetMm, toleranceMm: group.toleranceMm };
+  }, [tunedTrace, workspace.projection]);
+
+  const tuneNetLengths = useMemo(() => {
+    if (tuneState.kind !== "tuning" || !tunedTrace || !workspace.projection) {
+      return null;
+    }
+    let otherMm = 0;
+    for (const t of workspace.projection.traces) {
+      if (t.id === tunedTrace.id) continue;
+      if (tunedTrace.netId !== null && t.netId === tunedTrace.netId) {
+        otherMm += routeLengthMm(t.pointsNm);
+      }
+    }
+    return {
+      otherMm,
+      baselineMm: routeLengthMm(tuneState.session.baselinePointsNm),
+    };
+  }, [tunedTrace, tuneState, workspace.projection]);
+
+  const tuneResolvedTargetMm =
+    tuneState.kind === "tuning"
+      ? (tuneState.session.targetOverrideMm ??
+        tuneGroupTarget?.targetMm ??
+        null)
+      : null;
+
+  // Serpentine proposal for the current parameters — pure generator over
+  // clearance-inflated obstacles (same-net copper transparent; the tuned
+  // trace itself excluded).
+  const tuneProposal = useMemo(() => {
+    if (
+      tuneState.kind !== "tuning" ||
+      !tunedTrace ||
+      !workspace.projection ||
+      !projectionIndex ||
+      !tuneNetLengths ||
+      tuneResolvedTargetMm === null
+    ) {
+      return null;
+    }
+    const session = tuneState.session;
+    const netTotalMm = tuneNetLengths.otherMm + tuneNetLengths.baselineMm;
+    const targetExtraNm = Math.round(
+      Math.max(0, tuneResolvedTargetMm - netTotalMm) * NM_PER_MM,
+    );
+    const netClass =
+      workspace.projection.board.netClasses.find(
+        (nc) => nc.id === tunedTrace.netClassId,
+      ) ?? null;
+    const clearances = resolveRouteClearancesMm({
+      netClass,
+      designRules: workspace.projection.board.designRules,
+    });
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of session.baselinePointsNm) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    const padMm =
+      1 +
+      clearances.traceClearanceMm +
+      tunedTrace.widthMm +
+      session.amplitudeNm / NM_PER_MM;
+    const box = {
+      minX: minX / NM_PER_MM - padMm,
+      minY: minY / NM_PER_MM - padMm,
+      maxX: maxX / NM_PER_MM + padMm,
+      maxY: maxY / NM_PER_MM + padMm,
+    };
+    const obstacles = buildRouteObstacles({
+      traces: projectionIndex
+        .queryTraces(box)
+        .filter((t) => t.id !== tunedTrace.id),
+      placements: projectionIndex.queryPlacements(box),
+      vias: projectionIndex.queryVias(box),
+      layer: tunedTrace.layer,
+      netId: tunedTrace.netId,
+      padNetMap: padToNet,
+      traceClearanceMm: clearances.traceClearanceMm,
+      padClearanceMm: clearances.padClearanceMm,
+      routeWidthMm: tunedTrace.widthMm,
+    });
+    // Adjacent serpentine legs must not violate clearance to each other.
+    const spacingFloorNm = Math.round(
+      (tunedTrace.widthMm + clearances.traceClearanceMm) * NM_PER_MM,
+    );
+    return generateMeander({
+      baselinePointsNm: session.baselinePointsNm,
+      spanStartNm: session.spanStartNm,
+      spanEndNm: session.spanEndNm,
+      amplitudeNm: session.amplitudeNm,
+      spacingNm: Math.max(session.spacingNm, spacingFloorNm),
+      mode: tunedTrace.segmentMode,
+      targetExtraNm,
+      obstacles,
+      minAmplitudeNm: Math.round(tunedTrace.widthMm * 2 * NM_PER_MM),
+    });
+  }, [
+    padToNet,
+    projectionIndex,
+    tuneNetLengths,
+    tuneResolvedTargetMm,
+    tunedTrace,
+    tuneState,
+    workspace.projection,
+  ]);
+
+  /** Enter: replace the trace geometry with the proposal (one undo entry). */
+  const commitTuneProposal = useCallback((): void => {
+    if (
+      tuneState.kind !== "tuning" ||
+      !tuneProposal ||
+      !tunedTrace ||
+      tuneProposal.achievedExtraNm <= 0
+    ) {
+      return;
+    }
+    void workspace
+      .updateTraceGeometry(tunedTrace.id, tuneProposal.pointsNm)
+      .then(() => dispatchTune({ kind: "cancel" }));
+  }, [tuneProposal, tuneState, tunedTrace, workspace]);
+
+  // Sweeping span follows the cursor's projection onto the baseline.
+  useEffect(() => {
+    if (toolMode !== "tune" || tuneState.kind !== "tuning") return;
+    if (!tuneState.session.sweeping || !cursorMm) return;
+    dispatchTune({
+      kind: "sweep",
+      spanEndNm: distanceAlongPolylineNm(
+        tuneState.session.baselinePointsNm,
+        pointMmToNm(cursorMm),
+      ),
+    });
+  }, [cursorMm, toolMode, tuneState]);
+
+  // Leaving tune mode always drops the session + inline editor.
+  useEffect(() => {
+    if (toolMode !== "tune") {
+      dispatchTune({ kind: "cancel" });
+      setTuneTargetInputOpen(false);
+    }
+  }, [toolMode]);
+
+  const tuneHudModel = useMemo(() => {
+    if (tuneState.kind !== "tuning" || !tunedTrace || !tuneNetLengths) {
+      return null;
+    }
+    const netName = tunedTrace.netId
+      ? (workspace.projection?.netNames[tunedTrace.netId] ?? null)
+      : null;
+    return buildTuneHudModel({
+      session: tuneState.session,
+      netName,
+      group: tuneGroupTarget,
+      netOtherMm: tuneNetLengths.otherMm,
+      baselineMm: tuneNetLengths.baselineMm,
+      proposalExtraMm: (tuneProposal?.achievedExtraNm ?? 0) / NM_PER_MM,
+      meanderStatus: tuneProposal?.status ?? null,
+    });
+  }, [
+    tuneGroupTarget,
+    tuneNetLengths,
+    tuneProposal,
+    tunedTrace,
+    tuneState,
+    workspace.projection,
+  ]);
+
+  const sceneTunePreview = useMemo(() => {
+    if (!tuneProposal || !tunedTrace || tuneProposal.achievedExtraNm <= 0) {
+      return null;
+    }
+    return {
+      pointsNm: tuneProposal.pointsNm,
+      layer: tunedTrace.layer,
+      widthMm: tunedTrace.widthMm,
+    };
+  }, [tuneProposal, tunedTrace]);
+
+  // ---- Bundle routing (pcb.bundleRouting) ------------------------------
+
+  /** Nearest pad on the named net — the diff-pair partner auto-add. */
+  const findNearestPadOnNet = useCallback(
+    (netName: string, nearNm: PointNm): BundlePad | null => {
+      const projection = workspace.projection;
+      if (!projection) return null;
+      const netId = Object.entries(projection.netNames).find(
+        ([, name]) => name === netName,
+      )?.[0];
+      if (!netId) return null;
+      let best: BundlePad | null = null;
+      let bestDistSq = Infinity;
+      for (const placement of projection.placements) {
+        for (const pad of placementPads(placement)) {
+          const key = `${placement.id}|${pad.number}`;
+          if (padToNet.get(key) !== netId) continue;
+          const centerMm = padWorldPositionMm(placement, pad);
+          const dx = centerMm.x * NM_PER_MM - nearNm.x;
+          const dy = centerMm.y * NM_PER_MM - nearNm.y;
+          const distSq = dx * dx + dy * dy;
+          if (
+            distSq < bestDistSq ||
+            (distSq === bestDistSq && best !== null && key < best.padId)
+          ) {
+            bestDistSq = distSq;
+            best = {
+              padId: key,
+              netId,
+              netName,
+              centerNm: pointMmToNm(centerMm),
+            };
+          }
+        }
+      }
+      return best;
+    },
+    [padToNet, workspace.projection],
+  );
+
+  /**
+   * Ghost lanes: centerline = pad centroid → waypoints → snapped cursor;
+   * each collected pad gets a monotone lane offset of the centerline plus a
+   * short elbow connector from its pad center to the lane start.
+   */
+  const bundlePreview = useMemo(() => {
+    if (toolMode !== "bundle" || bundleState.kind !== "bundling") return null;
+    const s = bundleState.session;
+    if (s.pads.length < 2) return null;
+    const anchors: PointNm[] = [bundleAnchorNm(s), ...s.waypointsNm];
+    if (cursorMm) anchors.push(pointMmToNm(snapPoint(cursorMm)));
+    if (anchors.length < 2) return null;
+    const centerline = buildPreviewPath(anchors, s.segmentMode, "auto");
+    if (centerline.length < 2) return null;
+    const dirNm = {
+      x: Math.sign(centerline[1]!.x - centerline[0]!.x),
+      y: Math.sign(centerline[1]!.y - centerline[0]!.y),
+    };
+    const offsets = assignLaneOffsets({
+      padPointsNm: s.pads.map((pad) => pad.centerNm),
+      dirNm,
+      pitchNm: s.pitchNm,
+    });
+    const lanes = buildBundleLanes({
+      centerlineNm: centerline,
+      laneOffsetsNm: offsets,
+      mode: s.segmentMode,
+    });
+    const fullLanes = s.pads.map((pad, i) => {
+      const lane = lanes[i]!;
+      if (!lane.ok || lane.pointsNm.length < 2) {
+        return { pad, pointsNm: [] as PointNm[], ok: false };
+      }
+      const connector = buildPreviewPath(
+        [pad.centerNm, lane.pointsNm[0]!],
+        s.segmentMode,
+        "auto",
+      );
+      return {
+        pad,
+        pointsNm: [...connector, ...lane.pointsNm.slice(1)],
+        ok: true,
+      };
+    });
+    return { lanes: fullLanes, allOk: fullLanes.every((l) => l.ok) };
+  }, [bundleState, cursorMm, snapPoint, toolMode]);
+
+  /**
+   * Enter: gate every lane (vs committed copper AND the other lanes — they
+   * are different nets), then commit all lanes in ONE atomic
+   * pcb_commit_route. No override toggle in v1 — bundles never commit dirty.
+   */
+  const finishBundle = useCallback(async (): Promise<void> => {
+    if (bundleState.kind !== "bundling" || !workspace.projection) return;
+    const s = bundleState.session;
+    if (!bundlePreview || bundlePreview.lanes.length < 2) return;
+    if (!bundlePreview.allOk) {
+      setBundleBlocked(
+        "Lane geometry degenerates — reduce pitch or widen the corridor",
+      );
+      return;
+    }
+    const board = workspace.projection.board;
+    let conflicts = 0;
+    bundlePreview.lanes.forEach((lane, i) => {
+      const otherLanes: PcbTrace[] = bundlePreview.lanes
+        .filter((_, j) => j !== i)
+        .map((other, j) => ({
+          id: `pending:bundle:${j}`,
+          netId: other.pad.netId,
+          netClassId: s.netClassId,
+          layer: s.layer,
+          widthMm: s.widthMm,
+          pointsNm: other.pointsNm,
+          segmentMode: s.segmentMode,
+        }));
+      conflicts += runLiveDrc({
+        traceNm: lane.pointsNm,
+        traceWidthMm: s.widthMm,
+        netId: lane.pad.netId,
+        layer: s.layer,
+        traces: [...workspace.projection!.traces, ...otherLanes],
+        placements: workspace.projection!.placements,
+        padNetMap: padToNet,
+        netClasses: board.netClasses,
+        netClassId: s.netClassId,
+        designRules: board.designRules,
+      }).length;
+    });
+    if (conflicts > 0) {
+      setBundleBlocked(
+        `${conflicts} clearance conflict${conflicts === 1 ? "" : "s"} — adjust the route or pitch`,
+      );
+      return;
+    }
+    setBundleBlocked(null);
+    try {
+      await workspace.commitRoute({
+        traces: bundlePreview.lanes.map((lane) => ({
+          layer: s.layer,
+          pointsNm: lane.pointsNm,
+          widthMm: s.widthMm,
+          netId: lane.pad.netId,
+          netClassId: s.netClassId,
+          segmentMode: s.segmentMode,
+        })),
+        vias: [],
+      });
+      dispatchBundle({ kind: "cancel" });
+    } catch {
+      // Rejection surfaced via the workspace toast; session survives.
+    }
+  }, [bundlePreview, bundleState, padToNet, workspace]);
+
+  // Session-scoped: leaving bundle mode drops everything; any session change
+  // clears a stale block reason.
+  useEffect(() => {
+    if (toolMode !== "bundle") {
+      dispatchBundle({ kind: "cancel" });
+      setBundleBlocked(null);
+    }
+  }, [toolMode]);
+  useEffect(() => {
+    setBundleBlocked(null);
+  }, [bundleState]);
+
+  const bundleHudModel = useMemo<BundleHudModel | null>(() => {
+    if (bundleState.kind !== "bundling") return null;
+    const s = bundleState.session;
+    const netNames = [
+      ...new Set(
+        s.pads.map((pad) => pad.netName ?? pad.netId ?? "?").filter(Boolean),
+      ),
+    ];
+    const diffPair =
+      s.pads.length === 2 &&
+      s.pads[0]!.netName !== null &&
+      s.pads[1]!.netName !== null &&
+      diffPairPartnerName(s.pads[0]!.netName) === s.pads[1]!.netName;
+    return {
+      padCount: s.pads.length,
+      netNames,
+      routing: s.waypointsNm.length > 0,
+      pitchMm: s.pitchNm / NM_PER_MM,
+      diffPair,
+      blockedReason: bundleBlocked,
+    };
+  }, [bundleBlocked, bundleState]);
+
+  const sceneBundlePreview = useMemo(() => {
+    if (!bundlePreview || bundleState.kind !== "bundling") return null;
+    const s = bundleState.session;
+    return bundlePreview.lanes
+      .filter((lane) => lane.ok)
+      .map((lane) => ({
+        pointsNm: lane.pointsNm,
+        layer: s.layer,
+        widthMm: s.widthMm,
+      }));
+  }, [bundlePreview, bundleState]);
+
+  /**
+   * Smart Via: flush segments-so-far + the via into the session's boundary
+   * log and rebase onto the target layer. Purely local — no backend command,
+   * no refresh; the whole session commits atomically at finish.
    */
   const placeSmartVia = useCallback(
-    async (
+    (
       session: RouteSession,
       cursorMm: PcbPointMm,
       targetLayer: PcbCopperLayerId,
-    ): Promise<boolean> => {
+    ): void => {
       const snapped = snapPoint(cursorMm);
       const viaCenterNm = pointMmToNm(snapped);
-      const committedAnchors = sessionAnchors(session);
       const path = buildPreviewPath(
-        [...committedAnchors, viaCenterNm],
+        [...sessionAnchors(session), viaCenterNm],
         session.segmentMode,
         session.posture,
       );
-      const viaInput = {
-        centerMm: snapped,
-        netId: session.netId,
-        netClassId: session.netClassId,
-        ...(session.viaDiameterMmOverride !== undefined
-          ? { diameterMmOverride: session.viaDiameterMmOverride }
-          : {}),
-        ...(session.viaDrillMmOverride !== undefined
-          ? { drillMmOverride: session.viaDrillMmOverride }
-          : {}),
-      };
-      try {
-        if (path.length >= 2) {
-          await workspace.addTraceVia({
-            trace: {
-              layer: session.layer,
-              pointsNm: path,
-              widthMm: session.widthMm,
-              netId: session.netId,
-              netClassId: session.netClassId,
-              segmentMode: session.segmentMode,
-            },
-            via: viaInput,
-          });
-        } else {
-          await workspace.addVia(viaInput);
-        }
-      } catch {
-        return false;
-      }
       dispatchRoute({
         kind: "rebase-layer",
         anchorNm: viaCenterNm,
         layer: targetLayer,
+        runPointsNm: path.length >= 2 ? path : [],
+        via: {
+          centerNm: viaCenterNm,
+          ...(session.viaDiameterMmOverride !== undefined
+            ? { diameterMmOverride: session.viaDiameterMmOverride }
+            : {}),
+          ...(session.viaDrillMmOverride !== undefined
+            ? { drillMmOverride: session.viaDrillMmOverride }
+            : {}),
+        },
       });
-      // Routing context follows the via via `rebase-layer`. The caller decides
-      // whether this via also represents a user-visible board active-layer
-      // switch (toolbar/hotkey) or just a local route rebase.
-      return true;
     },
-    [workspace],
+    [snapPoint],
   );
 
   // Width preset list (from board settings, fallback to net-class default).
@@ -1270,8 +2041,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         }
         const viaCursor = cursorOverrideMm ?? cursorMmRef.current;
         if (!viaCursor) return;
-        const placed = await placeSmartVia(session, viaCursor, targetLayer);
-        if (!placed) return;
+        placeSmartVia(session, viaCursor, targetLayer);
         await workspace.setActiveLayer(targetLayer);
         return;
       }
@@ -1378,32 +2148,30 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
    * width. KiCad/Altium "future segments only" semantics.
    */
   const setSessionWidth = useCallback(
-    async (widthMm: number, source: RouteWidthSource) => {
+    (widthMm: number, source: RouteWidthSource): void => {
       if (routeState.kind !== "routing") return;
       const session = routeState.session;
       if (Math.abs(session.widthMm - widthMm) < 1e-9) return;
-      const hasCommittedSegments = session.waypointsNm.length > 0;
-      if (!hasCommittedSegments) {
+      if (session.waypointsNm.length === 0) {
         dispatchRoute({ kind: "set-width", widthMm, source });
         return;
       }
-      // Commit segments-so-far at OLD width using the last waypoint as the
-      // session's terminal anchor.
+      // Width split: flush segments-so-far at the OLD width into the boundary
+      // log (purely local), rebase at the last waypoint with the new width.
       const lastWaypoint = session.waypointsNm[session.waypointsNm.length - 1]!;
-      try {
-        await commitTrace(session, lastWaypoint);
-      } catch {
-        return;
-      }
-      // Rebase the session at the join point at the NEW width.
       dispatchRoute({
         kind: "rebase",
         anchorNm: lastWaypoint,
         widthMm,
         widthSource: source,
+        runPointsNm: buildPreviewPath(
+          sessionAnchors(session),
+          session.segmentMode,
+          session.posture,
+        ),
       });
     },
-    [commitTrace, routeState],
+    [routeState],
   );
 
   /** Re-resolve the session width from its net class (HUD badge reset). */
@@ -1499,6 +2267,110 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           return;
         }
 
+        // Bundle mode — pad clicks collect (with diff-pair partner assist);
+        // free-space clicks with ≥2 pads route the shared centerline.
+        if (toolMode === "bundle") {
+          if (!defaultNetClass) return;
+          const anchor = resolveAnchor(cursor);
+          const collecting =
+            bundleState.kind === "idle" ||
+            bundleState.session.waypointsNm.length === 0;
+          if (anchor.onPad && anchor.padId !== undefined && collecting) {
+            const netName = anchor.netId
+              ? (workspace.projection?.netNames[anchor.netId] ?? null)
+              : null;
+            const clearanceMm = Math.max(
+              defaultNetClass.clearanceMm,
+              workspace.projection?.board.designRules.clearance
+                .traceToTraceMm ?? 0,
+            );
+            const toggleDefaults = {
+              layer: activeCopperLayer,
+              segmentMode: "manhattan-45" as const,
+              widthMm: defaultNetClass.traceWidthMm,
+              netClassId: defaultNetClass.id,
+              // +1 µm so lanes at default pitch clear the strict gate even
+              // with the ≤1 nm diagonal-offset quantization.
+              pitchNm: Math.round(
+                (defaultNetClass.traceWidthMm + clearanceMm + 0.001) *
+                  NM_PER_MM,
+              ),
+            };
+            const pad: BundlePad = {
+              padId: anchor.padId,
+              netId: anchor.netId,
+              netName,
+              centerNm: pointMmToNm(anchor.pointMm),
+            };
+            const alreadyIn =
+              bundleState.kind === "bundling" &&
+              bundleState.session.pads.some((p) => p.padId === pad.padId);
+            dispatchBundle({ kind: "toggle-pad", pad, ...toggleDefaults });
+            if (!alreadyIn && netName) {
+              const partnerName = diffPairPartnerName(netName);
+              const partner = partnerName
+                ? findNearestPadOnNet(partnerName, pad.centerNm)
+                : null;
+              const partnerCollected =
+                partner !== null &&
+                bundleState.kind === "bundling" &&
+                bundleState.session.pads.some(
+                  (p) => p.padId === partner.padId,
+                );
+              if (partner && !partnerCollected && partner.padId !== pad.padId) {
+                dispatchBundle({
+                  kind: "toggle-pad",
+                  pad: partner,
+                  ...toggleDefaults,
+                });
+                if (defaultNetClass.diffPairGapMm !== undefined) {
+                  dispatchBundle({
+                    kind: "set-pitch",
+                    pitchNm: Math.round(
+                      (defaultNetClass.traceWidthMm +
+                        defaultNetClass.diffPairGapMm) *
+                        NM_PER_MM,
+                    ),
+                  });
+                }
+              }
+            }
+            return;
+          }
+          if (
+            bundleState.kind === "bundling" &&
+            bundleState.session.pads.length >= 2
+          ) {
+            dispatchBundle({
+              kind: "commit-waypoint",
+              pointNm: pointMmToNm(snapPoint(cursor)),
+            });
+          }
+          return;
+        }
+
+        // Tune mode — click a routed trace to start (span follows the
+        // cursor); a second click freezes the span. Enter commits, Esc exits.
+        if (toolMode === "tune") {
+          if (tuneState.kind === "tuning" && tuneState.session.sweeping) {
+            dispatchTune({ kind: "freeze-span" });
+            return;
+          }
+          const hit = hitTrace(tracesRef.current, cursor, activeCopperLayer);
+          if (hit) {
+            dispatchTune({
+              kind: "start",
+              traceId: hit.trace.id,
+              baselinePointsNm: hit.trace.pointsNm,
+              spanStartNm: distanceAlongPolylineNm(
+                hit.trace.pointsNm,
+                pointMmToNm(cursor),
+              ),
+            });
+          }
+          return;
+        }
+
         // Hole mode — single click drops a free mounting hole at the snapped
         // cursor and returns to select mode.
         if (toolMode === "hole") {
@@ -1548,7 +2420,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             anchor.netId === null
           ) {
             const traceHit = hitTrace(
-              tracesRef.current,
+              [...tracesRef.current, ...pendingRouteGeometry.traces],
               cursor,
               routeState.session.layer,
             );
@@ -1560,12 +2432,19 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
               };
             }
           }
+          // Any manual route click implicitly dismisses a pending proposal
+          // (except the auto-finish modifier click, which replaces it).
+          if (autoFinishProposal) setAutoFinishProposal(null);
+          const nativeEvt = event.nativeEvent?.nativeEvent;
           const action = resolveRouteClickAction({
             routing: routeState.kind === "routing",
             anchor: { onPad: anchor.onPad, netId: anchor.netId },
             sessionNetId:
               routeState.kind === "routing" ? routeState.session.netId : null,
-            clickCount: event.nativeEvent?.nativeEvent.detail ?? 1,
+            clickCount: nativeEvt?.detail ?? 1,
+            autoFinishModifier:
+              autoFinishEnabled &&
+              Boolean(nativeEvt && (nativeEvt.ctrlKey || nativeEvt.metaKey)),
           });
           if (action === "start" && routeState.kind === "idle") {
             // An explicit per-net assignment overrides the default class (and
@@ -1611,8 +2490,28 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           // ends allowed); anything else adds an intermediate waypoint.
           if (routeState.kind !== "routing") return;
           const session = routeState.session;
+          // Ghost === committed: an active walkaround detour lands as real
+          // waypoints ahead of the clicked point / finish anchor.
+          const detourAnchorsNm = walkDetourRef.current ?? [];
           if (action === "finish") {
-            void finishRoute(session, pointMmToNm(anchor.pointMm));
+            void finishRoute(
+              session,
+              pointMmToNm(anchor.pointMm),
+              detourAnchorsNm,
+            );
+            return;
+          }
+          if (action === "auto-finish") {
+            if (anchor.padId !== undefined) {
+              runAutoFinish({ padId: anchor.padId, centerMm: anchor.pointMm });
+            }
+            return;
+          }
+          if (detourAnchorsNm.length > 0) {
+            dispatchRoute({
+              kind: "commit-waypoints",
+              pointsNm: [...detourAnchorsNm, pointMmToNm(anchor.pointMm)],
+            });
             return;
           }
           dispatchRoute({
@@ -2511,13 +3410,17 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     };
   }, [
     activeCopperLayer,
-    commitTrace,
+    autoFinishEnabled,
+    autoFinishProposal,
+    bundleState,
     defaultNetClass,
     dragSession,
     eventToMm,
+    findNearestPadOnNet,
     finishRoute,
     marquee,
     padToNet,
+    pendingRouteGeometry,
     previewActive,
     props.activeCommentThreadId,
     props.commentMode,
@@ -2528,6 +3431,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     resolveRouteAnchor,
     rotatePlacePreview,
     flipPlacePreview,
+    runAutoFinish,
     setPlacePreviewPositions,
     routeState,
     selection,
@@ -2536,6 +3440,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     snapPoint,
     splitAndRerouteTrace,
     toolMode,
+    tuneState,
     viasVisible,
     visibleLayers,
     visiblePlacements,
@@ -2544,7 +3449,11 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
 
   useEffect(() => {
     const onShiftKey = (event: KeyboardEvent): void => {
-      if (event.key === "Shift") setMeasureShowDeltas(event.type === "keydown");
+      if (event.key === "Shift") {
+        setMeasureShowDeltas(event.type === "keydown");
+        // Shift also suppresses object+guide snap while held (grid stays).
+        shiftHeldRef.current = event.type === "keydown";
+      }
       // Track Alt to let the user suppress guide snapping mid-drag/route.
       if (event.key === "Alt") altHeldRef.current = event.type === "keydown";
     };
@@ -2653,6 +3562,95 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         dispatchRoute({ kind: "cancel" });
         return;
       }
+      // U toggles the length-Tune tool (pcb.lengthTuning).
+      if (
+        (event.key === "u" || event.key === "U") &&
+        lengthTuningEnabled &&
+        routeState.kind !== "routing" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        setToolMode((prev) => {
+          if (prev === "tune") {
+            dispatchTune({ kind: "cancel" });
+            return "select";
+          }
+          return "tune";
+        });
+        dispatchRoute({ kind: "cancel" });
+        dispatchMeasure({ kind: "clear" });
+        return;
+      }
+      // Tune-session keys.
+      if (toolMode === "tune" && tuneState.kind === "tuning") {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dispatchTune({ kind: "cancel" });
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commitTuneProposal();
+          return;
+        }
+        if (event.key === "+" || event.key === "=") {
+          event.preventDefault();
+          dispatchTune({ kind: "nudge-amplitude", direction: 1 });
+          return;
+        }
+        if (event.key === "-") {
+          event.preventDefault();
+          dispatchTune({ kind: "nudge-amplitude", direction: -1 });
+          return;
+        }
+        if (event.key === ",") {
+          event.preventDefault();
+          dispatchTune({ kind: "nudge-spacing", direction: -1 });
+          return;
+        }
+        if (event.key === ".") {
+          event.preventDefault();
+          dispatchTune({ kind: "nudge-spacing", direction: 1 });
+          return;
+        }
+      }
+      // Bundle-session keys.
+      if (toolMode === "bundle" && bundleState.kind === "bundling") {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dispatchBundle({ kind: "cancel" });
+          return;
+        }
+        if (event.key === "Backspace") {
+          event.preventDefault();
+          dispatchBundle({ kind: "step-back" });
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void finishBundle();
+          return;
+        }
+        if (event.key === "," || event.key === ".") {
+          event.preventDefault();
+          const clearanceMm = Math.max(
+            defaultNetClass?.clearanceMm ?? 0,
+            workspace.projection?.board.designRules.clearance.traceToTraceMm ??
+              0,
+          );
+          dispatchBundle({
+            kind: "nudge-pitch",
+            direction: event.key === "." ? 1 : -1,
+            minPitchNm: Math.round(
+              (bundleState.session.widthMm + clearanceMm + 0.001) * NM_PER_MM,
+            ),
+          });
+          return;
+        }
+      }
       // Shift+G toggles alignment guides (visual + magnetic snap).
       if ((event.key === "g" || event.key === "G") && event.shiftKey) {
         event.preventDefault();
@@ -2694,6 +3692,12 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         const session = routeState.session;
         if (event.key === "Escape") {
           event.preventDefault();
+          // A pending auto-finish proposal absorbs the first Esc; the
+          // session itself only cancels on the next one.
+          if (autoFinishProposal) {
+            setAutoFinishProposal(null);
+            return;
+          }
           dispatchRoute({ kind: "cancel" });
           return;
         }
@@ -2702,15 +3706,29 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           dispatchRoute({ kind: "step-back" });
           return;
         }
-        // Enter/End — finish anywhere: commit the ghost through the snapped
-        // cursor (or just the committed segments when the cursor is unknown),
-        // leaving a dangling end. KiCad "Finish Route" parity.
+        // Tab — auto-finish: propose an A* completion to the nearest open
+        // same-net pad (the pad the dashed ratsnest guide points at).
+        if (event.key === "Tab" && autoFinishEnabled) {
+          event.preventDefault();
+          runAutoFinish();
+          return;
+        }
+        // Enter/End — accept a pending proposal, else finish anywhere:
+        // commit the ghost through the snapped cursor (or just the committed
+        // segments when the cursor is unknown), leaving a dangling end.
+        // KiCad "Finish Route" parity.
         if (event.key === "Enter" || event.key === "End") {
           event.preventDefault();
+          if (autoFinishProposal) {
+            acceptAutoFinish();
+            return;
+          }
           const finalNm = cursorMm
             ? pointMmToNm(resolveRouteAnchor(cursorMm).pointMm)
             : (session.waypointsNm[session.waypointsNm.length - 1] ?? null);
-          if (finalNm) void finishRoute(session, finalNm);
+          if (finalNm) {
+            void finishRoute(session, finalNm, walkDetourRef.current ?? []);
+          }
           return;
         }
         if (event.key === "w" || event.key === "W") {
@@ -2754,8 +3772,9 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           return;
         }
         // Smart Via: V (KiCad/Flux universal) or +/- (alias for back-compat).
-        // Commits segments-so-far on the current layer, drops a via at the
-        // cursor, then rebases the session onto the opposite layer.
+        // Flushes segments-so-far into the session, drops a via at the
+        // cursor, then rebases onto the other layer of the active LAYER PAIR
+        // (toolbar-selectable on 4-layer boards; 1-4 hotkeys jump directly).
         if (
           event.key === "+" ||
           event.key === "-" ||
@@ -2764,8 +3783,11 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         ) {
           event.preventDefault();
           if (!cursorMm) return;
-          const nextLayer: PcbCopperLayerId =
-            session.layer === "F.Cu" ? "B.Cu" : "F.Cu";
+          const nextLayer = nextRouteLayer(
+            session.layer,
+            workspace.projection?.board.layerCount ?? 2,
+            usePcbViewStore.getState().layerPair,
+          );
           void setActiveCopperLayer(nextLayer, snapPoint(cursorMm));
           return;
         }
@@ -2944,6 +3966,12 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         } else if (toolMode === "measure") {
           dispatchMeasure({ kind: "clear" });
           setToolMode("select");
+        } else if (toolMode === "tune") {
+          dispatchTune({ kind: "cancel" });
+          setToolMode("select");
+        } else if (toolMode === "bundle") {
+          dispatchBundle({ kind: "cancel" });
+          setToolMode("select");
         } else if (
           toolMode === "hole" ||
           toolMode === "pad" ||
@@ -2990,9 +4018,17 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
+    acceptAutoFinish,
+    autoFinishEnabled,
+    autoFinishProposal,
+    bundleState,
+    commitTuneProposal,
     cursorMm,
+    defaultNetClass,
+    finishBundle,
     cycleWidth,
     handleToggleViewSide,
+    lengthTuningEnabled,
     marquee,
     previewActive,
     rejectPreview,
@@ -3002,10 +4038,12 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     finishRoute,
     resolveRouteAnchor,
     routeState,
+    runAutoFinish,
     selection,
     setActiveCopperLayer,
     setSessionWidth,
     toolMode,
+    tuneState,
     workspace,
   ]);
 
@@ -3070,12 +4108,77 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   }, [freePrimitiveDragSession]);
 
   // Live route preview: build path through committed anchors + cursor.
+  // With pcb.routeWalkaround on, a colliding head is re-shaped around the hit
+  // obstacle cluster BEFORE rendering — the endpoint (snap-resolved cursor)
+  // is never moved, so walkaround cannot fight snapping or guides.
   const routePreview = useMemo(() => {
     if (routeState.kind !== "routing" || !cursorMm) return null;
     const session = routeState.session;
     const cursorAnchor = resolveRouteAnchor(cursorMm);
     const committedAnchors = sessionAnchors(session);
-    const anchors = [...committedAnchors, pointMmToNm(cursorAnchor.pointMm)];
+    const cursorNm = pointMmToNm(cursorAnchor.pointMm);
+    let detourAnchorsNm: PointNm[] | null = null;
+    let walkChoice: { clusterSignature: string; side: "cw" | "ccw" } | null =
+      null;
+    if (walkaroundEnabled && workspace.projection && projectionIndex) {
+      const headStartNm = committedAnchors[committedAnchors.length - 1]!;
+      const netClass =
+        workspace.projection.board.netClasses.find(
+          (nc) => nc.id === session.netClassId,
+        ) ?? null;
+      const clearances = resolveRouteClearancesMm({
+        netClass,
+        designRules: workspace.projection.board.designRules,
+      });
+      const headPadMm = 1 + clearances.traceClearanceMm + session.widthMm;
+      const box = {
+        minX: Math.min(headStartNm.x, cursorNm.x) / NM_PER_MM - headPadMm,
+        minY: Math.min(headStartNm.y, cursorNm.y) / NM_PER_MM - headPadMm,
+        maxX: Math.max(headStartNm.x, cursorNm.x) / NM_PER_MM + headPadMm,
+        maxY: Math.max(headStartNm.y, cursorNm.y) / NM_PER_MM + headPadMm,
+      };
+      const walk = walkaroundHead({
+        headStartNm,
+        headEndNm: cursorNm,
+        obstacles: buildRouteObstacles({
+          traces: [
+            ...projectionIndex.queryTraces(box),
+            ...pendingRouteGeometry.traces,
+          ],
+          placements: projectionIndex.queryPlacements(box),
+          vias: [
+            ...projectionIndex.queryVias(box),
+            ...pendingRouteGeometry.vias,
+          ],
+          layer: session.layer,
+          netId: session.netId,
+          padNetMap: padToNet,
+          traceClearanceMm: clearances.traceClearanceMm,
+          padClearanceMm: clearances.padClearanceMm,
+          routeWidthMm: session.widthMm,
+          ...(session.startPadId !== undefined
+            ? { excludePadIds: new Set([session.startPadId]) }
+            : {}),
+        }),
+        mode: session.segmentMode,
+        posture: session.posture,
+        previousChoice: walkChoiceRef.current,
+      });
+      if (walk.status === "detour") {
+        detourAnchorsNm = walk.anchorsNm;
+        walkChoice = {
+          clusterSignature: walk.clusterSignature,
+          side: walk.side,
+        };
+      }
+      // "blocked" and "clear" both fall through to the direct ghost —
+      // blocked keeps today's collision highlight as the fallback.
+    }
+    const anchors = [
+      ...committedAnchors,
+      ...(detourAnchorsNm ?? []),
+      cursorNm,
+    ];
     const path = buildPreviewPath(
       anchors,
       session.segmentMode,
@@ -3085,26 +4188,113 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     return {
       pointsNm: path,
       layer: session.layer,
+      detourAnchorsNm,
+      walkChoice,
     };
-  }, [cursorMm, resolveRouteAnchor, routeState]);
+  }, [
+    cursorMm,
+    padToNet,
+    pendingRouteGeometry,
+    projectionIndex,
+    resolveRouteAnchor,
+    routeState,
+    walkaroundEnabled,
+    workspace.projection,
+  ]);
+
+  // Clicks read the last computed detour; hysteresis reads the last side.
+  useEffect(() => {
+    walkDetourRef.current = routePreview?.detourAnchorsNm ?? null;
+    walkChoiceRef.current = routePreview?.walkChoice ?? null;
+  }, [routePreview]);
 
   // Live DRC for the in-progress trace.
   const drcViolations: DrcViolation[] = useMemo(() => {
     if (!routePreview || routeState.kind !== "routing" || !workspace.projection)
       return [];
+    // Broad-phase: only copper near the ghost's bbox (inflated by the widest
+    // plausible clearance envelope) reaches the exact distance checks.
+    let neighborTraces = workspace.projection.traces;
+    let neighborPlacements = workspace.projection.placements;
+    if (projectionIndex) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const p of routePreview.pointsNm) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const inflateMm = 5; // clearance + widths headroom; broad-phase only
+      const box = {
+        minX: minX / NM_PER_MM - inflateMm,
+        minY: minY / NM_PER_MM - inflateMm,
+        maxX: maxX / NM_PER_MM + inflateMm,
+        maxY: maxY / NM_PER_MM + inflateMm,
+      };
+      neighborTraces = projectionIndex.queryTraces(box);
+      neighborPlacements = projectionIndex.queryPlacements(box);
+    }
     return runLiveDrc({
       traceNm: routePreview.pointsNm,
       traceWidthMm: routeState.session.widthMm,
       netId: routeState.session.netId,
       layer: routeState.session.layer,
-      traces: workspace.projection.traces,
-      placements: workspace.projection.placements,
+      traces: neighborTraces,
+      placements: neighborPlacements,
       padNetMap: padToNet,
       netClasses: workspace.projection.board.netClasses,
       netClassId: routeState.session.netClassId,
       designRules: workspace.projection.board.designRules,
     });
-  }, [padToNet, routePreview, routeState, workspace.projection]);
+  }, [
+    padToNet,
+    projectionIndex,
+    routePreview,
+    routeState,
+    workspace.projection,
+  ]);
+
+  // Length-match gauge (pcb.lengthTuning): when the session net belongs to a
+  // group, resolve its target + the net's already-committed copper so the HUD
+  // shows "total / target". Longest targets exclude the session net itself.
+  const routeLengthTarget = useMemo(() => {
+    if (!lengthTuningEnabled) return null;
+    if (routeState.kind !== "routing" || !routeState.session.netId) return null;
+    const projection = workspace.projection;
+    if (!projection) return null;
+    const netId = routeState.session.netId;
+    const group = (projection.board.lengthMatchGroups ?? []).find((g) =>
+      g.netIds.includes(netId),
+    );
+    if (!group) return null;
+    const lengthByNet = new Map<string, number>();
+    for (const t of projection.traces) {
+      if (t.netId === null || !group.netIds.includes(t.netId)) continue;
+      lengthByNet.set(
+        t.netId,
+        (lengthByNet.get(t.netId) ?? 0) + routeLengthMm(t.pointsNm),
+      );
+    }
+    const targetMm =
+      group.target.kind === "absolute"
+        ? group.target.mm
+        : Math.max(
+            0,
+            ...group.netIds
+              .filter((n) => n !== netId)
+              .map((n) => lengthByNet.get(n) ?? 0),
+          );
+    if (targetMm <= 0) return null;
+    return {
+      groupName: group.name,
+      targetMm,
+      toleranceMm: group.toleranceMm,
+      committedMm: lengthByNet.get(netId) ?? 0,
+    };
+  }, [lengthTuningEnabled, routeState, workspace.projection]);
 
   // Route HUD view-model (net, layer, width + source, via sizes, length, DRC).
   const routeHudModel = useMemo(() => {
@@ -3122,12 +4312,27 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       netName,
       netClass,
       drcConflictCount: drcViolations.length,
+      autoFinishEnabled,
+      detourActive: (routePreview?.detourAnchorsNm?.length ?? 0) > 0,
+      lengthTarget: routeLengthTarget,
     });
-  }, [drcViolations.length, routePreview, routeState, workspace.projection]);
+  }, [
+    autoFinishEnabled,
+    drcViolations.length,
+    routeLengthTarget,
+    routePreview,
+    routeState,
+    workspace.projection,
+  ]);
 
-  // The inline width editor is meaningless without a session.
+  // The inline width editor and the DRC gate state are session-scoped.
   useEffect(() => {
-    if (routeState.kind !== "routing") setWidthInputOpen(false);
+    if (routeState.kind !== "routing") {
+      setWidthInputOpen(false);
+      setAllowDrcViolations(false);
+      setBlockedConflictCount(null);
+      setAutoFinishNotice(null);
+    }
   }, [routeState.kind]);
 
   // Transient surface for backend command rejections — previously these were
@@ -3206,13 +4411,29 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       cursorMm,
       posture: session.posture,
       placements: workspace.projection.placements,
-      traces: workspace.projection.traces,
-      vias: workspace.projection.vias,
+      traces: [...workspace.projection.traces, ...pendingRouteGeometry.traces],
+      vias: [...workspace.projection.vias, ...pendingRouteGeometry.vias],
       activeLayer: session.layer,
       netId: session.netId,
       toleranceMm: SNAP_THRESHOLD_PX / drcZoomRef.current,
     }).guides;
-  }, [alignmentGuidesEnabled, cursorMm, routeState, workspace.projection]);
+  }, [
+    alignmentGuidesEnabled,
+    cursorMm,
+    pendingRouteGeometry,
+    routeState,
+    workspace.projection,
+  ]);
+
+  // Accumulated (uncommitted) runs ghost-rendered beside the live head.
+  const sceneRoutePendingPreview = useMemo(() => {
+    if (pendingRouteGeometry.traces.length === 0) return null;
+    return pendingRouteGeometry.traces.map((t) => ({
+      pointsNm: t.pointsNm,
+      layer: t.layer,
+      widthMm: t.widthMm,
+    }));
+  }, [pendingRouteGeometry]);
 
   const sceneRoutePreview = useMemo(() => {
     if (!routePreview) return null;
@@ -3225,6 +4446,16 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           : (defaultNetClass?.traceWidthMm ?? 0.25),
     };
   }, [defaultNetClass?.traceWidthMm, routePreview, routeState]);
+
+  // Dimmed auto-finish proposal ghost (explicit-accept preview).
+  const sceneAutoFinishPreview = useMemo(() => {
+    if (!autoFinishProposal || routeState.kind !== "routing") return null;
+    return {
+      pointsNm: autoFinishProposal.pathNm,
+      layer: routeState.session.layer,
+      widthMm: routeState.session.widthMm,
+    };
+  }, [autoFinishProposal, routeState]);
 
   const sceneMarqueeOverlay = useMemo(
     () => ({
@@ -3341,6 +4572,11 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             routeGuides={sceneRouteGuides}
             routePreview={sceneRoutePreview}
             autoroutePreview={autoroutePreview}
+            routePendingPreview={sceneRoutePendingPreview}
+            routePendingVias={pendingRouteGeometry.vias}
+            autoFinishPreview={sceneAutoFinishPreview}
+            tunePreview={sceneTunePreview}
+            bundlePreview={sceneBundlePreview}
             previewBasePlacements={proposedEffective}
             previewFromMarkers={placePreviewFromMarkers}
             routeFocusActive={routeState.kind === "routing"}
@@ -3535,6 +4771,32 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 });
                 dispatchRoute({ kind: "cancel" });
               }}
+              {...(lengthTuningEnabled
+                ? {
+                    tuneMode: toolMode === "tune",
+                    onToggleTuneMode: () => {
+                      setToolMode((prev) =>
+                        prev === "tune" ? "select" : "tune",
+                      );
+                      dispatchTune({ kind: "cancel" });
+                      dispatchRoute({ kind: "cancel" });
+                      dispatchMeasure({ kind: "clear" });
+                    },
+                  }
+                : {})}
+              {...(bundleRoutingEnabled
+                ? {
+                    bundleMode: toolMode === "bundle",
+                    onToggleBundleMode: () => {
+                      setToolMode((prev) =>
+                        prev === "bundle" ? "select" : "bundle",
+                      );
+                      dispatchBundle({ kind: "cancel" });
+                      dispatchRoute({ kind: "cancel" });
+                      dispatchMeasure({ kind: "clear" });
+                    },
+                  }
+                : {})}
               commentMode={props.commentMode ?? false}
               onToggleCommentMode={
                 props.onToggleCommentMode
@@ -3559,6 +4821,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 dispatchRoute({ kind: "cancel" });
                 dispatchMeasure({ kind: "clear" });
               }}
+              layerCount={workspace.projection?.board.layerCount ?? 2}
               segmentMode={
                 routeState.kind === "routing"
                   ? routeState.session.segmentMode
@@ -3713,39 +4976,6 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   onReject={rejectPreview}
                 />
               ) : null}
-              {workspaceErrorVisible && workspace.error ? (
-                <div
-                  role="alert"
-                  className="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-[11px] text-red-700 shadow-lg dark:border-red-900 dark:bg-red-950/90 dark:text-red-300"
-                >
-                  {workspace.error}
-                  <button
-                    type="button"
-                    aria-label="Dismiss error"
-                    className="rounded px-1 hover:bg-red-100 dark:hover:bg-red-900"
-                    onClick={() => setWorkspaceErrorVisible(false)}
-                  >
-                    ×
-                  </button>
-                </div>
-              ) : null}
-              {toolMode === "route" && !previewActive ? (
-                <RouteHud
-                  model={routeHudModel}
-                  layerColor={
-                    PCB_TRACE_COLORS[
-                      routeState.kind === "routing"
-                        ? routeState.session.layer
-                        : activeCopperLayer
-                    ]
-                  }
-                  widthInputOpen={widthInputOpen}
-                  onOpenWidthInput={() => setWidthInputOpen(true)}
-                  onWidthInputSubmit={(w) => void setSessionWidth(w, "manual")}
-                  onWidthInputClose={() => setWidthInputOpen(false)}
-                  onResetWidthToNetClass={resetSessionWidthToNetClass}
-                />
-              ) : null}
               {placeAppliedNote ? (
                 <div
                   role="status"
@@ -3759,6 +4989,74 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 </div>
               ) : null}
             </>
+          ) : null}
+          {/* General overlays — NOT gated on autoLayoutEnabled: the route HUD
+              and command-rejection toast must work without any cloud config
+              (an earlier nesting inside the auto-layout fragment hid them). */}
+          {workspaceErrorVisible && workspace.error ? (
+            <div
+              role="alert"
+              className="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-[11px] text-red-700 shadow-lg dark:border-red-900 dark:bg-red-950/90 dark:text-red-300"
+            >
+              {workspace.error}
+              <button
+                type="button"
+                aria-label="Dismiss error"
+                className="rounded px-1 hover:bg-red-100 dark:hover:bg-red-900"
+                onClick={() => setWorkspaceErrorVisible(false)}
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
+          {toolMode === "route" && !previewActive ? (
+            <RouteHud
+              model={routeHudModel}
+              layerColor={copperLayerColor(
+                routeState.kind === "routing"
+                  ? routeState.session.layer
+                  : activeCopperLayer,
+              )}
+              widthInputOpen={widthInputOpen}
+              onOpenWidthInput={() => setWidthInputOpen(true)}
+              onWidthInputSubmit={(w) => void setSessionWidth(w, "manual")}
+              onWidthInputClose={() => setWidthInputOpen(false)}
+              onResetWidthToNetClass={resetSessionWidthToNetClass}
+              blockedConflictCount={blockedConflictCount}
+              allowDrcViolations={allowDrcViolations}
+              onToggleAllowDrcViolations={() => {
+                setAllowDrcViolations((prev) => !prev);
+                setBlockedConflictCount(null);
+              }}
+              autoFinishProposal={
+                autoFinishProposal
+                  ? {
+                      lengthMm: routeLengthMm(autoFinishProposal.pathNm),
+                      targetName: autoFinishProposal.targetName,
+                    }
+                  : null
+              }
+              onAcceptAutoFinish={acceptAutoFinish}
+              onDismissAutoFinish={() => setAutoFinishProposal(null)}
+              autoFinishNotice={autoFinishNotice}
+            />
+          ) : null}
+          {toolMode === "tune" && !previewActive ? (
+            <TuneHud
+              model={tuneHudModel}
+              targetInputOpen={tuneTargetInputOpen}
+              onOpenTargetInput={() => setTuneTargetInputOpen(true)}
+              onTargetInputSubmit={(t) =>
+                dispatchTune({ kind: "set-target-override", targetMm: t })
+              }
+              onTargetInputClose={() => setTuneTargetInputOpen(false)}
+              onClearTargetOverride={() =>
+                dispatchTune({ kind: "set-target-override", targetMm: undefined })
+              }
+            />
+          ) : null}
+          {toolMode === "bundle" && !previewActive ? (
+            <BundleHud model={bundleHudModel} />
           ) : null}
         </>
       ) : null}
@@ -3806,7 +5104,7 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           <span
             aria-hidden
             className="inline-block h-2 w-2 rounded-full"
-            style={{ backgroundColor: PCB_LAYER_COLORS[displayedCopperLayer] }}
+            style={{ backgroundColor: copperLayerColor(displayedCopperLayer) }}
           />
           {displayedCopperLayer === "F.Cu"
             ? "Top"

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import type { PcbLayerCount } from "../../../../sdks";
 import {
+  AudioWaveform,
   Cable,
   CircleDot,
   Eye,
@@ -17,10 +19,43 @@ import {
   Square,
   Type,
   Undo2,
+  Waypoints,
 } from "lucide-react";
 import type { PcbTraceSegmentMode } from "../../../../sdks";
 import type { RoutePosture } from "./tools/route-tool-state";
 import { VIA_PRESETS, type PcbViaPreset } from "../../backend/pcb/via-presets";
+import { LAYER_PAIR_PRESETS } from "./tools/route-layer";
+import { usePcbViewStore } from "./pcb-view-store";
+
+/**
+ * Smart-via layer pair selector (4-layer boards): where the V key jumps.
+ * Session-only state in the view store.
+ */
+function LayerPairSelect(): ReactElement {
+  const layerPair = usePcbViewStore((s) => s.layerPair);
+  const setLayerPair = usePcbViewStore((s) => s.setLayerPair);
+  const value = `${layerPair[0]}|${layerPair[1]}`;
+  return (
+    <select
+      value={value}
+      title="Smart-via layer pair — V jumps between these layers"
+      aria-label="Smart-via layer pair"
+      className="h-7 rounded-md border border-transparent bg-transparent px-1 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+      onChange={(e) => {
+        const preset = LAYER_PAIR_PRESETS.find(
+          (p) => `${p[0]}|${p[1]}` === e.target.value,
+        );
+        if (preset) setLayerPair(preset);
+      }}
+    >
+      {LAYER_PAIR_PRESETS.map((p) => (
+        <option key={`${p[0]}|${p[1]}`} value={`${p[0]}|${p[1]}`}>
+          {p[0].replace(".Cu", "")}↔{p[1].replace(".Cu", "")}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 interface PcbTopToolbarProps {
   selectedPlacementCount: number;
@@ -50,10 +85,18 @@ interface PcbTopToolbarProps {
   onToggleRouteMode: () => void;
   measureMode: boolean;
   onToggleMeasureMode: () => void;
+  /** Length-Tune tool (pcb.lengthTuning). Button hidden when not provided. */
+  tuneMode?: boolean;
+  onToggleTuneMode?: () => void;
+  /** Bundle routing (pcb.bundleRouting). Button hidden when not provided. */
+  bundleMode?: boolean;
+  onToggleBundleMode?: () => void;
   commentMode?: boolean;
   onToggleCommentMode?: () => void;
   segmentMode: PcbTraceSegmentMode;
   onToggleSegmentMode: () => void;
+  /** Copper layer count; the V-key layer-pair selector shows on 4-layer boards. */
+  layerCount?: PcbLayerCount;
   activeWidthMm: number;
   tracePresets: ReadonlyArray<number>;
   onPickWidth: (widthMm: number) => void;
@@ -516,9 +559,14 @@ export function PcbTopToolbar({
   onToggleRouteMode,
   measureMode,
   onToggleMeasureMode,
+  tuneMode = false,
+  onToggleTuneMode,
+  bundleMode = false,
+  onToggleBundleMode,
   commentMode = false,
   onToggleCommentMode,
   segmentMode,
+  layerCount = 2,
   onToggleSegmentMode,
   activeWidthMm,
   tracePresets,
@@ -643,6 +691,40 @@ export function PcbTopToolbar({
         Measure (M)
       </button>
 
+      {onToggleTuneMode ? (
+        <button
+          type="button"
+          onClick={onToggleTuneMode}
+          title="Tune length — add serpentines to hit a length target (U)"
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
+            tuneMode
+              ? "border-sky-500 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+              : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+          }`}
+          aria-pressed={tuneMode}
+        >
+          <AudioWaveform className="h-3.5 w-3.5" />
+          Tune (U)
+        </button>
+      ) : null}
+
+      {onToggleBundleMode ? (
+        <button
+          type="button"
+          onClick={onToggleBundleMode}
+          title="Bundle — route several pads in parallel lanes at once"
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
+            bundleMode
+              ? "border-sky-500 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+              : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+          }`}
+          aria-pressed={bundleMode}
+        >
+          <Waypoints className="h-3.5 w-3.5" />
+          Bundle
+        </button>
+      ) : null}
+
       {onToggleCommentMode ? (
         <button
           type="button"
@@ -683,6 +765,7 @@ export function PcbTopToolbar({
             presets={tracePresets}
             onPick={onPickWidth}
           />
+          {layerCount >= 4 ? <LayerPairSelect /> : null}
           {routeSessionActive ? (
             <>
               <ViaPresetDropdown

@@ -313,7 +313,17 @@ export function combinedStateToWorld(
   // history entry and (b) cause unrelated undos to revert the user's
   // current viewport configuration. board_settings persistence is
   // unaffected — the field still round-trips through `pcb-store.ts`.
-  const { viewState: _viewState, ...pcbWithoutViewState } = state.pcb;
+  //
+  // `activeLayer` / `visibleLayers` are view state by nature too (they
+  // predate the viewState field): stripping them keeps mid-route smart-via
+  // layer switches out of the undo stack and stops unrelated undos from
+  // flipping the user's active layer (KiCad parity).
+  const {
+    viewState: _viewState,
+    activeLayer: _activeLayer,
+    visibleLayers: _visibleLayers,
+    ...pcbWithoutViewState
+  } = state.pcb;
   world.setComponent(PCB_SETTINGS_ENTITY_ID, {
     type: "designer.pcb_settings",
     payload: toPayloadRecord(pcbWithoutViewState as typeof state.pcb),

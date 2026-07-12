@@ -6,6 +6,7 @@ import type {
   DrcRuleCode,
   DrcSeverity,
   PcbDesignRules,
+  PcbLengthMatchGroup,
   PcbNetClass,
 } from "../../../../sdks";
 import { createDesignerApi } from "../api";
@@ -146,6 +147,7 @@ export function DesignerDrcView({
     netClasses: PcbNetClass[];
     boardThicknessMm: number;
     perNetClassAssignments: Record<string, string>;
+    lengthMatchGroups: PcbLengthMatchGroup[];
   }): Promise<void> => {
     if (!designId) return;
     const envelope: DesignerCommandEnvelope = {
@@ -160,6 +162,7 @@ export function DesignerDrcView({
         netClasses: next.netClasses,
         boardThicknessMm: next.boardThicknessMm,
         perNetClassAssignments: next.perNetClassAssignments,
+        lengthMatchGroups: next.lengthMatchGroups,
       },
     };
     await api.dispatch(designId, envelope);

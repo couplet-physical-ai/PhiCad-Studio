@@ -17,6 +17,15 @@ import type {
 const TS = "2026-01-01T00:00:00.000Z";
 const MM = 1_000_000;
 
+// Pad-less unit fixtures dangle by construction; these advisory DFM codes are
+// incidental to the property under test (P5 dangling check).
+const ADVISORY_DANGLING = new Set(["TRACK_DANGLING", "VIA_DANGLING"]);
+function realCodes(report: DrcReport) {
+  return report.violations
+    .map((v) => v.code)
+    .filter((c) => !ADVISORY_DANGLING.has(c));
+}
+
 function board(overrides: Partial<PcbBoardSettings> = {}): PcbBoardSettings {
   return { ...createDefaultPcbBoardSettings(TS), ...overrides };
 }
@@ -204,7 +213,7 @@ describe("runDrc — clearance", () => {
         ],
       }),
     );
-    expect(report.violations).toHaveLength(0);
+    expect(realCodes(report)).toHaveLength(0);
   });
 
   test("same-net traces are never flagged (clearance or short)", () => {
@@ -222,7 +231,7 @@ describe("runDrc — clearance", () => {
         ],
       }),
     );
-    expect(report.violations).toHaveLength(0);
+    expect(realCodes(report)).toHaveLength(0);
   });
 
   test("null-net overlap is a clearance error, not a short", () => {
@@ -283,7 +292,7 @@ describe("runDrc — clearance", () => {
         ],
       }),
     );
-    expect(report.violations).toHaveLength(0);
+    expect(realCodes(report)).toHaveLength(0);
   });
 });
 
@@ -332,7 +341,7 @@ describe("runDrc — trace ↔ pad (mirror handling)", () => {
         ],
       }),
     );
-    expect(report.violations).toHaveLength(0);
+    expect(realCodes(report)).toHaveLength(0);
   });
 });
 
@@ -402,14 +411,15 @@ describe("runDrc — manufacturability", () => {
     const report = runDrc(
       projection({ vias: [via("v", { diameterMm: 0.8, drillMm: 0.4 })] }),
     );
-    expect(report.violations).toHaveLength(0);
+    expect(realCodes(report)).toHaveLength(0);
   });
 
   test("fabricator trace-width warning fires below fab min (design min relaxed)", () => {
-    // design min 0.1 (relaxed), width 0.12 ≥ 0.1 (no error) but < 0.127 fab → warning only
+    // design min 0.05 (relaxed), width 0.08 ≥ 0.05 (no error) but < 0.10 fab
+    // floor (2026-07 JLCPCB, P8 refresh) → warning only
     const report = runDrc(
       projection({
-        board: withMinTraceWidth(0.1),
+        board: withMinTraceWidth(0.05),
         traces: [
           trace(
             "t",
@@ -418,7 +428,7 @@ describe("runDrc — manufacturability", () => {
               [0, 0],
               [10, 0],
             ],
-            { widthMm: 0.12 },
+            { widthMm: 0.08 },
           ),
         ],
       }),
@@ -514,7 +524,7 @@ describe("runDrc — constraints + structural + connectivity", () => {
       (v) => v.code === "UNCONNECTED_NET",
     );
     expect(unconnected).toHaveLength(1);
-    expect(unconnected[0]!.severity).toBe("warning");
+    expect(unconnected[0]!.severity).toBe("error");
     expect(unconnected[0]!.message).toContain("VCC");
   });
 });
@@ -591,7 +601,7 @@ describe("runDrc — nm→mm conversion sanity", () => {
       }),
     );
     // edge gap = 1 - 0.2 = 0.8 mm ≥ rule; if nm leaked through, gap would be huge but still clear.
-    expect(report.violations).toHaveLength(0);
+    expect(realCodes(report)).toHaveLength(0);
   });
 });
 
@@ -765,5 +775,26 @@ describe("runDrc — per-net class assignment", () => {
     expect(codes(runDrc(proj({ n1: "wide" })))).toContain(
       "TRACE_TO_PAD_CLEARANCE",
     );
+  });
+
+  // Regression for audit B3-2: a trace on a reassigned net must resolve its
+  // class LIVE (from the net), not from its stale stored netClassId — so trace
+  // and pad on the same net agree. t1 carries stored "default" but its net n1
+  // is assigned "wide"; a foreign trace 0.4 mm away must flag.
+  test("trace uses the live net class, not its stored netClassId", () => {
+    const report = runDrc(
+      projection({
+        board: {
+          ...wideClassBoard(),
+          perNetClassAssignments: { n1: "wide" },
+        },
+        netNames: { n1: "FOO", n2: "BAR" },
+        traces: [
+          trace("t1", "n1", [[0, 0], [10, 0]], { netClassId: "default" }),
+          trace("t2", "n2", [[0, 0.6], [10, 0.6]]),
+        ],
+      }),
+    );
+    expect(codes(report)).toContain("TRACE_TO_TRACE_CLEARANCE");
   });
 });

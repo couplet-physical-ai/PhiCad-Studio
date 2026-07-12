@@ -6,8 +6,24 @@ import {
   ringToRingEdgeDistance,
 } from "../../pcb/pcb-clearance-geometry";
 import { distance } from "../../pcb/pcb-trace-geometry";
+import { FAB_PRESETS } from "../../pcb/fab-presets";
 import { below, type DrcContext } from "../drc-context";
 import type { DrcViolationDraft } from "../types";
+import { segmentToSegmentDistance } from "../../pcb/pcb-trace-geometry";
+import type { DrcHole } from "../drc-context";
+
+/** Edge-to-edge gap between two holes, slot-aware when either carries a slot. */
+function holeEdgeGap(a: DrcHole, b: DrcHole, centerGap: number): number {
+  if (!a.slot && !b.slot) return centerGap - (a.drillMm / 2 + b.drillMm / 2);
+  const segA = a.slot ? [a.slot.a, a.slot.b] : [a.center, a.center];
+  const segB = b.slot ? [b.slot.a, b.slot.b] : [b.center, b.center];
+  const radA = a.slot ? a.slot.widthMm / 2 : a.drillMm / 2;
+  const radB = b.slot ? b.slot.widthMm / 2 : b.drillMm / 2;
+  return (
+    segmentToSegmentDistance(segA[0]!, segA[1]!, segB[0]!, segB[1]!) -
+    (radA + radB)
+  );
+}
 
 /**
  * Vertices plus each segment's midpoint — a denser sample so a trace that
@@ -63,7 +79,7 @@ export function checkBoard(ctx: DrcContext): DrcViolationDraft[] {
       out.push({
         code: "COPPER_TO_BOARD_EDGE",
         ruleClass: "clearance",
-        severity: "warning",
+        severity: "error",
         message: `Trace is ${gap.toFixed(3)} mm from the board edge (min ${edgeReq.toFixed(3)} mm)`,
         anchors: [{ kind: "trace", traceId: t.id }],
         locationMm: t.mid,
@@ -97,7 +113,7 @@ export function checkBoard(ctx: DrcContext): DrcViolationDraft[] {
       out.push({
         code: "COPPER_TO_BOARD_EDGE",
         ruleClass: "clearance",
-        severity: "warning",
+        severity: "error",
         message: `Via is ${gap.toFixed(3)} mm from the board edge (min ${edgeReq.toFixed(3)} mm)`,
         anchors: [{ kind: "via", viaId: vg.via.id }],
         locationMm: vg.center,
@@ -127,7 +143,7 @@ export function checkBoard(ctx: DrcContext): DrcViolationDraft[] {
       out.push({
         code: "COPPER_TO_BOARD_EDGE",
         ruleClass: "clearance",
-        severity: "warning",
+        severity: "error",
         message: `Pad is ${gap.toFixed(3)} mm from the board edge (min ${edgeReq.toFixed(3)} mm)`,
         anchors: [pad.anchor],
         locationMm: pad.center,
@@ -159,19 +175,69 @@ export function checkBoard(ctx: DrcContext): DrcViolationDraft[] {
   // Coincident drills (centers within ~1 µm) on the SAME net are a via dropped
   // onto a through-hole pad — a legitimate stack, not a spacing breach.
   const COINCIDENT_EPS_MM = 1e-3;
+  const fabPreset =
+    ctx.fabricator === "custom" ? null : (FAB_PRESETS[ctx.fabricator] ?? null);
   const holes = ctx.holes;
+
+  // Hole-to-board-edge (audit B4-4): a drilled hole whose edge encroaches on
+  // (or crosses) the board outline is a fab reject. Slot-aware — the slot
+  // centerline is used when present so the rounded ends are measured, not a
+  // round-hole model. Rings = outline + cutouts (a hole must clear cutouts too).
+  const holeEdgeReq = ctx.holeToBoardEdgeMm;
+  for (const hole of holes) {
+    const radius = hole.slot ? hole.slot.widthMm / 2 : hole.drillMm / 2;
+    const edgeDist = edgeDistToBoundary((ring) =>
+      hole.slot
+        ? polylineToRingEdgeDistance([hole.slot.a, hole.slot.b], ring)
+        : pointToRingEdgeDistance(hole.center, ring),
+    );
+    const gap = edgeDist - radius;
+    const outside = !pointInOutline(
+      ctx.projection.board.outline,
+      ctx.projection.board.cutouts ?? [],
+      hole.center,
+    );
+    if (outside || gap < 0) {
+      out.push({
+        code: "HOLE_TO_BOARD_EDGE",
+        ruleClass: "dfm",
+        severity: "error",
+        message: `Hole breaches the board edge (${gap.toFixed(3)} mm)`,
+        anchors: [hole.anchor],
+        locationMm: hole.center,
+        measuredMm: gap,
+        requiredMm: holeEdgeReq,
+      });
+    } else if (below(gap, holeEdgeReq)) {
+      out.push({
+        code: "HOLE_TO_BOARD_EDGE",
+        ruleClass: "dfm",
+        severity: "warning",
+        message: `Hole is ${gap.toFixed(3)} mm from the board edge (min ${holeEdgeReq.toFixed(3)} mm)`,
+        anchors: [hole.anchor],
+        locationMm: hole.center,
+        measuredMm: gap,
+        requiredMm: holeEdgeReq,
+      });
+    }
+  }
   for (let i = 0; i < holes.length; i += 1) {
     const a = holes[i]!;
     for (let j = i + 1; j < holes.length; j += 1) {
       const b = holes[j]!;
+      const centerGap = distance(a.center, b.center);
+      const drillsOverlap = centerGap < a.drillMm / 2 + b.drillMm / 2;
+      // Intra-footprint pad SPACING is the footprint's responsibility — but
+      // only when the drills don't physically overlap. Overlapping drills in
+      // one footprint are still a broken drill file (audit B4-3).
       if (
         a.anchor.kind === "pad" &&
         b.anchor.kind === "pad" &&
-        a.anchor.placementId === b.anchor.placementId
+        a.anchor.placementId === b.anchor.placementId &&
+        !drillsOverlap
       ) {
         continue;
       }
-      const centerGap = distance(a.center, b.center);
       if (
         centerGap <= COINCIDENT_EPS_MM &&
         a.netId !== null &&
@@ -179,7 +245,10 @@ export function checkBoard(ctx: DrcContext): DrcViolationDraft[] {
       ) {
         continue;
       }
-      const gap = centerGap - (a.drillMm / 2 + b.drillMm / 2);
+      // Slot-aware edge gap: a slotted drill uses its centerline (segment)
+      // instead of the round center, so overlapping slot ends between distant
+      // centers are still caught (Codex review; audit B2-5 follow-through).
+      const gap = holeEdgeGap(a, b, centerGap);
       if (below(gap, ctx.holeToHoleMm)) {
         out.push({
           code: "HOLE_TO_HOLE",
@@ -194,6 +263,29 @@ export function checkBoard(ctx: DrcContext): DrcViolationDraft[] {
           measuredMm: gap,
           requiredMm: ctx.holeToHoleMm,
         });
+      } else if (fabPreset) {
+        // Fab capability tier (P8): JLCPCB publishes distinct hole-to-hole
+        // floors for via-via vs anything involving a component (PTH/NPTH)
+        // drill. Only surfaces when the board rule above did not already fire.
+        const fabReq =
+          a.kind === "via" && b.kind === "via"
+            ? fabPreset.holeToHoleViaMm
+            : fabPreset.holeToHolePthMm;
+        if (below(gap, fabReq)) {
+          out.push({
+            code: "FAB_HOLE_TO_HOLE",
+            ruleClass: "manufacturability",
+            severity: "warning",
+            message: `Holes are ${gap.toFixed(3)} mm apart (${fabPreset.name} min ${fabReq.toFixed(3)} mm)`,
+            anchors: [a.anchor, b.anchor],
+            locationMm: {
+              x: (a.center.x + b.center.x) / 2,
+              y: (a.center.y + b.center.y) / 2,
+            },
+            measuredMm: gap,
+            requiredMm: fabReq,
+          });
+        }
       }
     }
   }

@@ -3,6 +3,7 @@ import type {
   PcbCopperLayerId,
   PcbPointMm,
   PourIsland,
+  SnapshotCopperLayerId,
 } from "../../../../sdks/designer";
 import {
   buildCopperFillPourPaths,
@@ -13,7 +14,8 @@ import {
   fnv1a64,
 } from "../drc/violation-id";
 
-const COPPER_LAYER_ORDER: readonly PcbCopperLayerId[] = [
+const SNAPSHOT_LAYER_SET = new Set<string>(["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]);
+const COPPER_LAYER_ORDER: readonly SnapshotCopperLayerId[] = [
   "F.Cu",
   "In1.Cu",
   "In2.Cu",
@@ -25,7 +27,7 @@ const COORD_SCALE = 10 ** COORD_DECIMALS;
 type PourSource = {
   readonly kind: "board" | "zone";
   readonly sourceId: string;
-  readonly layer: PcbCopperLayerId;
+  readonly layer: SnapshotCopperLayerId;
   readonly pourNetId: string | null;
   readonly padConnection: "solid" | "thermal";
   readonly clipPolygonMm?: readonly PcbPointMm[];
@@ -94,10 +96,11 @@ function pourSources(projection: DesignerPcbProjection): PourSource[] {
   const sources: PourSource[] = [];
   if (view) {
     for (const layer of sortedLayers(view.copperFillLayers)) {
+      if (!SNAPSHOT_LAYER_SET.has(layer)) continue;
       sources.push({
         kind: "board",
         sourceId: `board:${layer}`,
-        layer,
+        layer: layer as SnapshotCopperLayerId,
         pourNetId: view.copperFillPourNetIds[layer] ?? null,
         padConnection: boardConnection,
       });
@@ -105,10 +108,11 @@ function pourSources(projection: DesignerPcbProjection): PourSource[] {
   }
   for (const zone of projection.zones) {
     if (!zone.netId || zone.polygonPointsMm.length < 3) continue;
+    if (!SNAPSHOT_LAYER_SET.has(zone.layer)) continue;
     sources.push({
       kind: "zone",
       sourceId: zone.id,
-      layer: zone.layer,
+      layer: zone.layer as SnapshotCopperLayerId,
       pourNetId: zone.netId,
       padConnection: zone.connection ?? boardConnection,
       clipPolygonMm: zone.polygonPointsMm,
@@ -121,7 +125,9 @@ function sortedLayers(
   layers: readonly PcbCopperLayerId[],
 ): PcbCopperLayerId[] {
   return [...layers].sort(
-    (a, b) => COPPER_LAYER_ORDER.indexOf(a) - COPPER_LAYER_ORDER.indexOf(b),
+    (a, b) =>
+      (COPPER_LAYER_ORDER as readonly string[]).indexOf(a) -
+      (COPPER_LAYER_ORDER as readonly string[]).indexOf(b),
   );
 }
 

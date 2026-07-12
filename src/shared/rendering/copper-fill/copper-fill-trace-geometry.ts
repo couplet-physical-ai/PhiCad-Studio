@@ -21,13 +21,16 @@ const VIA_MAX_SEGMENTS = 96;
 
 const NM_TO_MM = 1 / 1_000_000;
 
-// Stackup order F.Cu → In1.Cu → In2.Cu → B.Cu mirrors PCB_LAYER_RENDERING_SPEC.
-const LAYER_INDEX: Record<PcbCopperLayerId, number> = {
-  "F.Cu": 0,
-  "In1.Cu": 1,
-  "In2.Cu": 2,
-  "B.Cu": 3,
-};
+// Monotonic top→bottom index for any copper layer, derived from the id so it
+// works for every stackup up to 32 layers (P2). F.Cu = 0, In_k = k, B.Cu = a
+// sentinel above every inner layer. Only relative order matters (via-span
+// containment below), not absolute values.
+function layerIndex(layer: PcbCopperLayerId): number {
+  if (layer === "F.Cu") return 0;
+  if (layer === "B.Cu") return 1_000;
+  const m = /^In(\d+)\.Cu$/.exec(layer);
+  return m ? Number(m[1]) : 0;
+}
 
 /**
  * Build a stadium ("oblong" / "discorectangle") polygon for one trace segment
@@ -137,9 +140,9 @@ export function buildTraceMaskPolygons(
  * true for the four copper layers — the helper is here for v2 blind/buried.
  */
 export function viaCrossesLayer(via: PcbVia, layer: PcbCopperLayerId): boolean {
-  const lo = Math.min(LAYER_INDEX[via.fromLayer], LAYER_INDEX[via.toLayer]);
-  const hi = Math.max(LAYER_INDEX[via.fromLayer], LAYER_INDEX[via.toLayer]);
-  return LAYER_INDEX[layer] >= lo && LAYER_INDEX[layer] <= hi;
+  const lo = Math.min(layerIndex(via.fromLayer), layerIndex(via.toLayer));
+  const hi = Math.max(layerIndex(via.fromLayer), layerIndex(via.toLayer));
+  return layerIndex(layer) >= lo && layerIndex(layer) <= hi;
 }
 
 /**

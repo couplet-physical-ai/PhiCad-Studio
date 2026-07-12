@@ -20,6 +20,7 @@ import type {
   PadOutline,
   PcbCopperLayerId,
   PcbDrillSlot,
+  SnapshotCopperLayerId,
   PlaceOptions,
   RouteOptions,
   SnapshotPlacement,
@@ -31,7 +32,20 @@ import { placementPads } from "./pad-geometry";
 import { freePadOutlineWorldMm, padOutlineWorldMm } from "./pad-outline";
 import { buildSnapshotPourIslands } from "./board-snapshot-pours";
 
-const STACKUP_ORDER: PcbCopperLayerId[] = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"];
+const STACKUP_ORDER: SnapshotCopperLayerId[] = [
+  "F.Cu",
+  "In1.Cu",
+  "In2.Cu",
+  "B.Cu",
+];
+const SNAPSHOT_LAYER_SET = new Set<string>(STACKUP_ORDER);
+
+/** Wide desktop layer → snapshot layer, or null if outside the 2/4 stackup. */
+function toSnapshotLayer(layer: string): SnapshotCopperLayerId | null {
+  return SNAPSHOT_LAYER_SET.has(layer)
+    ? (layer as SnapshotCopperLayerId)
+    : null;
+}
 const DEFAULT_BOARD_THICKNESS_MM = 1.6;
 // Mirrors the service's `SCHEMA_VERSION` (cloud-auto-layout app/contracts/snapshot.py).
 // Bump the minor version when a new optional field ships; the service treats
@@ -42,13 +56,13 @@ const SNAPSHOT_SCHEMA_VERSION = "1.0";
 // never worse than the single-pass baseline). A caller may override via routeOptions.
 const DEFAULT_PORTFOLIO = 4;
 
-function copperLayersForCount(count: 2 | 4): PcbCopperLayerId[] {
+function copperLayersForCount(count: 2 | 4): SnapshotCopperLayerId[] {
   return count === 4 ? [...STACKUP_ORDER] : ["F.Cu", "B.Cu"];
 }
 
-function copperLayerOf(layer: string): PcbCopperLayerId | null {
+function copperLayerOf(layer: string): SnapshotCopperLayerId | null {
   return (STACKUP_ORDER as string[]).includes(layer)
-    ? (layer as PcbCopperLayerId)
+    ? (layer as SnapshotCopperLayerId)
     : null;
 }
 
@@ -127,7 +141,16 @@ export function buildBoardSnapshot(
   const { board } = projection;
   const warnings: string[] = [];
 
-  const validCopperLayers = copperLayersForCount(board.layerCount);
+  // The cloud auto-layout service supports 2/4-layer stackups only; a wider
+  // desktop board (P2) is clamped to 4 for the snapshot, and its extra inner
+  // layers are not routed by the service. Honest, non-silent (a warning).
+  const snapshotLayerCount: 2 | 4 = board.layerCount >= 4 ? 4 : 2;
+  if (board.layerCount > 4) {
+    warnings.push(
+      `Board has ${board.layerCount} copper layers; cloud auto-layout supports 2/4 — routing only F.Cu/In1.Cu/In2.Cu/B.Cu.`,
+    );
+  }
+  const validCopperLayers = copperLayersForCount(snapshotLayerCount);
   const padNets = projection.padNets ?? {};
 
   const routableNetClassIds =
@@ -143,7 +166,7 @@ export function buildBoardSnapshot(
     const placementCopper = copperLayerOf(placement.layer) ?? "F.Cu";
     for (const pad of placementPads(placement)) {
       const isThroughHole = (pad.drillDiameterMm ?? 0) > 0;
-      const layers: PcbCopperLayerId[] = isThroughHole
+      const layers: SnapshotCopperLayerId[] = isThroughHole
         ? validCopperLayers
         : [copperLayerOf(pad.layer ?? placement.layer) ?? placementCopper];
       const ring = padOutlineWorldMm(placement, pad);
@@ -179,7 +202,7 @@ export function buildBoardSnapshot(
       });
       continue;
     }
-    const layers: PcbCopperLayerId[] =
+    const layers: SnapshotCopperLayerId[] =
       freePad.padType === "std"
         ? validCopperLayers
         : [copperLayerOf(freePad.layer) ?? "F.Cu"];
@@ -197,7 +220,7 @@ export function buildBoardSnapshot(
   }
 
   // ── vias / traces / free holes (obstacles) ─────────────────────────────
-  const vias: ViaObstacle[] = projection.vias.map((v) => {
+  const vias: ViaObstacle[] = projection.vias.flatMap((v) => {
     if (v.viaType !== "through") {
       // The engine's ViaObstacle only models a through-span keepout — serialize it as
       // one anyway (unchanged shape) but flag the loss of blind/buried/micro topology
@@ -208,27 +231,38 @@ export function buildBoardSnapshot(
           `through the via's actual span.`,
       );
     }
-    return {
-      id: v.id,
-      netId: v.netId,
-      centerMm: v.centerMm,
-      diameterMm: v.diameterMm,
-      drillMm: v.drillMm,
-      fromLayer: v.fromLayer,
-      toLayer: v.toLayer,
-      isHoleOnly: false,
-    };
+    const fromLayer = toSnapshotLayer(v.fromLayer);
+    const toLayer = toSnapshotLayer(v.toLayer);
+    if (fromLayer === null || toLayer === null) return [];
+    return [
+      {
+        id: v.id,
+        netId: v.netId,
+        centerMm: v.centerMm,
+        diameterMm: v.diameterMm,
+        drillMm: v.drillMm,
+        fromLayer,
+        toLayer,
+        isHoleOnly: false,
+      },
+    ];
   });
 
-  const traces: ExistingTrace[] = projection.traces.map((t) => ({
-    id: t.id,
-    netId: t.netId,
-    netClassId: t.netClassId,
-    layer: t.layer,
-    widthMm: t.widthMm,
-    pointsNm: t.pointsNm.map((p) => ({ x: p.x, y: p.y })), // already nm
-    segmentMode: t.segmentMode,
-  }));
+  const traces: ExistingTrace[] = projection.traces.flatMap((t) => {
+    const layer = toSnapshotLayer(t.layer);
+    if (layer === null) return [];
+    return [
+      {
+        id: t.id,
+        netId: t.netId,
+        netClassId: t.netClassId,
+        layer,
+        widthMm: t.widthMm,
+        pointsNm: t.pointsNm.map((p) => ({ x: p.x, y: p.y })), // already nm
+        segmentMode: t.segmentMode,
+      },
+    ];
+  });
 
   const freeHoles: FreeHole[] = [
     ...projection.freeHoles.map((h) => ({
@@ -299,7 +333,7 @@ export function buildBoardSnapshot(
       copperToEdgeMm: board.designRules.clearance.copperToBoardEdgeMm,
     },
     stackup: {
-      layerCount: board.layerCount,
+      layerCount: snapshotLayerCount,
       copperLayers: validCopperLayers,
       boardThicknessMm: board.boardThicknessMm ?? DEFAULT_BOARD_THICKNESS_MM,
     },
@@ -308,7 +342,16 @@ export function buildBoardSnapshot(
       minimums: board.designRules.minimums,
       fabPresetId: board.fabricator,
     },
-    netClasses: board.netClasses,
+    // Strip desktop-only routing hints (diff-pair gap) — the cloud wire
+    // schema (SnapshotNetClass) is byte-stable and pinned by assert types.
+    netClasses: board.netClasses.map(
+      ({
+        diffPairGapMm: _gap,
+        voltageV: _v,
+        currentA: _i,
+        ...netClass
+      }) => netClass,
+    ),
     netAssignments,
     routableNetClassIds,
     excludedNetIds: opts.excludedNetIds ?? [],

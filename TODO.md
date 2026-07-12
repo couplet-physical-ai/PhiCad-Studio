@@ -15,13 +15,42 @@
 - [x] P1.6 error surfacing: problem-detail toast (`pcb/dispatch-failure.ts`); sessions survive backend rejection
 - [x] P1.7 pad-shape connectivity behind `pcb.padShapeConnectivity` dev flag (AABB endpoint acceptance; graduate after bake)
 
+## Done — P2 commit engine + P3 multi-layer (green: bun test + vitest + tsc -b + e2e smoke)
+
+- [x] P2a `pcb_commit_route` atomic batch (types + parser + executor, validate-all-then-insert-all, 1 revision/undo; atomicity + one-undo tests)
+- [x] P2b session accumulation: `RouteSessionBoundary[]` log in reducer (runs + vias, event-carried paths), smart-via/width-split fully local, ONE `commitRoute` at finish, cross-boundary Backspace (reopens the run behind a via), pending geometry feeds snap/guides/rendering (`routePendingPreview`/`routePendingVias`)
+- [x] P2b fix: `activeLayer`/`visibleLayers` stripped from undo ECS world + re-attached in `applyHistoryPatches` (layer switches no longer pollute undo; also fixed board-size redo corruption from the missing re-attach)
+- [x] P2c DRC commit gate: finish blocked on clearance conflicts (all runs), HUD explain + session-only "allow violations" override
+- [x] P2d rbush spatial index (`pcb/spatial-index.ts`): snap + live-DRC broad-phase; `computePadGeoms` hoisted; snap tolerance now 8px/zoom (was fixed 0.5mm — release-note)
+- [x] P2e Shift suppresses object+guide snap (grid stays); keymap hints updated
+- [x] P3 via spans: optional `fromLayer/toLayer/viaType` on via commands + `resolveViaSpan` validation (stackup order, layerCount, through=F↔B) behind `pcb.advancedVias` dev flag; `nextRouteLayer` + layer-pair selector (view store + toolbar, 4-layer); V cycles the pair
+
+## Done — P4 auto-finish + walkaround + P5 length matching (green: bun test + vitest + tsc -b + e2e)
+
+- [x] P4 pure module `src/shared/pcb-routing/` (int-nm, deterministic, Bun-tested): `collision.ts` (slab clip, boundary-contact OK, canonical order, clusters) · `route-obstacles.ts` (segment-level rects, live-DRC `required` parity, same-net/layer skips) · `auto-finish.ts` (direct→elbow→corridor octile A*→pull-tight; ok/no-path/over-cap/target-blocked) · `pull-tight.ts` · `corner-fixup.ts` (45° chamfer-vs-hugged-corner: 1µm SAFETY search margin + bounded corner cuts) · `walkaround.ts` (cluster wrap, CW/CCW, 1.25× hysteresis) · `meander.ts` (square/chamfered U's, last-U binary-search trim, obstacle shrink ladder)
+- [x] P4a auto-finish UX (`pcb.routeAutoFinish` dev flag): Tab → nearest ratsnest pad (shared `route-target.ts`, WYSIWYG with the dashed guide) · Ctrl/Cmd+Click pad (pure `resolveRouteClickAction` "auto-finish") · dimmed proposal preview (TracePreviewLayer opacity) · HUD row Enter-accept/Esc-dismiss · accept = `finishRoute(extraAnchorsNm)` through the existing gate+atomic commit · stale-on-any-session-change
+- [x] P4b walkaround-lite (`pcb.routeWalkaround` dev flag): ghost head bends around the hit cluster inside the `routePreview` memo (~53µs/move @60 obstacles); endpoint never moved (snap wins); commit parity via `commit-waypoints` reducer event + `extraAnchorsNm`; HUD "detour" chip; blocked ⇒ today's collision highlight
+- [x] P5 length matching (`pcb.lengthTuning` dev flag): `PcbBoardSettings.lengthMatchGroups` (parse+clear semantics, `pcb_set_design_rules` threading, HTTP round-trip test) · backend DRC `checks/length.ts` (`NET_LENGTH_OUT_OF_RANGE`, longest/absolute, unrouted skipped) · shared `polylineLength` · Route HUD live gauge "total/target" · rules-dialog match-groups editor (chips, add/remove, target kind, tolerance)
+- [ ] **P5 Tune tool — NOT done (code landed, not working fully correctly in practice; fix in a separate session, see Next)**: `tools/tune-tool-state.ts` reducer (click trace → sweep span → freeze → +/- amplitude, ,/. pitch → Enter commit via `pcb_update_trace_geometry`, one undo) + `tune-hud-model.ts` (override>group>none, band) + `TuneHud` (typed target override — anti-KiCad-v8) + toolbar Tune (U) + serpentine ghost preview
+- [x] Drive-by fixes the new E2Es exposed: RouteHud/workspace-error toast were nested under `autoLayoutEnabled` (invisible without cloud config) — moved to general overlays; global Escape now exits Tune mode
+
+## P6 bundle routing + diff pairs — code landed, tool NOT done (tests/tsc/e2e green, but not working fully correctly in practice)
+
+- [x] P6 pure geometry `shared/pcb-routing/bundle-geometry.ts`: integer-exact parallel offset of mixed 45/90 polylines (4 line families + miter intersections, ≤1nm diagonal parity nudge), miter-blow-up/degenerate detection, `assignLaneOffsets` monotone pad→lane mapping (no fan-out crossings)
+- [ ] **P6 Bundle tool — NOT done (fix in a separate session, see Next)** (`pcb.bundleRouting` dev flag, toolbar-only): click pads to collect (toggle) → free-space click routes ONE centerline from the pad centroid → N ghost lanes at pitch with per-pad elbow connectors → `,`/`.` pitch, ⌫ step-back (waypoints→pads), Enter = gate (every lane vs committed copper AND vs the other lanes; hard block, no override) + ONE atomic `pcb_commit_route` = one undo · `tools/bundle-tool-state.ts` reducer + BundleHud
+- [ ] **P6 diff pairs — NOT done (depends on Bundle tool fixes)** (locked: suffix convention only): `tools/diff-pair.ts` (`_P/_N` case-preserved, trailing `+/-`); clicking a pad auto-collects the nearest partner-net pad; new optional `PcbNetClass.diffPairGapMm` sets pair pitch (falls back to clearance); field STRIPPED from the cloud BoardSnapshot (`SnapshotNetClass = Omit<…>`, builder copy) to keep the wire schema byte-stable
+- [ ] Skew tuning = P5 Tune on the shorter leg (no extra code, but blocked on the Tune tool fixes)
+
 ## Next
 
-- [ ] P2 commit engine: `pcb_commit_route` batch command (1 revision + 1 undo entry), rbush spatial index (snap + live-DRC broad-phase), DRC commit gate (hard-block + explain + override toggle), Shift = suppress all snap
-- [ ] P3 multi-layer fluency: thread via spans through `buildPcbViaForInsert`, V cycles enabled layers, layer-pair selector, `pcb.advancedVias` flag
-- [ ] P4 auto-finish + walkaround-lite in new `src/shared/pcb-routing/` (flags `pcb.autoFinish` / `pcb.walkaround`)
-- [ ] P5 length rules + HUD gauge + meander tuning · P6 bundle routing + diff pairs · P7 cloud corridor routing (optional)
-- Note: `library-facets.test.ts` core-catalog count failure is pre-existing (fails on clean tree, unrelated)
+- [ ] **Fix + finish Tune tool (own session)** — unit-tested but not working fully correctly on real boards. Manual-QA-driven: click-trace hit/start reliability, sweep→freeze span interaction, serpentine proposal generation/preview on real geometry (esp. spans crossing vertices, 90-mode traces, obstacle shrink), target resolution (override vs group), commit + HUD states. Keep `pcb.lengthTuning` dev-only until fixed.
+- [ ] **Fix + finish Bundle tool (own session)** — unit-tested but not working fully correctly on real boards. Manual-QA-driven: pad collect hit-testing/toggling, centroid-anchored centerline + fan-out connector quality on real pin rows, lane ghost stability, pitch defaults, DRC gate false-blocks near the breakout (lanes passing neighbor pads), diff-pair auto-add, commit. Keep `pcb.bundleRouting` dev-only until fixed.
+- [ ] P7 cloud corridor routing (optional — only if bundle usage shows demand)
+- [ ] Follow-up: migrate `/autoroute/apply` onto `pcb_commit_route` (per-op vs all-or-nothing UX decision)
+- [ ] Follow-up: pad-bearing E2E fixture board → full Tab→accept + tune-a-trace + bundle pad-collect + one-undo-multi-via scenarios (blocked on library fixture infra)
+- [ ] Follow-up: bundle v2 — target-row landing (lanes end dangling v1), via support, per-net lane widths, crossing warnings when pads aren't monotone · diagonal-segment obstacle AABB pre-split (≤2mm) if dense-board QA shows auto-finish misses · meanders on diagonal baseline segments · walkaround multi-cluster
+- [ ] Release-notes when graduating flags: snap 8px/zoom (P2d), `pcb.padShapeConnectivity` DRC shift, auto-finish/walkaround/lengthTuning/bundleRouting behavior
+- Note: `library-facets.test.ts` core-catalog count failure is pre-existing (fails on clean tree, unrelated) · library/3D E2Es are load-flaky when the full suite runs back-to-back (all pass in isolation)
 
 ---
 
@@ -1299,3 +1328,22 @@ Implementation: a new SDK method on the Designer SDK that resolves a context han
 8. **Shortcut conflicts**: `Cmd/Ctrl+\`` is free in the current shortcut table — confirm it stays unbound elsewhere.
 9. **Mobile / touch**: low priority for desktop EDA, but the responsive overlay mode at very narrow widths should at least not break.
 10. **Tasks module surfacing**: streaming AI responses run as tasks; should the sidebar show inline task progress, or hide the task plumbing entirely behind the chat UX?
+
+## DRC production-hardening program (P0–P12)
+
+> Plan: `DRC_HARDENING_PLAN.md` · Audit: `DRC_AUDIT_REPORT.md` (40 confirmed bugs) · Tracks: [E]ngine / [C]hecks / [I]nfra
+
+- [x] **P0** [I] QA groundwork — determinism test (5), eps boundary matrix (14), parity-harness fixture v2 (+`--verbose`, shared loader `tests/helpers/drc-golden.ts`), 40 audit regression fixtures (`drc-audit-b1..b5`, all `test.todo` w/ post-fix expectations), golden-small-2l (88 primitives, 14 known violations) + `scripts/update-drc-goldens.ts`
+- [x] **P1** [E] Epsilon unification — `pcb/tolerance.ts` (`below`/`exceeds`, re-exported via drc-context); clearance/fab-validators/aspect/creation-gates unified; prefilter SHORT_EPS ceiling. Flipped B1-3, B1-4, B2-1
+- [x] **P2** [E] Live netclass + stackup 2–32 + layer-model fixes — `sdks/designer/stackup.ts` (helpers + 32-literal unions); `shared/rendering/pad-copper-layers.ts` (side-flip); `PAD_LAYER_MISMATCH`; non-waivable short/span (`DrcViolationDraft.waivable:false`); clamp-with-fallback; VIA_TO_VIA shared layer; live net-class resolution (stored `netClassId` dropped from DRC). Cloud snapshot pinned to 2/4 (`SnapshotCopperLayerId`). Flipped B1-1/2/5/6, B3-2, B5-VIA-MASK/PAD-LAYER/6LAYER
+- [x] **P3** [E] Violation-id v2 (layer + 0.1mm location bucket for hot-spot codes; v1 retained for migration) + severity model (`drc/severity.ts` DEFAULT_SEVERITY_BY_CODE; COPPER_TO_BOARD_EDGE + UNCONNECTED_NET → error; `drcSeverityOverrides` on board settings, non-overridable shorts, persisted). +10 tests. Flipped B3-7, B5-WAIVER-DRIFT. *(waiver-comment UI → P12)*
+- [ ] **P4** [I] Backend spatial index (rbush) + exhaustive oracle + fuzz + bench
+- [x] **P5** [C] Free-win checks — 3 new rule classes (dfm/electrical/signal-integrity); `checks/netclass.ts` (intent-gated enforcement), `checks/outline.ts` (BOARD_OUTLINE_INVALID resurrected), `checks/dangling.ts` (own layer-aware graph), HOLE_TO_BOARD_EDGE (slot-aware `DrcHole.slot`), zone-pour extension (anchor on zone). +16 DFM tests. Flipped B3-8, B4-4, B4-5
+- [x] **P6** [E] Scoped priority rule engine — `shared/drc/rule-resolver.ts` (compile-once, priority first-match, can relax, area bitmask); `PcbDrcRule` + `minimums.clearanceMm` floor; `ctx.clearanceFor()` wired into all 6 clearance pair loops; byte-identical when no rules (golden unchanged); persisted. +8 tests incl. BGA-fanout area relaxation
+- [ ] **P7** [I] Async DRC (tasks module) + engine→`src/shared/drc/` + live/batch parity
+- [x] **P8** [I] Fab profiles refresh — JLC 2026-07 values (trace 0.10/0.09, drill 0.15, via Ø 0.25); via vs PTH annular split; `DrcHole.kind`; FAB_DRILL for all holes; `FAB_HOLE_TO_HOLE` via/pth tier. Flipped B2-2/3/4/8. *(customFabProfile persistence deferred to P12 UI)*
+- [ ] **P9** [C] DFM overlay checks (courtyard, silk, mask, copper sliver, acute angle)
+- [x] **P10** [C] Electrical checks — `drc/ipc2221-spacing.ts` (Table 6-1 B1/B2 + width formula, audit §8 sources); `checks/electrical.ts` CREEPAGE_DISTANCE (HV-subset pass) + TRACE_CURRENT_WIDTH; `PcbNetClass.voltageV/currentA` + `designRules.electrical`. +11 tests. Cloud contract net class pinned
+- [x] **P11** [C] SI diff-pair — `pcb/diff-pair-resolver.ts` (name convention _P/_N,+/- + explicit `diffPairs` table); `checks/signal-integrity.ts` DIFF_PAIR_GAP/SKEW/UNCOUPLED_LENGTH (coupling model w/ proximity gate); `diffPair` anchor; persisted. +8 tests. (length matching already shipped via checks/length.ts)
+- [ ] **Review follow-ups** — enforce scalar scoped constraints (trackWidth/via/annular/hole/edge rules; currently clearance-only); apply scoped-rule optional severity; v1→v2 waiver migration; area-scope closest-point precision; cutout crossing-overlap
+- [ ] **P12** [I] Rules & severity UI

@@ -84,6 +84,7 @@ export type {
   AutoLayoutConfig,
   AutoLayoutPlaceConfig,
   AutoLayoutRouteConfig,
+  PcbLengthMatchGroup,
   PcbNetClass,
   PcbPlacedPart,
   PcbPointMm,
@@ -108,6 +109,7 @@ export type {
   DesignerPcbAddTraceCommand,
   DesignerPcbAddTraceViaCommand,
   DesignerPcbAddViaCommand,
+  DesignerPcbCommitRouteCommand,
   DesignerPcbDeleteTraceCommand,
   DesignerPcbDeleteViaCommand,
   DesignerPcbFlipPlacementCommand,
@@ -141,11 +143,16 @@ export type {
   ErcSeverity,
   ErcViolation,
   DrcAnchor,
+  DrcPairKind,
   DrcReport,
   DrcRuleClass,
   DrcRuleCode,
+  DrcRuleConstraint,
+  DrcRuleScope,
   DrcSeverity,
   DrcViolation,
+  PcbDrcRule,
+  PcbDiffPair,
   DesignerPlacePartCommand,
   DesignerPlaceGndPortCommand,
   DesignerPlacePwrPortCommand,
@@ -312,6 +319,7 @@ export interface DesignerBoardSnapshotBuild {
 }
 
 // Cloud auto-router wire contracts (BoardSnapshot / RouteResultEnvelope / ProgressFrame).
+export * from "./stackup";
 export type * from "./autoroute";
 // Cloud auto-place wire contracts (PlacementResultEnvelope / PlaceOperation / PlaceProgressFrame).
 // Reuses BoardSnapshot / SnapshotPlacement / PlaceOptions / PlaceWeights from ./autoroute.

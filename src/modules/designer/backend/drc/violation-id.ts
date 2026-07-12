@@ -34,6 +34,10 @@ function anchorKey(a: DrcAnchor): string {
       return `pl:${escapeStructuralIdSegment(a.placementId)}`;
     case "net":
       return `n:${escapeStructuralIdSegment(a.netId)}`;
+    case "zone":
+      return `z:${escapeStructuralIdSegment(a.zoneId)}`;
+    case "diffPair":
+      return `dp:${escapeStructuralIdSegment(a.pNetId)}:${escapeStructuralIdSegment(a.nNetId)}`;
     case "boardEdge":
       return "be";
   }
@@ -55,13 +59,73 @@ export function fnv1a64(s: string): string {
 }
 
 /**
- * Stable, order-independent violation id. Anchor keys are sorted so a pairwise
- * violation (A,B) hashes identically to (B,A), and the id survives re-runs — so
- * a persisted waiver keeps matching the same violation. NB: the 64-bit hash
- * change invalidates waiver ids persisted under the old 32-bit scheme; waivers
- * are advisory and recomputed on the next run, so this is acceptable.
+ * Codes that can fire more than once between the same anchor pair (distinct
+ * hot-spots), so their v2 id includes a quantized location bucket + layer to
+ * keep spots distinct and to expire a waiver when the offending geometry moves
+ * to a different spot (audit B5-WAIVER-DRIFT). Excluded: UNCONNECTED_NET
+ * (airwire midpoint volatile per routing) and ISOLATED_COPPER_ISLAND (pour
+ * recompute jitter — layer alone suffices, fixing B3-7), and single-item codes
+ * whose anchors are already unique.
  */
+const LOCATION_HASHED_CODES = new Set<DrcRuleCode>([
+  "TRACE_TO_TRACE_CLEARANCE",
+  "TRACE_TO_PAD_CLEARANCE",
+  "TRACE_TO_VIA_CLEARANCE",
+  "VIA_TO_VIA_CLEARANCE",
+  "PAD_TO_PAD_CLEARANCE",
+  "PAD_TO_VIA_CLEARANCE",
+  "NET_SHORT_CIRCUIT",
+  "FAB_CLEARANCE",
+  "HOLE_TO_HOLE",
+  "FAB_HOLE_TO_HOLE",
+]);
+
+/** 0.1 mm bucket: same-spot evolution keeps a waiver, a real move expires it. */
+const LOCATION_BUCKET_MM = 0.1;
+
+interface ViolationIdInput {
+  code: DrcRuleCode;
+  anchors: readonly DrcAnchor[];
+  layer?: string;
+  locationMm?: { x: number; y: number };
+}
+
+/**
+ * Stable, order-independent violation id (v2). Anchor keys are sorted so a
+ * pairwise violation (A,B) hashes identically to (B,A). The layer enters the
+ * hash whenever set (fixes cross-layer id collisions, B3-7); a 0.1 mm-bucketed
+ * location enters only for hot-spot-capable codes (B5-WAIVER-DRIFT). The
+ * measured value is deliberately NOT hashed — that would expire waivers on
+ * every µm-scale edit (KiCad likewise keys exclusions by identity, not value).
+ */
+export function computeViolationId(input: ViolationIdInput): string;
 export function computeViolationId(
+  code: DrcRuleCode,
+  anchors: readonly DrcAnchor[],
+): string;
+export function computeViolationId(
+  a: DrcRuleCode | ViolationIdInput,
+  b?: readonly DrcAnchor[],
+): string {
+  const input: ViolationIdInput =
+    typeof a === "string" ? { code: a, anchors: b ?? [] } : a;
+  const { code, anchors, layer, locationMm } = input;
+  const keys = anchors.map(anchorKey).sort().join("|");
+  const layerSeg = layer ? escapeStructuralIdSegment(layer) : "-";
+  let locSeg = "-";
+  if (locationMm && LOCATION_HASHED_CODES.has(code)) {
+    const qx = Math.round(locationMm.x / LOCATION_BUCKET_MM);
+    const qy = Math.round(locationMm.y / LOCATION_BUCKET_MM);
+    locSeg = `${qx},${qy}`;
+  }
+  return `${code}-v2-${fnv1a64(`v2|${code}#${keys}#L:${layerSeg}#Q:${locSeg}`)}`;
+}
+
+/**
+ * Legacy v1 id (code + sorted anchors only). Retained so a one-shot waiver
+ * migration can map old persisted ids to the v2 scheme.
+ */
+export function computeViolationIdV1(
   code: DrcRuleCode,
   anchors: readonly DrcAnchor[],
 ): string {

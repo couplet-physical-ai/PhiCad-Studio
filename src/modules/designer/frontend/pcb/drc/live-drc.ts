@@ -149,6 +149,10 @@ export function runLiveDrc(input: RunDrcInput): DrcViolation[] {
 
   const pendingHalf = input.traceWidthMm / 2;
 
+  // Pad geometry is identical for every pending segment — build once, not
+  // inside the per-segment loop.
+  const padGeoms = computePadGeoms(input.placements, input.padNetMap);
+
   // Check pending segments vs existing traces (same layer, different net or unknown).
   for (let i = 1; i < traceMm.length; i += 1) {
     const seg: PolylineSegment = {
@@ -188,7 +192,6 @@ export function runLiveDrc(input: RunDrcInput): DrcViolation[] {
     }
 
     // Check pending segments vs existing pads (same layer, different net).
-    const padGeoms = computePadGeoms(input.placements, input.padNetMap);
     for (const pad of padGeoms) {
       if (pad.layer !== input.layer) continue;
       if (

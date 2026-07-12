@@ -15,18 +15,13 @@ import type {
   RouteWidthSource,
 } from "./route-tool-state";
 import { routeKeyHints, type RouteKeyBinding } from "./route-keymap";
+import { polylineLength } from "../../../../../shared/pcb-geometry/pcb-trace-geometry";
 
 const NM_PER_MM = 1_000_000;
 
 /** Polyline length in mm (input points in integer nm). */
 export function routeLengthMm(pathNm: readonly PointNm[]): number {
-  let total = 0;
-  for (let i = 1; i < pathNm.length; i += 1) {
-    const dx = (pathNm[i]!.x - pathNm[i - 1]!.x) / NM_PER_MM;
-    const dy = (pathNm[i]!.y - pathNm[i - 1]!.y) / NM_PER_MM;
-    total += Math.hypot(dx, dy);
-  }
-  return total;
+  return polylineLength(pathNm) / NM_PER_MM;
 }
 
 export interface RouteHudModel {
@@ -44,19 +39,50 @@ export interface RouteHudModel {
   posture: RoutePosture;
   /** Committed segments + pending ghost, mm. */
   lengthMm: number;
+  /**
+   * Length-match gauge (pcb.lengthTuning): the session net belongs to a
+   * group. `totalMm` = already-committed net copper + this session's length.
+   */
+  lengthTarget: {
+    groupName: string;
+    targetMm: number;
+    toleranceMm: number;
+    totalMm: number;
+  } | null;
   drcConflictCount: number;
+  /** Ghost head is currently bending around an obstacle (walkaround). */
+  detourActive: boolean;
   hints: readonly RouteKeyBinding[];
 }
 
 export function buildRouteHudModel(input: {
   session: RouteSession;
-  /** Full ghost path incl. the pending segment (nm). */
+  /** Active run's ghost path incl. the pending segment (nm). */
   previewPathNm: readonly PointNm[];
   netName: string | null;
   netClass: PcbNetClass | null;
   drcConflictCount: number;
+  /** pcb.routeAutoFinish flag — shows/hides the Tab hint. */
+  autoFinishEnabled?: boolean;
+  /** Walkaround detour currently shaping the ghost head. */
+  detourActive?: boolean;
+  /** Length-match rule matching the session net (target + committed copper). */
+  lengthTarget?: {
+    groupName: string;
+    targetMm: number;
+    toleranceMm: number;
+    /** Net copper already committed OUTSIDE this session (mm). */
+    committedMm: number;
+  } | null;
 }): RouteHudModel {
   const s = input.session;
+  // Total session length = accumulated runs (behind vias / width splits)
+  // plus the active ghost.
+  const pendingLengthMm = s.boundaries.reduce(
+    (sum, b) => sum + (b.run ? routeLengthMm(b.run.pointsNm) : 0),
+    0,
+  );
+  const sessionLengthMm = pendingLengthMm + routeLengthMm(input.previewPathNm);
   return {
     netName: input.netName,
     layer: s.layer,
@@ -71,8 +97,21 @@ export function buildRouteHudModel(input: {
       s.viaDrillMmOverride !== undefined,
     segmentMode: s.segmentMode,
     posture: s.posture,
-    lengthMm: routeLengthMm(input.previewPathNm),
+    lengthMm: sessionLengthMm,
+    lengthTarget: input.lengthTarget
+      ? {
+          groupName: input.lengthTarget.groupName,
+          targetMm: input.lengthTarget.targetMm,
+          toleranceMm: input.lengthTarget.toleranceMm,
+          totalMm: input.lengthTarget.committedMm + sessionLengthMm,
+        }
+      : null,
     drcConflictCount: input.drcConflictCount,
-    hints: routeKeyHints({ routing: true, primaryOnly: true }),
+    detourActive: input.detourActive === true,
+    hints: routeKeyHints({
+      routing: true,
+      primaryOnly: true,
+      autoFinish: input.autoFinishEnabled,
+    }),
   };
 }

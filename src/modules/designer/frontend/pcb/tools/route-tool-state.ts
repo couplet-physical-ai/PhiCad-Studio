@@ -30,6 +30,36 @@ export function nextPosture(current: RoutePosture): RoutePosture {
  */
 export type RouteWidthSource = "netclass" | "preset" | "manual";
 
+/** A finished run of the session: one polyline on one layer at one width. */
+export interface PendingTraceRun {
+  layer: PcbCopperLayerId;
+  widthMm: number;
+  pointsNm: PointNm[];
+  segmentMode: PcbTraceSegmentMode;
+}
+
+/** A via dropped mid-session (sizes resolved from net class at commit). */
+export interface PendingVia {
+  centerNm: PointNm;
+  diameterMmOverride?: number;
+  drillMmOverride?: number;
+}
+
+/**
+ * One accumulated session boundary — a layer change (run + via), a bare via
+ * drop (via only), or a width split (run only). `prev*` snapshot the active
+ * state BEFORE the boundary so `step-back` can reopen it losslessly: the
+ * run's path vertices become anchor+waypoints again (they reproduce the same
+ * path under buildPreviewPath).
+ */
+export interface RouteSessionBoundary {
+  run?: PendingTraceRun;
+  via?: PendingVia;
+  prevLayer: PcbCopperLayerId;
+  prevWidthMm: number;
+  prevWidthSource: RouteWidthSource;
+}
+
 /**
  * RouteSession captures the state of an in-progress trace placement.
  *
@@ -55,6 +85,12 @@ export interface RouteSession {
   widthMm: number;
   widthSource: RouteWidthSource;
   posture: RoutePosture;
+  /**
+   * Accumulated boundaries (finished runs + vias) of the session, in order.
+   * NOTHING is dispatched to the backend mid-session — the whole log commits
+   * as one atomic `pcb_commit_route` on finish (one revision, one undo).
+   */
+  boundaries: RouteSessionBoundary[];
   viaDiameterMmOverride?: number;
   viaDrillMmOverride?: number;
   /**
@@ -87,13 +123,25 @@ export type RouteToolEvent =
     }
   | { kind: "commit-waypoint"; pointNm: PointNm }
   /**
-   * Atomic mid-route layer change. Resets the session to a single anchor at
-   * `anchorNm` (typically the just-placed via centre) on the new copper
-   * layer, clearing any prior waypoints. Any segments-so-far MUST have been
-   * committed by the caller before dispatching — see `PcbCanvas.tsx` smart-via
-   * handler.
+   * Ordered batch append — a walkaround detour's corner anchors followed by
+   * the clicked waypoint land as ONE event so ghost === committed geometry.
+   * Consecutive duplicates collapse exactly like single commits.
    */
-  | { kind: "rebase-layer"; anchorNm: PointNm; layer: PcbCopperLayerId }
+  | { kind: "commit-waypoints"; pointsNm: PointNm[] }
+  /**
+   * Mid-route layer change: pushes the finished run (`runPointsNm`, built by
+   * the caller through the corner-mode preview builder) and the dropped via
+   * into the session's boundary log, then resets to a single anchor at
+   * `anchorNm` (the via centre) on the new copper layer. Purely local — no
+   * backend command until finish.
+   */
+  | {
+      kind: "rebase-layer";
+      anchorNm: PointNm;
+      layer: PcbCopperLayerId;
+      runPointsNm: PointNm[];
+      via?: PendingVia;
+    }
   | { kind: "set-mode"; mode: PcbTraceSegmentMode }
   | { kind: "set-width"; widthMm: number; source: RouteWidthSource }
   | { kind: "set-posture"; posture: RoutePosture }
@@ -107,10 +155,9 @@ export type RouteToolEvent =
       drillMmOverride: number | undefined;
     }
   /**
-   * Reset the session to a single anchor at `anchorNm`, preserving layer / net
-   * / posture / width settings. Used after a width change splits the trace —
-   * the in-flight segments get committed at the old width, a new session
-   * starts at the join point with the new width.
+   * Width split: pushes the finished run (`runPointsNm`, at the OLD width)
+   * into the boundary log, then resets to a single anchor at `anchorNm` with
+   * the new width. Purely local — no backend command until finish.
    */
   | {
       kind: "rebase";
@@ -118,6 +165,7 @@ export type RouteToolEvent =
       widthMm: number;
       /** Absent = keep the session's current width source. */
       widthSource?: RouteWidthSource;
+      runPointsNm: PointNm[];
     }
   | { kind: "step-back" }
   | { kind: "cancel" };
@@ -142,6 +190,7 @@ export function routeToolReducer(
           widthMm: event.widthMm,
           widthSource: event.widthSource ?? "netclass",
           posture: event.posture ?? "auto",
+          boundaries: [],
           ...(event.startPadId !== undefined
             ? { startPadId: event.startPadId }
             : {}),
@@ -169,16 +218,55 @@ export function routeToolReducer(
         },
       };
     }
-    case "rebase-layer":
+    case "commit-waypoints": {
+      const waypoints = [...state.session.waypointsNm];
+      for (const pointNm of event.pointsNm) {
+        const last =
+          waypoints[waypoints.length - 1] ?? state.session.anchorNm;
+        if (last.x === pointNm.x && last.y === pointNm.y) continue;
+        waypoints.push(pointNm);
+      }
+      if (waypoints.length === state.session.waypointsNm.length) return state;
+      return {
+        kind: "routing",
+        session: { ...state.session, waypointsNm: waypoints },
+      };
+    }
+    case "rebase-layer": {
+      const s = state.session;
+      const run: PendingTraceRun | undefined =
+        event.runPointsNm.length >= 2
+          ? {
+              layer: s.layer,
+              widthMm: s.widthMm,
+              pointsNm: event.runPointsNm,
+              segmentMode: s.segmentMode,
+            }
+          : undefined;
+      const boundaries =
+        run || event.via
+          ? [
+              ...s.boundaries,
+              {
+                ...(run ? { run } : {}),
+                ...(event.via ? { via: event.via } : {}),
+                prevLayer: s.layer,
+                prevWidthMm: s.widthMm,
+                prevWidthSource: s.widthSource,
+              },
+            ]
+          : s.boundaries;
       return {
         kind: "routing",
         session: {
-          ...state.session,
+          ...s,
           anchorNm: event.anchorNm,
           waypointsNm: [],
           layer: event.layer,
+          boundaries,
         },
       };
+    }
     case "set-mode":
       return {
         kind: "routing",
@@ -222,24 +310,77 @@ export function routeToolReducer(
           posture: nextPosture(state.session.posture),
         },
       };
-    case "rebase":
+    case "rebase": {
+      const s = state.session;
+      const run: PendingTraceRun | undefined =
+        event.runPointsNm.length >= 2
+          ? {
+              layer: s.layer,
+              widthMm: s.widthMm,
+              pointsNm: event.runPointsNm,
+              segmentMode: s.segmentMode,
+            }
+          : undefined;
       return {
         kind: "routing",
         session: {
-          ...state.session,
+          ...s,
           anchorNm: event.anchorNm,
           waypointsNm: [],
           widthMm: event.widthMm,
-          widthSource: event.widthSource ?? state.session.widthSource,
+          widthSource: event.widthSource ?? s.widthSource,
+          boundaries: run
+            ? [
+                ...s.boundaries,
+                {
+                  run,
+                  prevLayer: s.layer,
+                  prevWidthMm: s.widthMm,
+                  prevWidthSource: s.widthSource,
+                },
+              ]
+            : s.boundaries,
         },
       };
+    }
     case "step-back": {
-      if (state.session.waypointsNm.length === 0) return { kind: "idle" };
+      const s = state.session;
+      if (s.waypointsNm.length > 0) {
+        return {
+          kind: "routing",
+          session: { ...s, waypointsNm: s.waypointsNm.slice(0, -1) },
+        };
+      }
+      // Active run is empty — pop the last boundary and reopen it. One
+      // Backspace undoes a via drop (and reopens the run before it) or a
+      // width split. The run's path vertices become anchor+waypoints again.
+      const last = s.boundaries[s.boundaries.length - 1];
+      if (!last) return { kind: "idle" };
+      const remaining = s.boundaries.slice(0, -1);
+      if (last.run) {
+        return {
+          kind: "routing",
+          session: {
+            ...s,
+            anchorNm: last.run.pointsNm[0]!,
+            waypointsNm: last.run.pointsNm.slice(1),
+            layer: last.prevLayer,
+            widthMm: last.prevWidthMm,
+            widthSource: last.prevWidthSource,
+            boundaries: remaining,
+          },
+        };
+      }
+      // Via-only boundary (via dropped with no segments): keep the anchor
+      // (it IS the via centre), just restore the pre-via layer/width.
       return {
         kind: "routing",
         session: {
-          ...state.session,
-          waypointsNm: state.session.waypointsNm.slice(0, -1),
+          ...s,
+          layer: last.prevLayer,
+          widthMm: last.prevWidthMm,
+          widthSource: last.prevWidthSource,
+          boundaries: remaining,
         },
       };
     }

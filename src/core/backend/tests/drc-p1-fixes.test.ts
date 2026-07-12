@@ -281,7 +281,7 @@ describe("DRC P1 — C12 violation-id hardening", () => {
     const id = computeViolationId("HOLE_TO_HOLE", [
       { kind: "via", viaId: "v1" },
     ]);
-    expect(id).toMatch(/^HOLE_TO_HOLE-[0-9a-f]{16}$/);
+    expect(id).toMatch(/^HOLE_TO_HOLE-v2-[0-9a-f]{16}$/);
   });
 });
 

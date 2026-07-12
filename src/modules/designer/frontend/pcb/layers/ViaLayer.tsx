@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, type ReactElement } from "react";
+import { copperLayerColor } from "../pcb-layer-colors";
 import * as THREE from "three";
 import type { PcbVia } from "../../../../../sdks";
 import {
-  PCB_TRACE_COLORS,
   RENDER_ORDER,
 } from "../../../../../shared/frontend/canvas/layers";
 import { useCanvasTheme } from "../../../../../shared/frontend/canvas/theme";
@@ -158,7 +158,7 @@ function SingleVia({
         renderOrder={RENDER_ORDER.PINS}
       >
         <meshBasicMaterial
-          color={selected ? "#22d3ee" : PCB_TRACE_COLORS[via.fromLayer]}
+          color={selected ? "#22d3ee" : copperLayerColor(via.fromLayer)}
           // Always transparent: three.js renders opaque meshes in a separate
           // earlier pass, so an opaque via would ignore renderOrder vs the
           // transparent pour / mask / drill-cutout and sort wrong. Keep all

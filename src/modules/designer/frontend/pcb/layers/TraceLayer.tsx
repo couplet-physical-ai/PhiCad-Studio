@@ -1,4 +1,5 @@
 import { useThree } from "@react-three/fiber";
+import { copperLayerColor } from "../pcb-layer-colors";
 import { useEffect, useMemo, type ReactElement } from "react";
 import * as THREE from "three";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
@@ -10,7 +11,6 @@ import type {
   PcbViewSide,
 } from "../../../../../sdks";
 import {
-  PCB_TRACE_COLORS,
   RENDER_ORDER,
   effectiveRenderOrder,
 } from "../../../../../shared/frontend/canvas/layers";
@@ -74,10 +74,11 @@ export function TraceLayer({
   viewSide = "top",
   netClassColors,
 }: TraceLayerProps): ReactElement | null {
-  const renderOrder = effectiveRenderOrder(layer, viewSide, "object");
+  const renderOrder = effectiveRenderOrder(
+        layer as Parameters<typeof effectiveRenderOrder>[0], viewSide, "object");
   // Keep RENDER_ORDER referenced (selection slot below uses it).
   void RENDER_ORDER;
-  const baseColor = PCB_TRACE_COLORS[layer];
+  const baseColor = copperLayerColor(layer);
   const brightOpacity = Math.max(0, Math.min(1, inactiveOpacity));
 
   // Group traces by width × state. For each (widthMm, state) bucket we

@@ -116,7 +116,9 @@ export function PcbLayersPanel({
   onToggleSoloLayer,
 }: PcbLayersPanelProps): ReactElement {
   const activePresetId = useMemo(
-    () => detectLayerPreset(visibleLayers),
+    () => detectLayerPreset(
+    visibleLayers as Parameters<typeof detectLayerPreset>[0],
+  ),
     [visibleLayers],
   );
   const visibleSet = useMemo(() => new Set(visibleLayers), [visibleLayers]);

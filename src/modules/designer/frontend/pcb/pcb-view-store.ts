@@ -1,4 +1,8 @@
 import { create } from "zustand";
+import {
+  DEFAULT_LAYER_PAIR,
+  type RouteLayerPair,
+} from "./tools/route-layer";
 import type {
   AutoLayoutConfig,
   DesignerCommand,
@@ -88,6 +92,11 @@ interface PcbViewStoreState {
   selectionFilterPanelOpen: boolean;
   /** Hover cursor world position (mm). Ephemeral. */
   cursorMm: { x: number; y: number } | null;
+  /**
+   * Route-tool layer pair: where the V smart-via key jumps. Session-only
+   * (not persisted); meaningful on 4-layer boards, default F.Cu↔B.Cu.
+   */
+  layerPair: RouteLayerPair;
 }
 
 interface PcbViewStoreActions {
@@ -132,6 +141,8 @@ interface PcbViewStoreActions {
   ): void;
   toggleSelectionFilterPanel(): void;
   setCursorMm(point: { x: number; y: number } | null): void;
+  /** Route-tool V-key layer pair (session-only, 4-layer boards). */
+  setLayerPair(pair: RouteLayerPair): void;
   /** Ignore / un-ignore a whole DRC rule-class (persisted on viewState). */
   setDrcRuleClassIgnored(ruleClass: DrcRuleClass, ignored: boolean): void;
   /** Toggle a single DRC violation's waiver by its stable id (persisted). */
@@ -210,6 +221,7 @@ export const usePcbViewStore = create<Store>((set, get) => ({
   },
   selectionFilterPanelOpen: false,
   cursorMm: null,
+  layerPair: DEFAULT_LAYER_PAIR,
 
   hydrateFromProjection({ designId, viewState, activeLayer, visibleLayers }) {
     const incoming = viewState ?? DEFAULT_VIEW_STATE;
@@ -437,6 +449,10 @@ export const usePcbViewStore = create<Store>((set, get) => ({
     set({ cursorMm: point });
   },
 
+  setLayerPair(pair) {
+    set({ layerPair: pair });
+  },
+
   setDrcRuleClassIgnored(ruleClass, ignored) {
     const current = get().viewState.drcIgnoredRuleClasses ?? [];
     const next = ignored
@@ -471,7 +487,9 @@ export const usePcbViewStore = create<Store>((set, get) => ({
  */
 export function syncLayerPresetFromVisible(): void {
   const { visibleLayers, viewState } = usePcbViewStore.getState();
-  const detected = detectLayerPreset(visibleLayers);
+  const detected = detectLayerPreset(
+    visibleLayers as Parameters<typeof detectLayerPreset>[0],
+  );
   if (detected !== viewState.layerPreset) {
     usePcbViewStore.setState((s) => ({
       viewState: { ...s.viewState, layerPreset: detected },

@@ -311,14 +311,21 @@ export function createDesignerStore(
       applyPatches(world, patches);
       const next = combinedStateFromWorld(designId, nextRevision, world);
       replaceSchematicProjection(tx, designId, next.schematic, timestamp);
-      // viewState is intentionally stripped from the world snapshot (see
-      // combinedStateToWorld) so undo never reverts the user's current
-      // display configuration. Re-attach the live viewState from the DB
-      // before persisting the post-undo board settings.
+      // viewState / activeLayer / visibleLayers are intentionally stripped
+      // from the world snapshot (see combinedStateToWorld) so undo never
+      // reverts the user's current display configuration or active layer.
+      // Re-attach the live values from the DB before persisting the
+      // post-undo board settings — parseBoardSettings treats a missing
+      // activeLayer as an invalid payload and would reset to defaults.
       replacePcbBoardSettings(
         tx,
         designId,
-        { ...next.pcb, viewState: pcb.viewState },
+        {
+          ...next.pcb,
+          viewState: pcb.viewState,
+          activeLayer: pcb.activeLayer,
+          visibleLayers: pcb.visibleLayers,
+        },
         timestamp,
       );
       replacePcbPlacements(tx, designId, next.placements, timestamp);

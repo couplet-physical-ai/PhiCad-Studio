@@ -1,0 +1,95 @@
+import type { DrcRuleCode, DrcSeverity } from "../../../../sdks/designer";
+
+/**
+ * Per-code severity policy (DRC_HARDENING_PLAN.md P3). The default table is the
+ * single source of truth; a board may override any code (or `"ignore"` it)
+ * through `PcbBoardSettings.drcSeverityOverrides`. Defaults are aligned to
+ * KiCad 9 where audit §8 documented one:
+ *  - COPPER_TO_BOARD_EDGE → error (KiCad `copper_edge_clearance` default Error)
+ *  - UNCONNECTED_NET → error (KiCad `unconnected_items` default Error)
+ * NET_SHORT_CIRCUIT / the layer-invalid codes stay error and cannot be
+ * downgraded (see NON_OVERRIDABLE below).
+ */
+export const DEFAULT_SEVERITY_BY_CODE: Record<DrcRuleCode, DrcSeverity> = {
+  // clearance / shorts
+  TRACE_TO_TRACE_CLEARANCE: "error",
+  TRACE_TO_PAD_CLEARANCE: "error",
+  TRACE_TO_VIA_CLEARANCE: "error",
+  VIA_TO_VIA_CLEARANCE: "error",
+  PAD_TO_PAD_CLEARANCE: "error",
+  PAD_TO_VIA_CLEARANCE: "error",
+  NET_SHORT_CIRCUIT: "error",
+  COPPER_TO_BOARD_EDGE: "error",
+  COPPER_OFF_BOARD: "error",
+  // manufacturability minimums
+  TRACE_WIDTH_MIN: "error",
+  VIA_DIAMETER_MIN: "error",
+  VIA_DRILL_MIN: "error",
+  DRILL_SIZE_MIN: "error",
+  ANNULAR_RING_MIN: "error",
+  VIA_ASPECT_RATIO: "warning",
+  HOLE_TO_HOLE: "warning",
+  HOLE_TO_BOARD_EDGE: "warning",
+  // fab-capability warnings
+  FAB_TRACE_WIDTH: "warning",
+  FAB_CLEARANCE: "warning",
+  FAB_DRILL: "warning",
+  FAB_PAD: "warning",
+  FAB_ANNULAR_RING: "warning",
+  FAB_HOLE_TO_HOLE: "warning",
+  // constraints / structural
+  TRACE_LAYER_MISMATCH: "error",
+  PAD_LAYER_MISMATCH: "error",
+  VIA_LAYER_SPAN: "error",
+  PLACED_PART_MISSING_FOOTPRINT: "error",
+  BOARD_OUTLINE_INVALID: "error",
+  // connectivity
+  UNCONNECTED_NET: "error",
+  ISOLATED_COPPER_ISLAND: "warning",
+  // net-class advisories
+  NETCLASS_TRACE_WIDTH: "warning",
+  NETCLASS_VIA_DIAMETER: "warning",
+  NETCLASS_VIA_DRILL: "warning",
+  // dfm advisories
+  TRACK_DANGLING: "warning",
+  VIA_DANGLING: "warning",
+  // length / SI
+  NET_LENGTH_OUT_OF_RANGE: "warning",
+  // electrical (P10)
+  CREEPAGE_DISTANCE: "error",
+  TRACE_CURRENT_WIDTH: "warning",
+  // signal integrity (P11)
+  DIFF_PAIR_GAP: "error",
+  DIFF_PAIR_SKEW: "warning",
+  DIFF_PAIR_UNCOUPLED_LENGTH: "warning",
+};
+
+/** Codes whose error severity is safety-critical and never overridable. */
+export const NON_OVERRIDABLE = new Set<DrcRuleCode>([
+  "NET_SHORT_CIRCUIT",
+  "VIA_LAYER_SPAN",
+  "PAD_LAYER_MISMATCH",
+  "BOARD_OUTLINE_INVALID",
+]);
+
+/** Per-code severity overrides; `"ignore"` drops the violation entirely. */
+export type DrcSeverityOverrides = Partial<
+  Record<DrcRuleCode, DrcSeverity | "ignore">
+>;
+
+/**
+ * Resolve the effective severity (or "ignore") for a code:
+ *   override → per-rule severity (from a scoped rule) → default table.
+ * Overrides on NON_OVERRIDABLE codes are discarded.
+ */
+export function resolveSeverity(
+  code: DrcRuleCode,
+  ruleSeverity: DrcSeverity | undefined,
+  overrides: DrcSeverityOverrides | undefined,
+): DrcSeverity | "ignore" {
+  if (overrides && !NON_OVERRIDABLE.has(code)) {
+    const o = overrides[code];
+    if (o !== undefined) return o;
+  }
+  return ruleSeverity ?? DEFAULT_SEVERITY_BY_CODE[code];
+}

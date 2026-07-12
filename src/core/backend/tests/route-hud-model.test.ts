@@ -29,6 +29,7 @@ function session(overrides: Partial<RouteSession> = {}): RouteSession {
     widthMm: 0.5,
     widthSource: "netclass",
     posture: "auto",
+    boundaries: [],
     ...overrides,
   };
 }
@@ -87,6 +88,38 @@ describe("buildRouteHudModel", () => {
     expect(model.drcConflictCount).toBe(2);
   });
 
+  test("session length sums accumulated runs plus the active ghost", () => {
+    const model = buildRouteHudModel({
+      session: session({
+        boundaries: [
+          {
+            run: {
+              layer: "F.Cu",
+              widthMm: 0.5,
+              pointsNm: [
+                { x: 0, y: 0 },
+                { x: 4_000_000, y: 0 },
+              ],
+              segmentMode: "manhattan-45",
+            },
+            via: { centerNm: { x: 4_000_000, y: 0 } },
+            prevLayer: "F.Cu",
+            prevWidthMm: 0.5,
+            prevWidthSource: "netclass",
+          },
+        ],
+      }),
+      previewPathNm: [
+        { x: 4_000_000, y: 0 },
+        { x: 10_000_000, y: 0 },
+      ],
+      netName: null,
+      netClass: NET_CLASS,
+      drcConflictCount: 0,
+    });
+    expect(model.lengthMm).toBeCloseTo(10, 9);
+  });
+
   test("missing net class degrades gracefully", () => {
     const model = buildRouteHudModel({
       session: session({ widthSource: "manual" }),
@@ -98,6 +131,40 @@ describe("buildRouteHudModel", () => {
     expect(model.netClassName).toBeNull();
     expect(model.viaDiameterMm).toBeNull();
     expect(model.widthSource).toBe("manual");
+  });
+
+  test("length gauge totals committed net copper plus the session", () => {
+    const model = buildRouteHudModel({
+      session: session(),
+      previewPathNm: [
+        { x: 0, y: 0 },
+        { x: 4_000_000, y: 0 }, // 4 mm live ghost
+      ],
+      netName: "DQ0",
+      netClass: null,
+      drcConflictCount: 0,
+      lengthTarget: {
+        groupName: "DDR",
+        targetMm: 15,
+        toleranceMm: 0.5,
+        committedMm: 6,
+      },
+    });
+    expect(model.lengthTarget).toEqual({
+      groupName: "DDR",
+      targetMm: 15,
+      toleranceMm: 0.5,
+      totalMm: 10, // 6 committed + 4 session
+    });
+    // Absent rule keeps the plain length display.
+    const plain = buildRouteHudModel({
+      session: session(),
+      previewPathNm: [],
+      netName: null,
+      netClass: null,
+      drcConflictCount: 0,
+    });
+    expect(plain.lengthTarget).toBeNull();
   });
 });
 

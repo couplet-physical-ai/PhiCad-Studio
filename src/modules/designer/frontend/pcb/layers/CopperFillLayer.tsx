@@ -13,10 +13,8 @@ import type {
   PcbVia,
   PcbViewSide,
 } from "../../../../../sdks";
-import {
-  PCB_TRACE_COLORS,
-  RENDER_ORDER,
-} from "../../../../../shared/frontend/canvas/layers";
+import { RENDER_ORDER } from "../../../../../shared/frontend/canvas/layers";
+import { copperLayerColor } from "../pcb-layer-colors";
 import { useCanvasTheme } from "../../../../../shared/frontend/canvas/theme";
 import {
   buildCopperFillPourShapes,
@@ -78,9 +76,9 @@ function blendedCopperFillColor(
   boardFill: string,
 ): string {
   const alpha = Math.max(0, Math.min(1, opacity));
-  if (alpha >= 0.999) return PCB_TRACE_COLORS[layer];
+  if (alpha >= 0.999) return copperLayerColor(layer);
   const color = new THREE.Color(boardFill);
-  color.lerp(new THREE.Color(PCB_TRACE_COLORS[layer]), alpha);
+  color.lerp(new THREE.Color(copperLayerColor(layer)), alpha);
   return `#${color.getHexString()}`;
 }
 

@@ -20,7 +20,11 @@ import type {
   PcbPointMm,
   PcbTrace,
   PcbVia,
+  RatsnestSegment,
 } from "../../../../sdks";
+import { copperLayersForCount } from "../../../../sdks";
+import { layerColor } from "./pcb-layer-colors";
+import { nearestRatsnestPad } from "./tools/route-target";
 import { FootprintRenderLayer } from "../../../../shared/frontend/canvas/scene";
 import {
   flipLayerSide,
@@ -82,6 +86,9 @@ import {
   shouldRenderCopperLayer,
   type PcbVisualState,
 } from "./pcb-visual-state";
+
+const EMPTY_TRACES: PcbTrace[] = [];
+const EMPTY_VIAS: PcbVia[] = [];
 
 export interface PcbCameraControls {
   zoomIn(): void;
@@ -310,7 +317,7 @@ function BoardFill({
     if (visualState.boardTintOpacity <= 0) return theme.pcbCanvas.boardFill;
     const base = new THREE.Color(theme.pcbCanvas.boardFill);
     const tint = new THREE.Color(
-      PCB_LAYER_COLORS[visualState.activeLayer ?? "F.Cu"],
+      layerColor(visualState.activeLayer ?? "F.Cu"),
     );
     base.lerp(tint, visualState.boardTintOpacity);
     return `#${base.getHexString()}`;
@@ -1052,73 +1059,26 @@ function DynamicRatsnestGuide({
   cursorMm,
   netId,
   excludePadIds,
-  netClasses,
 }: {
-  ratsnest: ReadonlyArray<{
-    netId: string;
-    netClassId: string;
-    fromMm: PcbPointMm;
-    toMm: PcbPointMm;
-    fromPlacementId: string;
-    fromPadNumber: string;
-    toPlacementId: string;
-    toPadNumber: string;
-  }>;
+  ratsnest: ReadonlyArray<RatsnestSegment>;
   cursorMm: PcbPointMm;
   netId: string;
   excludePadIds?: ReadonlySet<string>;
-  netClasses: ReadonlyArray<{ id: string; color: string }>;
 }): ReactElement | null {
   const guide = useMemo(() => {
-    type Pad = {
-      id: string;
-      x: number;
-      y: number;
-      netClassId: string;
-    };
-    const pads = new Map<string, Pad>();
-    for (const seg of ratsnest) {
-      if (seg.netId !== netId) continue;
-      const fromKey = `${seg.fromPlacementId}|${seg.fromPadNumber}`;
-      const toKey = `${seg.toPlacementId}|${seg.toPadNumber}`;
-      if (!pads.has(fromKey)) {
-        pads.set(fromKey, {
-          id: fromKey,
-          x: seg.fromMm.x,
-          y: seg.fromMm.y,
-          netClassId: seg.netClassId,
-        });
-      }
-      if (!pads.has(toKey)) {
-        pads.set(toKey, {
-          id: toKey,
-          x: seg.toMm.x,
-          y: seg.toMm.y,
-          netClassId: seg.netClassId,
-        });
-      }
-    }
-    let closest: Pad | null = null;
-    let bestDistSq = Infinity;
-    for (const pad of pads.values()) {
-      if (excludePadIds?.has(pad.id)) continue;
-      const dx = pad.x - cursorMm.x;
-      const dy = pad.y - cursorMm.y;
-      const distSq = dx * dx + dy * dy;
-      if (distSq < bestDistSq) {
-        bestDistSq = distSq;
-        closest = pad;
-      }
-    }
+    const closest = nearestRatsnestPad({
+      ratsnest,
+      netId,
+      fromMm: cursorMm,
+      excludePadIds,
+    });
     if (!closest) return null;
-    const cls = netClasses.find((c) => c.id === closest!.netClassId);
-    void cls;
     return {
       from: cursorMm,
-      to: { x: closest.x, y: closest.y },
+      to: closest.centerMm,
       color: "#d4d4d8",
     };
-  }, [ratsnest, cursorMm, netId, excludePadIds, netClasses]);
+  }, [ratsnest, cursorMm, netId, excludePadIds]);
 
   const geom = useMemo(() => {
     if (!guide) return null;
@@ -1207,6 +1167,33 @@ interface PcbSceneProps {
    */
   autoroutePreview?: AutoroutePreviewTrace[] | null;
   /**
+   * Accumulated (uncommitted) runs of the active route session — finished
+   * segments behind a smart via / width split. Ghost-rendered like
+   * `autoroutePreview` until the atomic commit lands.
+   */
+  routePendingPreview?: AutoroutePreviewTrace[] | null;
+  /**
+   * Auto-finish PROPOSAL: the A*-completed remainder of the active route,
+   * shown dimmed until the user explicitly accepts (Enter) or dismisses.
+   */
+  autoFinishPreview?: AutoroutePreviewTrace | null;
+  /**
+   * Length-Tune PROPOSAL: the serpentine replacement geometry for the tuned
+   * trace, shown dimmed until the user commits (Enter).
+   */
+  tunePreview?: AutoroutePreviewTrace | null;
+  /**
+   * Bundle-routing ghost lanes — the live N-lane preview while the user
+   * routes the shared centerline. Committed-look, like routePreview.
+   */
+  bundlePreview?: AutoroutePreviewTrace[] | null;
+  /**
+   * Uncommitted vias of the active route session, rendered by ViaLayer
+   * alongside real vias (ids are `pending:`-namespaced; excluded from pour
+   * geometry — they're same-net by construction).
+   */
+  routePendingVias?: PcbVia[] | null;
+  /**
    * Interactive auto-place preview base layout: the full placement list with the PROPOSED
    * (and user-adjusted) transforms already overlaid onto affected components. When set,
    * it replaces `projection.placements` as the render base, so masks/drills/copper/
@@ -1272,6 +1259,11 @@ export function PcbScene({
   routeGuide = null,
   routePreview = null,
   autoroutePreview = null,
+  routePendingPreview = null,
+  autoFinishPreview = null,
+  tunePreview = null,
+  bundlePreview = null,
+  routePendingVias = null,
   previewBasePlacements = null,
   previewFromMarkers = null,
   routeFocusActive = false,
@@ -1467,14 +1459,9 @@ export function PcbScene({
   // the inner useMemo would invalidate on every render (fresh filter result
   // each time defeats reference equality).
   const tracesByLayer = useMemo(() => {
-    const map: Record<PcbCopperLayerId, PcbTrace[]> = {
-      "F.Cu": [],
-      "In1.Cu": [],
-      "In2.Cu": [],
-      "B.Cu": [],
-    };
+    const map: Partial<Record<PcbCopperLayerId, PcbTrace[]>> = {};
     for (const trace of projection.traces) {
-      map[trace.layer].push(trace);
+      (map[trace.layer] ??= []).push(trace);
     }
     return map;
   }, [projection.traces]);
@@ -1482,19 +1469,15 @@ export function PcbScene({
   // through (F.Cu↔B.Cu) so every via lands in all four buckets; the helper
   // keeps the door open for v2 blind/buried vias without changing this site.
   const viasByLayer = useMemo(() => {
-    const map: Record<PcbCopperLayerId, PcbVia[]> = {
-      "F.Cu": [],
-      "In1.Cu": [],
-      "In2.Cu": [],
-      "B.Cu": [],
-    };
+    const map: Partial<Record<PcbCopperLayerId, PcbVia[]>> = {};
+    const layers = copperLayersForCount(projection.board.layerCount);
     for (const via of projection.vias) {
-      for (const layer of ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"] as const) {
-        if (viaCrossesLayer(via, layer)) map[layer].push(via);
+      for (const layer of layers) {
+        if (viaCrossesLayer(via, layer)) (map[layer] ??= []).push(via);
       }
     }
     return map;
-  }, [projection.vias]);
+  }, [projection.vias, projection.board.layerCount]);
   // Vias whose net matches a rendered same-net pour they cross. Such a via's
   // copper ring would otherwise be invisible (same color as the pour it merges
   // into), so ViaLayer draws a presentation-only board-color separator ring
@@ -1502,9 +1485,10 @@ export function PcbScene({
   const samePourViaIds = useMemo(() => {
     const ids = new Set<string>();
     if (copperFillSet.size === 0) return ids;
+    const pourLayers = copperLayersForCount(projection.board.layerCount);
     for (const via of projection.vias) {
       if (via.netId === null) continue;
-      for (const layer of ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"] as const) {
+      for (const layer of pourLayers) {
         if (!copperFillSet.has(layer)) continue;
         if ((copperFillPourNetIds[layer] ?? null) !== via.netId) continue;
         if (viaCrossesLayer(via, layer)) {
@@ -1520,6 +1504,16 @@ export function PcbScene({
     : visualState.activeLayer === null
       ? highlightedNetId
       : null;
+
+  // Real vias + uncommitted session vias for ViaLayer only (pending vias stay
+  // out of pour/samePourViaIds geometry — same-net by construction).
+  const viasForRender = useMemo(
+    () =>
+      routePendingVias && routePendingVias.length > 0
+        ? [...projection.vias, ...routePendingVias]
+        : projection.vias,
+    [projection.vias, routePendingVias],
+  );
 
   // LineSegments2 does not render correctly under a negative-scale parent
   // group (the three.js addons line renderer breaks with negative determinant
@@ -1561,6 +1555,42 @@ export function PcbScene({
       {autoroutePreview?.map((t, i) => (
         <TracePreviewLayer
           key={`autoroute-preview-${i}`}
+          pointsNm={t.pointsNm}
+          layer={t.layer}
+          widthMm={t.widthMm}
+          mirror={mirror}
+        />
+      ))}
+      {routePendingPreview?.map((t, i) => (
+        <TracePreviewLayer
+          key={`route-pending-${i}`}
+          pointsNm={t.pointsNm}
+          layer={t.layer}
+          widthMm={t.widthMm}
+          mirror={mirror}
+        />
+      ))}
+      {autoFinishPreview ? (
+        <TracePreviewLayer
+          pointsNm={autoFinishPreview.pointsNm}
+          layer={autoFinishPreview.layer}
+          widthMm={autoFinishPreview.widthMm}
+          mirror={mirror}
+          opacity={0.45}
+        />
+      ) : null}
+      {tunePreview ? (
+        <TracePreviewLayer
+          pointsNm={tunePreview.pointsNm}
+          layer={tunePreview.layer}
+          widthMm={tunePreview.widthMm}
+          mirror={mirror}
+          opacity={0.6}
+        />
+      ) : null}
+      {bundlePreview?.map((t, i) => (
+        <TracePreviewLayer
+          key={`bundle-preview-${i}`}
           pointsNm={t.pointsNm}
           layer={t.layer}
           widthMm={t.widthMm}
@@ -1618,8 +1648,8 @@ export function PcbScene({
               // free primitive. The moat refreshes once on commit — standard
               // EDA "pour is stale during edit" behavior.
               placements={projection.placements}
-              traces={tracesByLayer[layer]}
-              vias={viasByLayer[layer]}
+              traces={tracesByLayer[layer] ?? EMPTY_TRACES}
+              vias={viasByLayer[layer] ?? EMPTY_VIAS}
               pourNetId={copperFillPourNetIds[layer] ?? null}
               padNetIds={padNetIds}
               designRules={projection.board.designRules}
@@ -1645,8 +1675,8 @@ export function PcbScene({
               outline={projection.board.outline}
               clipPolygonMm={zone.polygonPointsMm}
               placements={projection.placements}
-              traces={tracesByLayer[zone.layer]}
-              vias={viasByLayer[zone.layer]}
+              traces={tracesByLayer[zone.layer] ?? EMPTY_TRACES}
+              vias={viasByLayer[zone.layer] ?? EMPTY_VIAS}
               pourNetId={zone.netId ?? null}
               padNetIds={padNetIds}
               designRules={projection.board.designRules}
@@ -1689,7 +1719,7 @@ export function PcbScene({
         ))}
         {areViasVisible(visibleLayers) ? (
           <ViaLayer
-            vias={projection.vias}
+            vias={viasForRender}
             highlightedNetId={effectiveHighlightedNetId}
             selectedViaIds={selection?.viaIds}
             activeLayer={projection.board.activeLayer}
@@ -1830,7 +1860,6 @@ export function PcbScene({
             cursorMm={routeGuide.cursorMm}
             netId={routeGuide.netId}
             excludePadIds={routeGuide.excludePadIds}
-            netClasses={projection.board.netClasses}
           />
         ) : null}
         {(alignmentGuides.length > 0 || alignmentSpacing.length > 0) &&

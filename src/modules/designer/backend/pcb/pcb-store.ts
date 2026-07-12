@@ -5,6 +5,7 @@ import type {
   PcbBoardSettings,
   PcbCopperLayerId,
   PcbDesignRules,
+  PcbLengthMatchGroup,
   PcbNetClass,
   PcbViaProtection,
   PcbDrillSlot,
@@ -26,8 +27,14 @@ import type {
   PcbVia,
   PcbViewSide,
   PcbViewState,
+  PcbDrcRule,
+  PcbDiffPair,
   PcbZone,
   AutoLayoutConfig,
+} from "../../../../sdks/designer";
+import {
+  parsePcbLayerCount,
+  isCopperLayerId as isStackupCopperLayer,
 } from "../../../../sdks/designer";
 import { pcbEntities } from "../schema";
 import { asNumber, asRecord, asString } from "../value-guards";
@@ -80,12 +87,7 @@ const FREE_PAD_SHAPES: ReadonlySet<PcbFreePadShape> = new Set<PcbFreePadShape>([
 ]);
 
 function isCopperLayer(value: string | null): value is PcbCopperLayerId {
-  return (
-    value === "F.Cu" ||
-    value === "In1.Cu" ||
-    value === "In2.Cu" ||
-    value === "B.Cu"
-  );
+  return value !== null && isStackupCopperLayer(value);
 }
 
 function isSegmentMode(value: string | null): value is PcbTraceSegmentMode {
@@ -136,8 +138,9 @@ function parseDisplayMode(value: unknown): PcbBoardSettings["displayMode"] {
 }
 
 function parseLayerCount(value: unknown): PcbBoardSettings["layerCount"] {
-  const n = asNumber(value);
-  return n === 4 ? 4 : 2;
+  // parsePcbLayerCount coerces any even value in [2,32]; no longer collapses
+  // 6+ to 2 (P2 full multilayer).
+  return parsePcbLayerCount(value);
 }
 
 function parsePayload(payloadJson: string): unknown {
@@ -149,12 +152,7 @@ function parsePayload(payloadJson: string): unknown {
 }
 
 function isCopperLayerId(value: unknown): value is PcbCopperLayerId {
-  return (
-    value === "F.Cu" ||
-    value === "In1.Cu" ||
-    value === "In2.Cu" ||
-    value === "B.Cu"
-  );
+  return isStackupCopperLayer(value);
 }
 
 function parseViewSide(value: unknown): PcbViewSide {
@@ -276,6 +274,13 @@ function parseDesignRules(
   const c = asRecord(r.clearance) ?? {};
   const m = asRecord(r.minimums) ?? {};
   const num = (v: unknown, d: number): number => asNumber(v) ?? d;
+  const e = asRecord(r.electrical);
+  const optNum = (v: unknown): number | undefined => {
+    const n = asNumber(v);
+    return n === null ? undefined : n;
+  };
+  const holeToBoardEdgeMm = optNum(c.holeToBoardEdgeMm);
+  const clearanceFloorMm = optNum(m.clearanceMm);
   return {
     clearance: {
       traceToTraceMm: num(c.traceToTraceMm, fallback.clearance.traceToTraceMm),
@@ -287,6 +292,7 @@ function parseDesignRules(
         c.copperToBoardEdgeMm,
         fallback.clearance.copperToBoardEdgeMm,
       ),
+      ...(holeToBoardEdgeMm !== undefined ? { holeToBoardEdgeMm } : {}),
     },
     minimums: {
       traceWidthMm: num(m.traceWidthMm, fallback.minimums.traceWidthMm),
@@ -295,7 +301,18 @@ function parseDesignRules(
       viaDiameterMm: num(m.viaDiameterMm, fallback.minimums.viaDiameterMm),
       viaDrillMm: num(m.viaDrillMm, fallback.minimums.viaDrillMm),
       holeToHoleMm: num(m.holeToHoleMm, fallback.minimums.holeToHoleMm ?? 0.25),
+      ...(clearanceFloorMm !== undefined ? { clearanceMm: clearanceFloorMm } : {}),
     },
+    ...(e &&
+    typeof asNumber(e.tempRiseC) === "number" &&
+    typeof asNumber(e.copperWeightOz) === "number"
+      ? {
+          electrical: {
+            tempRiseC: asNumber(e.tempRiseC)!,
+            copperWeightOz: asNumber(e.copperWeightOz)!,
+          },
+        }
+      : {}),
   };
 }
 
@@ -305,6 +322,9 @@ function parseNetClass(value: unknown): PcbNetClass | null {
   const id = asString(r.id);
   const name = asString(r.name);
   if (!id || !name) return null;
+  const diffPairGapMm = asNumber(r.diffPairGapMm);
+  const voltageV = asNumber(r.voltageV);
+  const currentA = asNumber(r.currentA);
   return {
     id,
     name,
@@ -314,6 +334,9 @@ function parseNetClass(value: unknown): PcbNetClass | null {
     viaDrillMm: asNumber(r.viaDrillMm) ?? 0.4,
     color: asString(r.color) ?? "#d4d4d8",
     defaultViaProtection: parseViaProtection(r.defaultViaProtection),
+    ...(diffPairGapMm !== null && diffPairGapMm > 0 ? { diffPairGapMm } : {}),
+    ...(voltageV !== null ? { voltageV } : {}),
+    ...(currentA !== null ? { currentA } : {}),
   };
 }
 
@@ -350,6 +373,42 @@ function parsePerNetClassAssignments(
     }
   }
   return out;
+}
+
+function parseLengthMatchGroup(value: unknown): PcbLengthMatchGroup | null {
+  const r = asRecord(value);
+  if (!r) return null;
+  const id = asString(r.id);
+  const name = asString(r.name);
+  if (!id || !name) return null;
+  const netIds = Array.isArray(r.netIds)
+    ? r.netIds.filter((n): n is string => typeof n === "string" && n.length > 0)
+    : [];
+  const targetRecord = asRecord(r.target);
+  let target: PcbLengthMatchGroup["target"] = { kind: "longest" };
+  if (targetRecord?.kind === "absolute") {
+    const mm = asNumber(targetRecord.mm);
+    if (mm === null || mm <= 0) return null;
+    target = { kind: "absolute", mm };
+  } else if (targetRecord !== null && targetRecord.kind !== "longest") {
+    return null;
+  }
+  const toleranceMm = asNumber(r.toleranceMm);
+  return {
+    id,
+    name,
+    netIds,
+    target,
+    toleranceMm: toleranceMm !== null && toleranceMm >= 0 ? toleranceMm : 0,
+  };
+}
+
+/** Malformed entries are dropped; an invalid/absent field parses to []. */
+function parseLengthMatchGroups(value: unknown): PcbLengthMatchGroup[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(parseLengthMatchGroup)
+    .filter((g): g is PcbLengthMatchGroup => g !== null);
 }
 
 function parsePadConnection(value: unknown): "solid" | "thermal" | undefined {
@@ -611,6 +670,12 @@ function parseBoardSettings(value: unknown): PcbBoardSettings | null {
     record.perNetClassAssignments,
     new Set(netClasses.map((c) => c.id)),
   );
+  const lengthMatchGroups = parseLengthMatchGroups(record.lengthMatchGroups);
+  const drcSeverityOverrides = parseDrcSeverityOverrides(
+    record.drcSeverityOverrides,
+  );
+  const drcRules = parseDrcRules(record.drcRules);
+  const diffPairs = parseDiffPairs(record.diffPairs);
   return {
     ...defaults,
     outline: outlineParsed,
@@ -622,6 +687,13 @@ function parseBoardSettings(value: unknown): PcbBoardSettings | null {
     ...(Object.keys(perNetClassAssignments).length > 0
       ? { perNetClassAssignments }
       : {}),
+    ...(lengthMatchGroups.length > 0 ? { lengthMatchGroups } : {}),
+    ...(drcSeverityOverrides &&
+    Object.keys(drcSeverityOverrides).length > 0
+      ? { drcSeverityOverrides }
+      : {}),
+    ...(drcRules.length > 0 ? { drcRules } : {}),
+    ...(diffPairs.length > 0 ? { diffPairs } : {}),
     boardThicknessMm:
       asNumber(record.boardThicknessMm) ?? defaults.boardThicknessMm,
     tracePresets:
@@ -640,6 +712,157 @@ function parseBoardSettings(value: unknown): PcbBoardSettings | null {
         : defaults.viewState,
     updatedAt,
   };
+}
+
+const VALID_SEVERITIES = new Set(["error", "warning", "info", "ignore"]);
+function parseDiffPairs(value: unknown): PcbDiffPair[] {
+  if (!Array.isArray(value)) return [];
+  const out: PcbDiffPair[] = [];
+  for (const raw of value) {
+    if (!asRecord(raw)) continue;
+    const id = asString(raw.id);
+    const name = asString(raw.name);
+    const pNetId = asString(raw.pNetId);
+    const nNetId = asString(raw.nNetId);
+    if (!id || !name || !pNetId || !nNetId) continue;
+    // Non-negative thresholds only; a negative tolerance would flag an
+    // on-target pair. Drop out-of-range values (fall back to defaults).
+    const nonNeg = (v: unknown): number | null => {
+      const n = asNumber(v);
+      return n !== null && n >= 0 ? n : null;
+    };
+    const gapMm = nonNeg(raw.gapMm);
+    const gapTolMm = nonNeg(raw.gapTolMm);
+    const maxUncoupledMm = nonNeg(raw.maxUncoupledMm);
+    const maxSkewMm = nonNeg(raw.maxSkewMm);
+    out.push({
+      id, name, pNetId, nNetId,
+      ...(gapMm !== null ? { gapMm } : {}),
+      ...(gapTolMm !== null ? { gapTolMm } : {}),
+      ...(maxUncoupledMm !== null ? { maxUncoupledMm } : {}),
+      ...(maxSkewMm !== null ? { maxSkewMm } : {}),
+    });
+  }
+  return out;
+}
+
+const CLEARANCE_KIND = "clearance";
+const SCALAR_KINDS = new Set([
+  "trackWidth",
+  "viaDiameter",
+  "viaDrill",
+  "annularRing",
+  "holeToHole",
+  "edgeClearance",
+]);
+function parseDrcRuleConstraint(
+  value: unknown,
+): PcbDrcRule["constraint"] | null {
+  const r = asRecord(value);
+  if (!r) return null;
+  const kind = asString(r.kind);
+  if (kind === CLEARANCE_KIND) {
+    const mm = asNumber(r.mm);
+    return mm !== null && mm >= 0
+      ? ({ kind: "clearance", mm } as PcbDrcRule["constraint"])
+      : null;
+  }
+  if (kind && SCALAR_KINDS.has(kind)) {
+    const minMm = asNumber(r.minMm);
+    return minMm !== null && minMm >= 0
+      ? ({ kind, minMm } as PcbDrcRule["constraint"])
+      : null;
+  }
+  return null;
+}
+
+/** Validate a rule's scope array; returns null if ANY scope is malformed. */
+function parseDrcRuleScopes(value: unknown): PcbDrcRule["scopes"] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const out: PcbDrcRule["scopes"] = [];
+  for (const raw of value) {
+    const r = asRecord(raw);
+    if (!r) return null;
+    const kind = asString(r.kind);
+    if (kind === "net" && Array.isArray(r.netIds)) {
+      out.push({ kind: "net", netIds: r.netIds.filter((v) => typeof v === "string") });
+    } else if (kind === "netClass" && Array.isArray(r.netClassIds)) {
+      out.push({
+        kind: "netClass",
+        netClassIds: r.netClassIds.filter((v) => typeof v === "string"),
+      });
+    } else if (kind === "layer" && Array.isArray(r.layers)) {
+      out.push({
+        kind: "layer",
+        layers: r.layers.filter((v) => isCopperLayer(typeof v === "string" ? v : null)) as PcbDrcRule["scopes"][number] extends { layers: infer L } ? L : never,
+      });
+    } else if (kind === "pairKind" && Array.isArray(r.pairKinds)) {
+      out.push({
+        kind: "pairKind",
+        pairKinds: r.pairKinds.filter((v) => typeof v === "string") as never,
+      });
+    } else if (kind === "area") {
+      const poly = Array.isArray(r.polygonMm) ? r.polygonMm : null;
+      if (!poly || poly.length < 3) return null; // malformed area → invalid rule
+      const pts = poly
+        .map((pt) => {
+          const pr = asRecord(pt);
+          const x = asNumber(pr?.x);
+          const y = asNumber(pr?.y);
+          return x !== null && y !== null ? { x, y } : null;
+        })
+        .filter((pt): pt is { x: number; y: number } => pt !== null);
+      if (pts.length < 3) return null;
+      out.push({ kind: "area", polygonMm: pts });
+    } else {
+      return null; // unknown scope kind → invalid rule
+    }
+  }
+  return out;
+}
+
+function parseDrcRules(value: unknown): PcbDrcRule[] {
+  if (!Array.isArray(value)) return [];
+  const out: PcbDrcRule[] = [];
+  for (const raw of value) {
+    if (!asRecord(raw)) continue;
+    const id = asString(raw.id);
+    const name = asString(raw.name);
+    const constraint = raw.constraint;
+    if (!id || !name || !asRecord(constraint)) continue;
+    const constraintParsed = parseDrcRuleConstraint(constraint);
+    if (!constraintParsed) continue;
+    const priority = asNumber(raw.priority) ?? 0;
+    const scopes = parseDrcRuleScopes(raw.scopes);
+    if (scopes === null) continue; // a malformed scope invalidates the rule
+    out.push({
+      id,
+      name,
+      enabled: raw.enabled !== false,
+      priority,
+      scopes,
+      constraint: constraintParsed,
+      ...(typeof raw.severity === "string" &&
+      ["error", "warning", "info"].includes(raw.severity)
+        ? { severity: raw.severity as PcbDrcRule["severity"] }
+        : {}),
+      ...(asString(raw.comment) ? { comment: asString(raw.comment)! } : {}),
+    });
+  }
+  return out;
+}
+function parseDrcSeverityOverrides(
+  value: unknown,
+): PcbBoardSettings["drcSeverityOverrides"] {
+  if (!asRecord(value)) return undefined;
+  const out: Record<string, "error" | "warning" | "info" | "ignore"> = {};
+  for (const [code, sev] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof sev === "string" && VALID_SEVERITIES.has(sev)) {
+      out[code] = sev as "error" | "warning" | "info" | "ignore";
+    }
+  }
+  return out as PcbBoardSettings["drcSeverityOverrides"];
 }
 
 function parseFabricator(
@@ -893,6 +1116,10 @@ export function updatePcbDesignRules(params: {
   netClasses?: PcbNetClass[];
   boardThicknessMm?: number;
   perNetClassAssignments?: Record<string, string>;
+  lengthMatchGroups?: PcbLengthMatchGroup[];
+  drcSeverityOverrides?: PcbBoardSettings["drcSeverityOverrides"];
+  drcRules?: PcbDrcRule[];
+  diffPairs?: PcbDiffPair[];
   timestamp: string;
 }): PcbBoardSettings {
   const settings = ensurePcbBoardSettings(
@@ -919,6 +1146,38 @@ export function updatePcbDesignRules(params: {
             validClassIds,
           )
         : settings.perNetClassAssignments,
+    // A provided array fully replaces the stored rules (re-validated). An
+    // empty result overrides the spread with undefined, which JSON
+    // serialization drops — that's how rules are cleared.
+    ...(params.lengthMatchGroups !== undefined
+      ? (() => {
+          const parsed = parseLengthMatchGroups(params.lengthMatchGroups);
+          return {
+            lengthMatchGroups: parsed.length > 0 ? parsed : undefined,
+          };
+        })()
+      : {}),
+    ...(params.drcSeverityOverrides !== undefined
+      ? (() => {
+          const parsed = parseDrcSeverityOverrides(params.drcSeverityOverrides);
+          return {
+            drcSeverityOverrides:
+              parsed && Object.keys(parsed).length > 0 ? parsed : undefined,
+          };
+        })()
+      : {}),
+    ...(params.drcRules !== undefined
+      ? (() => {
+          const parsed = parseDrcRules(params.drcRules);
+          return { drcRules: parsed.length > 0 ? parsed : undefined };
+        })()
+      : {}),
+    ...(params.diffPairs !== undefined
+      ? (() => {
+          const parsed = parseDiffPairs(params.diffPairs);
+          return { diffPairs: parsed.length > 0 ? parsed : undefined };
+        })()
+      : {}),
     boardThicknessMm:
       params.boardThicknessMm !== undefined
         ? params.boardThicknessMm

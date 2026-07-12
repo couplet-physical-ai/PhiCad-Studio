@@ -24,7 +24,9 @@ export type RouteClickAction =
   /** Extend the session with an intermediate waypoint. */
   | "waypoint"
   /** Commit the session path through the anchor and end the session. */
-  | "finish";
+  | "finish"
+  /** Propose an A*-completed path to the clicked pad (explicit-accept preview). */
+  | "auto-finish";
 
 /**
  * A route may finish on a pad only when doing so cannot create a short:
@@ -45,6 +47,9 @@ function padFinishAllowed(
  * Decide what a route-mode click does.
  *
  * - idle → start a session at the anchor
+ * - Ctrl/Cmd+click on a compatible-net pad while routing (with the
+ *   auto-finish feature enabled) → propose an A* completion to that pad
+ *   instead of finishing straight there
  * - click on a compatible-net pad → finish (classic pad-to-pad route)
  * - click on same-net copper (trace endpoint/interior, via) → finish in a
  *   T-junction; requires a strict non-null net match — a net-less session
@@ -59,13 +64,15 @@ export function resolveRouteClickAction(input: {
   anchor: RouteClickAnchor;
   sessionNetId: string | null;
   clickCount: number;
+  /** Ctrl/Cmd held AND the pcb.routeAutoFinish flag is on. */
+  autoFinishModifier?: boolean;
 }): RouteClickAction {
   if (!input.routing) return "start";
   if (
     input.anchor.onPad &&
     padFinishAllowed(input.sessionNetId, input.anchor.netId)
   ) {
-    return "finish";
+    return input.autoFinishModifier ? "auto-finish" : "finish";
   }
   if (
     !input.anchor.onPad &&

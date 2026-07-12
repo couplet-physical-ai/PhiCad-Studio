@@ -1,4 +1,5 @@
 import { type ReactElement, useMemo } from "react";
+import { copperLayerColor } from "../pcb-layer-colors";
 import type { PcbCopperLayerId, PcbFreePad } from "../../../../../sdks";
 import {
   PCB_LAYER_COLORS,
@@ -52,7 +53,7 @@ export function FreePadLayer({
         ...(pad.roundrectRatio !== undefined
           ? { roundrectRatio: pad.roundrectRatio }
           : {}),
-        color: PCB_LAYER_COLORS[layer],
+        color: copperLayerColor(layer),
         selected: selectedFreePadIds?.has(pad.id) ?? false,
       });
     }
@@ -64,9 +65,10 @@ export function FreePadLayer({
   return (
     <PadInstances
       pads={pads}
-      defaultColor={PCB_LAYER_COLORS[layer]}
+      defaultColor={copperLayerColor(layer)}
       opacity={opacity}
-      renderOrder={effectiveRenderOrder(layer, viewSide, "object")}
+      renderOrder={effectiveRenderOrder(
+        layer as Parameters<typeof effectiveRenderOrder>[0], viewSide, "object")}
     />
   );
 }

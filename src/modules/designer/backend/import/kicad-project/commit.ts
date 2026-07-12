@@ -34,6 +34,7 @@ import type {
   LibraryComponentPlacementDetail,
   LibrarySDK,
 } from "../../../../../sdks/library";
+import { parsePcbLayerCount } from "../../../../../sdks/designer";
 import { MODULE_SDK_TOKENS } from "../../../../../sdks";
 import type { CoreBackendModuleContext } from "../../../../../core/contracts/modules/backend-module";
 import { resolveCaptureRuntime } from "../../capture";
@@ -344,9 +345,9 @@ function pickLayerCount(
   fromKicad: number,
   fallback: PcbLayerCount,
 ): PcbLayerCount {
-  if (fromKicad >= 4) return 4;
-  if (fromKicad >= 2) return 2;
-  return fallback;
+  // parsePcbLayerCount preserves 6/8/… stackups (P2); only fall back to the
+  // existing board count when KiCad reported nothing usable.
+  return fromKicad >= 2 ? parsePcbLayerCount(fromKicad) : fallback;
 }
 
 function pickOutline(

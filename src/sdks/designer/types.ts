@@ -300,6 +300,34 @@ export type PcbLayerId =
   | "F.Cu"
   | "In1.Cu"
   | "In2.Cu"
+  | "In3.Cu"
+  | "In4.Cu"
+  | "In5.Cu"
+  | "In6.Cu"
+  | "In7.Cu"
+  | "In8.Cu"
+  | "In9.Cu"
+  | "In10.Cu"
+  | "In11.Cu"
+  | "In12.Cu"
+  | "In13.Cu"
+  | "In14.Cu"
+  | "In15.Cu"
+  | "In16.Cu"
+  | "In17.Cu"
+  | "In18.Cu"
+  | "In19.Cu"
+  | "In20.Cu"
+  | "In21.Cu"
+  | "In22.Cu"
+  | "In23.Cu"
+  | "In24.Cu"
+  | "In25.Cu"
+  | "In26.Cu"
+  | "In27.Cu"
+  | "In28.Cu"
+  | "In29.Cu"
+  | "In30.Cu"
   | "B.Cu"
   | "F.Mask"
   | "B.Mask"
@@ -315,8 +343,15 @@ export type PcbLayerId =
   | "Drill"
   | "Metadata";
 
-/** Subset of PcbLayerId that traces and vias may live on (copper only). */
-export type PcbCopperLayerId = "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+/**
+ * Subset of PcbLayerId that traces and vias may live on (copper only). Inner
+ * layers In1..In30 support up to a 32-layer stackup (P2). Explicit literal
+ * union (not a template type) so exhaustiveness stays strict.
+ */
+export type PcbCopperLayerId =
+  | "F.Cu"
+  | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu"
+  | "B.Cu";
 
 /**
  * Display emphasis mode controlling how non-active layers render relative to
@@ -327,8 +362,8 @@ export type PcbCopperLayerId = "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
  */
 export type PcbDisplayMode = "normal" | "dim" | "solo";
 
-/** Stackup layer count. v1 supports 2 or 4 (inner copper = In1.Cu/In2.Cu). */
-export type PcbLayerCount = 2 | 4;
+/** Stackup layer count. Even values 2..32 (P2 full multilayer). */
+export type PcbLayerCount = 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24 | 26 | 28 | 30 | 32;
 
 export type PcbTraceSegmentMode = "manhattan-90" | "manhattan-45";
 
@@ -547,6 +582,11 @@ export interface PcbDesignRules {
     traceToViaMm: number;
     viaToViaMm: number;
     copperToBoardEdgeMm: number;
+    /**
+     * Min drill-edge-to-board-edge spacing (mm). Optional/additive — absent on
+     * pre-P5 boards, where the context defaults it (audit B4-4).
+     */
+    holeToBoardEdgeMm?: number;
   };
   minimums: {
     traceWidthMm: number;
@@ -560,7 +600,73 @@ export interface PcbDesignRules {
      * hole-to-hole DRC check.
      */
     holeToHoleMm?: number;
+    /**
+     * Absolute clearance floor (mm) — no scoped rule or net class may resolve
+     * BELOW this (KiCad's board-minimum semantics). Optional/additive; absent
+     * (pre-P6 boards) reads as 0 so no board is retroactively tightened.
+     */
+    clearanceMm?: number;
   };
+  /**
+   * Electrical modeling parameters for IPC-2152/2221 checks (P10). Optional/
+   * additive — absent uses the defaults (10 °C rise, 1 oz copper).
+   */
+  electrical?: {
+    tempRiseC: number;
+    copperWeightOz: number;
+  };
+}
+
+/** Object-pair kind a scoped clearance rule targets. */
+export type DrcPairKind =
+  | "traceToTrace"
+  | "traceToPad"
+  | "traceToVia"
+  | "padToPad"
+  | "padToVia"
+  | "viaToVia";
+
+/**
+ * A scope predicate for a DRC rule. All scopes on a rule are AND-combined; a
+ * rule with `scopes: []` matches everything. For a clearance query, `net` /
+ * `netClass` match if EITHER pair item qualifies; `area` matches only when
+ * BOTH items fall inside the polygon (BGA-fanout relaxation semantics).
+ */
+export type DrcRuleScope =
+  | { kind: "net"; netIds: string[] }
+  | { kind: "netClass"; netClassIds: string[] }
+  | { kind: "layer"; layers: PcbCopperLayerId[] }
+  | { kind: "area"; polygonMm: PcbPointMm[] }
+  | { kind: "pairKind"; pairKinds: DrcPairKind[] };
+
+/** The constraint a scoped rule imposes. */
+export type DrcRuleConstraint =
+  | { kind: "clearance"; mm: number }
+  | { kind: "trackWidth"; minMm: number }
+  | { kind: "viaDiameter"; minMm: number }
+  | { kind: "viaDrill"; minMm: number }
+  | { kind: "annularRing"; minMm: number }
+  | { kind: "holeToHole"; minMm: number }
+  | { kind: "edgeClearance"; minMm: number };
+
+/**
+ * A scoped, prioritized DRC rule (DRC_HARDENING_PLAN.md P6). Clearance rules
+ * resolve Altium-style: highest priority first-match wins, and a rule MAY relax
+ * below the board default — but never below `minimums.clearanceMm`. Scalar
+ * constraints (width/via/annular/hole/edge) can only tighten.
+ */
+export interface PcbDrcRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** Higher wins; ties broken by earlier array index. */
+  priority: number;
+  /** AND-combined scope predicates; `[]` matches everything. */
+  scopes: DrcRuleScope[];
+  constraint: DrcRuleConstraint;
+  /** Optional severity for violations this rule produces. */
+  severity?: DrcSeverity;
+  comment?: string;
 }
 
 export interface PcbNetClass {
@@ -574,6 +680,56 @@ export interface PcbNetClass {
   color: string;
   /** IPC-4761 default applied to new vias on nets in this class. */
   defaultViaProtection: PcbViaProtection;
+  /**
+   * Differential-pair edge-to-edge gap (mm) for nets in this class. Used by
+   * bundle routing as the default pitch for detected `_P/_N` / `+/-` pairs.
+   * Optional — absent falls back to the class clearance.
+   */
+  diffPairGapMm?: number;
+  /**
+   * Operating voltage (V, relative to board common) of nets in this class.
+   * Drives IPC-2221 creepage/clearance-by-voltage (P10). Optional; absent = 0.
+   */
+  voltageV?: number;
+  /**
+   * Steady-state current (A) carried by nets in this class. Drives the
+   * IPC-2221 current-vs-trace-width check (P10). Optional; absent = unchecked.
+   */
+  currentA?: number;
+}
+
+/**
+ * Named length-match rule over a set of nets (high-speed buses, clocks).
+ * `longest` targets track the longest routed member dynamically; `absolute`
+ * targets pin an explicit routed length. Evaluated by the DRC length check
+ * and surfaced live in the route/tune HUD gauges.
+ */
+/**
+ * A differential pair (P10/P11). Explicit entries win over the name-convention
+ * heuristic. Optional per-pair overrides fall back to the nets' class defaults.
+ */
+export interface PcbDiffPair {
+  id: string;
+  name: string;
+  pNetId: string;
+  nNetId: string;
+  /** Target edge-to-edge coupled gap (mm); falls back to class diffPairGapMm. */
+  gapMm?: number;
+  /** Allowed gap deviation (mm); default 0.05. */
+  gapTolMm?: number;
+  /** Max uncoupled run per member (mm); default 15. */
+  maxUncoupledMm?: number;
+  /** Max intra-pair length skew (mm); default 0.5. */
+  maxSkewMm?: number;
+}
+
+export interface PcbLengthMatchGroup {
+  id: string;
+  name: string;
+  netIds: string[];
+  target: { kind: "longest" } | { kind: "absolute"; mm: number };
+  /** Allowed deviation from the target (mm, ≥ 0). */
+  toleranceMm: number;
 }
 
 export interface PcbBoardSettings {
@@ -594,6 +750,32 @@ export interface PcbBoardSettings {
    * field as no overrides. Unknown class ids are dropped on persist.
    */
   perNetClassAssignments?: Record<string, string>;
+  /**
+   * Per-code DRC severity policy: maps a DrcRuleCode to a severity or the
+   * string "ignore" (drop the code). Optional/additive. A design property
+   * (shared by collaborators), so it lives on board settings, not viewState.
+   * Safety-critical codes (shorts, layer-invalid) ignore overrides.
+   */
+  drcSeverityOverrides?: Partial<
+    Record<DrcRuleCode, DrcSeverity | "ignore">
+  >;
+  /**
+   * Scoped priority DRC rules (P6). Optional/additive — absent reads as no
+   * rules, i.e. the implicit board-rule + net-class tier only (byte-identical
+   * to pre-P6 behavior).
+   */
+  drcRules?: PcbDrcRule[];
+  /**
+   * Explicit differential pairs (P11). Optional/additive; a net-name
+   * convention also auto-detects pairs when no explicit entry covers a net.
+   */
+  diffPairs?: PcbDiffPair[];
+  /**
+   * Length-match rules (see PcbLengthMatchGroup). Optional/additive —
+   * readers treat an absent field as no rules. Entries whose net ids no
+   * longer resolve are kept (nets may reappear) but skipped in evaluation.
+   */
+  lengthMatchGroups?: PcbLengthMatchGroup[];
   /**
    * Board-level trace-width presets (mm), shown in the route-tool dropdown
    * and cycled with W / Shift+W. The active net class's traceWidthMm is the
@@ -1285,12 +1467,34 @@ export interface DesignerPcbAddViaCommand {
   diameterMmOverride?: number;
   /** Optional override for via drill; falls back to net-class default. */
   drillMmOverride?: number;
+  /**
+   * Optional layer span + type. Absent = through F.Cu→B.Cu (everything the
+   * interactive route tool emits). Non-through types are accepted data-only
+   * behind the `pcb.advancedVias` dev flag and validated against the
+   * board's layerCount/stackup order.
+   */
+  fromLayer?: PcbCopperLayerId;
+  toLayer?: PcbCopperLayerId;
+  viaType?: PcbViaType;
 }
 
 export interface DesignerPcbAddTraceViaCommand {
   type: "pcb_add_trace_via";
   trace: Omit<DesignerPcbAddTraceCommand, "type">;
   via: Omit<DesignerPcbAddViaCommand, "type">;
+}
+
+/**
+ * Atomic multi-run route commit: every trace and via of one routing session
+ * (multi-layer, width splits) lands as ONE command → one revision → one undo
+ * entry. Validate-all-then-insert-all: the first invalid item rejects the
+ * whole batch with nothing persisted. Like all pcb_* commands it is not
+ * cloud-mirrored (schematic-only whitelist in cloud-sync.ts).
+ */
+export interface DesignerPcbCommitRouteCommand {
+  type: "pcb_commit_route";
+  traces: Array<Omit<DesignerPcbAddTraceCommand, "type">>;
+  vias: Array<Omit<DesignerPcbAddViaCommand, "type">>;
 }
 
 export interface DesignerPcbDeleteTraceCommand {
@@ -1342,6 +1546,18 @@ export interface DesignerPcbSetDesignRulesCommand {
   boardThicknessMm?: number;
   /** Per-net → net-class overrides (netId → netClassId). See PcbBoardSettings. */
   perNetClassAssignments?: Record<string, string>;
+  /** Length-match rules. See PcbBoardSettings.lengthMatchGroups. */
+  lengthMatchGroups?: PcbLengthMatchGroup[];
+  /** Per-code DRC severity policy. See PcbBoardSettings.drcSeverityOverrides. */
+  drcSeverityOverrides?: Partial<Record<DrcRuleCode, DrcSeverity | "ignore">>;
+  /** Scoped priority DRC rules. See PcbBoardSettings.drcRules. */
+  drcRules?: PcbDrcRule[];
+  /**
+   * Explicit differential pairs (P11). Optional/additive; a net-name
+   * convention (`_P`/`_N`, `+`/`-`) also auto-detects pairs when no explicit
+   * entry covers a net.
+   */
+  diffPairs?: PcbDiffPair[];
 }
 
 /**
@@ -1515,6 +1731,7 @@ export type DesignerCommand =
   | DesignerPcbAddTraceCommand
   | DesignerPcbAddViaCommand
   | DesignerPcbAddTraceViaCommand
+  | DesignerPcbCommitRouteCommand
   | DesignerPcbDeleteTraceCommand
   | DesignerPcbDeleteViaCommand
   | DesignerPcbUpdateTraceGeometryCommand
@@ -1730,6 +1947,8 @@ export type DrcAnchor =
   | { kind: "freeHole"; freeHoleId: string }
   | { kind: "placement"; placementId: string }
   | { kind: "net"; netId: string }
+  | { kind: "zone"; zoneId: string }
+  | { kind: "diffPair"; pNetId: string; nNetId: string }
   | { kind: "boardEdge" };
 
 export type DrcSeverity = "error" | "warning" | "info";
@@ -1743,7 +1962,10 @@ export type DrcRuleClass =
   | "constraint"
   | "connectivity"
   | "manufacturability"
-  | "structural";
+  | "structural"
+  | "dfm"
+  | "electrical"
+  | "signal-integrity";
 
 /**
  * Stable, machine-readable violation codes. P1 codes are implemented now; P2
@@ -1763,12 +1985,27 @@ export type DrcRuleCode =
   | "UNCONNECTED_NET"
   | "NET_SHORT_CIRCUIT"
   | "TRACE_LAYER_MISMATCH"
+  | "PAD_LAYER_MISMATCH"
+  | "NETCLASS_TRACE_WIDTH"
+  | "NETCLASS_VIA_DIAMETER"
+  | "NETCLASS_VIA_DRILL"
+  | "HOLE_TO_BOARD_EDGE"
+  | "TRACK_DANGLING"
+  | "VIA_DANGLING"
+  | "CREEPAGE_DISTANCE"
+  | "TRACE_CURRENT_WIDTH"
+  | "DIFF_PAIR_GAP"
+  | "DIFF_PAIR_SKEW"
+  | "DIFF_PAIR_UNCOUPLED_LENGTH"
   | "PLACED_PART_MISSING_FOOTPRINT"
   | "FAB_TRACE_WIDTH"
   | "FAB_CLEARANCE"
   | "FAB_ANNULAR_RING"
   | "FAB_DRILL"
+  | "FAB_HOLE_TO_HOLE"
   | "FAB_PAD"
+  // --- Length matching (pcb.lengthTuning) ---
+  | "NET_LENGTH_OUT_OF_RANGE"
   // --- P2 (declared, not yet implemented) ---
   | "VIA_TO_VIA_CLEARANCE"
   | "PAD_TO_PAD_CLEARANCE"

@@ -16,14 +16,13 @@ import type { DrcViolationDraft } from "../types";
  */
 export function checkCopperPour(ctx: DrcContext): DrcViolationDraft[] {
   const view = ctx.projection.board.viewState;
-  if (!view || view.copperFillLayers.length === 0) return [];
   const proj = ctx.projection;
   const dr = ctx.designRules;
   const padNetIds = new Map(Object.entries(proj.padNets ?? {}));
   const out: DrcViolationDraft[] = [];
 
-  for (const layer of view.copperFillLayers) {
-    const pourNetId = view.copperFillPourNetIds[layer];
+  for (const layer of view?.copperFillLayers ?? []) {
+    const pourNetId = view?.copperFillPourNetIds[layer];
     if (!pourNetId) continue;
     const islands = buildCopperFillIslandReport({
       layer: layer as PcbCopperLayerId,
@@ -39,7 +38,7 @@ export function checkCopperPour(ctx: DrcContext): DrcViolationDraft[] {
       freeHoles: proj.freeHoles,
       freePads: proj.freePads,
       minThicknessMm: dr.minimums.traceWidthMm,
-      padConnection: view.copperFillPadConnection ?? "solid",
+      padConnection: view?.copperFillPadConnection ?? "solid",
     });
     const isolated = islands.filter((i) => !i.anchored);
     if (isolated.length === 0) continue;
@@ -57,6 +56,45 @@ export function checkCopperPour(ctx: DrcContext): DrcViolationDraft[] {
       anchors: [{ kind: "net", netId: pourNetId }],
       locationMm: largest.centerMm,
       layer: layer as PcbCopperLayerId,
+      measuredMm: largest.areaMm2,
+    });
+  }
+
+  // Explicit copper zones (audit B3-8): rendered + Gerber-exported but never
+  // pour-checked before. Same island analysis, anchored on the zone so ids
+  // don't collide across zones/layers.
+  for (const zone of proj.zones) {
+    if (!zone.netId || zone.polygonPointsMm.length < 3) continue;
+    const islands = buildCopperFillIslandReport({
+      layer: zone.layer,
+      outline: proj.board.outline,
+      placements: proj.placements,
+      traces: proj.traces,
+      vias: proj.vias,
+      pourNetId: zone.netId,
+      padNetIds,
+      clearanceMm: resolveCopperFillClearanceMm(dr.clearance),
+      copperToBoardEdgeMm: dr.clearance.copperToBoardEdgeMm,
+      cutouts: proj.board.cutouts,
+      freeHoles: proj.freeHoles,
+      freePads: proj.freePads,
+      minThicknessMm: dr.minimums.traceWidthMm,
+      padConnection: zone.connection ?? view?.copperFillPadConnection ?? "solid",
+      clipPolygonMm: zone.polygonPointsMm,
+    });
+    const isolated = islands.filter((i) => !i.anchored);
+    if (isolated.length === 0) continue;
+    const largest = isolated.reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a));
+    const totalMm2 = isolated.reduce((sum, i) => sum + i.areaMm2, 0);
+    const netName = ctx.netNames[zone.netId] ?? zone.netName ?? zone.netId;
+    out.push({
+      code: "ISOLATED_COPPER_ISLAND",
+      ruleClass: "structural",
+      severity: "warning",
+      message: `${isolated.length} isolated ${netName} zone island${isolated.length > 1 ? "s" : ""} on ${zone.layer} (${totalMm2.toFixed(1)} mm² total) connect to no same-net pad — floating/dead copper`,
+      anchors: [{ kind: "zone", zoneId: zone.id }],
+      locationMm: largest.centerMm,
+      layer: zone.layer,
       measuredMm: largest.areaMm2,
     });
   }

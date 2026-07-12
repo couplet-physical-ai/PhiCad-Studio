@@ -254,6 +254,7 @@ describe("designer PCB view-state persistence", () => {
         netClasses: baseProj!.board.netClasses.map((c) => ({
           ...c,
           clearanceMm: 0.6,
+          diffPairGapMm: 0.15,
         })),
         boardThicknessMm: 2.0,
       }),
@@ -266,6 +267,40 @@ describe("designer PCB view-state persistence", () => {
     expect(proj?.board.designRules.minimums.holeToHoleMm).toBe(0.4);
     expect(proj?.board.boardThicknessMm).toBe(2.0);
     expect(proj?.board.netClasses[0]?.clearanceMm).toBe(0.6);
+    expect(proj?.board.netClasses[0]?.diffPairGapMm).toBe(0.15);
+  });
+
+  test("new DRC/electrical fields survive save/reload (review blocker)", async () => {
+    const { sdk, designId } = await createDesignerSdk("pcb-design-rules-new");
+    const baseProj = await sdk.getPcbProjection(designId);
+    const base = baseProj!.board.designRules;
+    const result = await sdk.dispatchCommand(
+      designId,
+      envelope(designId, "cmd-rules-new", 0, {
+        type: "pcb_set_design_rules",
+        designRules: {
+          clearance: { ...base.clearance, holeToBoardEdgeMm: 0.35 },
+          minimums: { ...base.minimums, clearanceMm: 0.15 },
+          electrical: { tempRiseC: 20, copperWeightOz: 2 },
+        },
+        netClasses: baseProj!.board.netClasses.map((c) => ({
+          ...c,
+          voltageV: 400,
+          currentA: 3,
+        })),
+      }),
+    );
+    expect(result.ok).toBe(true);
+
+    const proj = await sdk.getPcbProjection(designId);
+    // These were silently stripped by parseDesignRules/parseNetClass before the
+    // fix, making the P5 hole-edge, P6 floor, and P10 electrical checks inert.
+    expect(proj?.board.designRules.clearance.holeToBoardEdgeMm).toBe(0.35);
+    expect(proj?.board.designRules.minimums.clearanceMm).toBe(0.15);
+    expect(proj?.board.designRules.electrical?.tempRiseC).toBe(20);
+    expect(proj?.board.designRules.electrical?.copperWeightOz).toBe(2);
+    expect(proj?.board.netClasses[0]?.voltageV).toBe(400);
+    expect(proj?.board.netClasses[0]?.currentA).toBe(3);
   });
 
   test("pcb_set_view_state does not create undo history entries", async () => {
@@ -382,6 +417,119 @@ describe("designer PCB view-state persistence", () => {
     expect(proj?.board.perNetClassAssignments).toEqual({
       "net-power": "power",
     });
+  });
+
+  test("lengthMatchGroups round-trip: persist, drop malformed, clear", async () => {
+    const { sdk, server, designId } = await createDesignerHttp(
+      "pcb-length-groups-http",
+    );
+    const rev0 = (await sdk.getPcbProjection(designId))?.revision ?? null;
+    // Through the real parser: one valid group, one malformed (no name), one
+    // with a bad absolute target — only the valid one persists.
+    const res = await postCommand(server, designId, rev0, {
+      type: "pcb_set_design_rules",
+      lengthMatchGroups: [
+        {
+          id: "ddr",
+          name: "DDR data",
+          netIds: ["n1", "n2", ""],
+          target: { kind: "longest" },
+          toleranceMm: 0.5,
+        },
+        // Malformed on purpose (no name) — the store must drop it.
+        { id: "broken", netIds: ["n3"] } as unknown as {
+          id: string;
+          name: string;
+          netIds: string[];
+          target: { kind: "longest" };
+          toleranceMm: number;
+        },
+        {
+          id: "clk",
+          name: "CLK",
+          netIds: ["n4"],
+          target: { kind: "absolute", mm: -5 },
+          toleranceMm: 0.1,
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+
+    const proj = await sdk.getPcbProjection(designId);
+    expect(proj?.board.lengthMatchGroups).toEqual([
+      {
+        id: "ddr",
+        name: "DDR data",
+        netIds: ["n1", "n2"], // empty net id dropped
+        target: { kind: "longest" },
+        toleranceMm: 0.5,
+      },
+    ]);
+
+    // Other rule edits leave the groups untouched (omitted = unchanged).
+    const rev1 = (await sdk.getPcbProjection(designId))?.revision ?? null;
+    await postCommand(server, designId, rev1, {
+      type: "pcb_set_design_rules",
+      boardThicknessMm: 2.0,
+    });
+    const kept = await sdk.getPcbProjection(designId);
+    expect(kept?.board.lengthMatchGroups?.length).toBe(1);
+
+    // Empty array clears the field entirely.
+    const rev2 = (await sdk.getPcbProjection(designId))?.revision ?? null;
+    await postCommand(server, designId, rev2, {
+      type: "pcb_set_design_rules",
+      lengthMatchGroups: [],
+    });
+    const cleared = await sdk.getPcbProjection(designId);
+    expect(cleared?.board.lengthMatchGroups).toBeUndefined();
+  });
+
+  test("drcRules round-trip: valid rule persists, malformed-area rule dropped (review H1)", async () => {
+    const { sdk, server, designId } = await createDesignerHttp(
+      "pcb-drc-rules-http",
+    );
+    const rev0 = (await sdk.getPcbProjection(designId))?.revision ?? null;
+    const res = await postCommand(server, designId, rev0, {
+      type: "pcb_set_design_rules",
+      drcRules: [
+        {
+          id: "bga",
+          name: "BGA fanout",
+          enabled: true,
+          priority: 10,
+          scopes: [
+            {
+              kind: "area",
+              polygonMm: [
+                { x: 0, y: 0 },
+                { x: 5, y: 0 },
+                { x: 5, y: 5 },
+              ],
+            },
+          ],
+          constraint: { kind: "clearance", mm: 0.1 },
+        },
+        // Malformed area (< 3 points) — the store must drop the whole rule so
+        // the resolver never pushes an undefined polygon (which would crash
+        // pointInPolygon on the next DRC run).
+        {
+          id: "broken",
+          name: "broken area",
+          enabled: true,
+          priority: 1,
+          scopes: [{ kind: "area", polygonMm: [{ x: 0, y: 0 }] }],
+          constraint: { kind: "clearance", mm: 0.2 },
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+
+    const proj = await sdk.getPcbProjection(designId);
+    // Only the well-formed rule survives; the malformed-area rule is dropped so
+    // the resolver never receives an undefined polygon (crash guard, review H1).
+    expect(proj?.board.drcRules?.map((r) => r.id)).toEqual(["bga"]);
+    expect(proj?.board.drcRules?.[0]?.scopes?.[0]?.kind).toBe("area");
   });
 
   test("a new trace on an assigned net adopts that class's width (HTTP, apply-at-creation)", async () => {
