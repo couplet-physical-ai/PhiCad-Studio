@@ -252,6 +252,7 @@ function scoreComponent(
   query: string,
   normalized: Record<string, string | string[]>,
   familyHints?: { categoryTags: string[]; avoidTags: string[] },
+  exactQueries?: string[],
 ): { score: number; reasons: string[] } {
   const reasons: string[] = [];
   let score = 0;
@@ -260,15 +261,30 @@ function scoreComponent(
   const name = component.name.toLowerCase();
   const desc = component.description.toLowerCase();
   const tags = new Set(component.tags.map((t) => t.toLowerCase()));
-  if (q && name === q) {
-    score += 5;
-    reasons.push("name exact match");
-  } else if (q && name.includes(q)) {
-    score += 3;
-    reasons.push("name contains query");
-  } else if (q && desc.includes(q)) {
-    score += 1.5;
-    reasons.push("description contains query");
+  // Name matching runs per candidate query (original + family-rewritten), NOT
+  // against the concatenated token soup used below: "led" must score name-exact
+  // on the generic "LED" (+5) so it beats "IR LED 5 mm" (+3 contains) — the
+  // same trap class as LDR-vs-resistor, but on the name-bonus side.
+  const nameCandidates = (exactQueries?.length ? exactQueries : [query])
+    .map((candidate) => candidate.trim().toLowerCase())
+    .filter(Boolean);
+  let nameScore = 0;
+  let nameReason: string | null = null;
+  for (const candidate of nameCandidates) {
+    if (name === candidate && nameScore < 5) {
+      nameScore = 5;
+      nameReason = "name exact match";
+    } else if (name.includes(candidate) && nameScore < 3) {
+      nameScore = 3;
+      nameReason = "name contains query";
+    } else if (desc.includes(candidate) && nameScore < 1.5) {
+      nameScore = 1.5;
+      nameReason = "description contains query";
+    }
+  }
+  if (nameReason) {
+    score += nameScore;
+    reasons.push(nameReason);
   }
   if (queryTokens.length > 0) {
     let matchedTokens = 0;
@@ -356,10 +372,16 @@ async function searchAndRankComponents(
       const queryForScore = isListAll ? "" : [plan.originalQuery, plan.rewrittenQuery, plan.tags.join(" ")].join(" ");
       const s = isListAll
         ? { score: 1 + (component.isBuiltin ? 0.2 : 0), reasons: ["listed (no query)"] }
-        : scoreComponent(component, queryForScore, plan.normalized, {
-            categoryTags: plan.familyCategoryTags,
-            avoidTags: plan.familyAvoidTags,
-          });
+        : scoreComponent(
+            component,
+            queryForScore,
+            plan.normalized,
+            {
+              categoryTags: plan.familyCategoryTags,
+              avoidTags: plan.familyAvoidTags,
+            },
+            [plan.originalQuery, plan.rewrittenQuery],
+          );
       return {
         componentId: component.id,
         name: component.name,

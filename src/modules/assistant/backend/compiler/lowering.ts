@@ -1,10 +1,18 @@
 /**
  * Lowering: ResolvedNetlist → CompiledPlan.
  *
- * Pure/deterministic data transform (no SDK). Decides a grid layout, splits nets
- * into pin-to-pin wires vs power-rail ports, and reports any part whose role did
- * not resolve to a library component (installed-parts-only guardrail — the caller
- * flags/imports rather than substituting a wrong part).
+ * Pure/deterministic data transform (no SDK). Decides a per-block column layout,
+ * splits nets into pin-to-pin wires vs power-rail ports, and reports any part
+ * whose role did not resolve to a library component (installed-parts-only
+ * guardrail — the caller flags/imports rather than substituting a wrong part).
+ *
+ * Layout invariant: a wire's auto-route must never pass through a foreign pin —
+ * pin-on-wire is a junction (standard EDA semantics), so a straight route
+ * through a sibling pin silently shorts it into the net (a one-row grid did
+ * exactly that: R.2→LED.A ran straight through LED.K). Blocks therefore get one
+ * COLUMN each with their parts stacked vertically: intra-block routes bend
+ * inside the column's corridor, and power-flag stubs (8 mm, placed on the pin's
+ * outward side) stay clear of the neighbouring column's pins and wires.
  *
  * The plan is still symbolic: wires reference pins by {handle, pin}. Turning those
  * into real pin ids happens at APPLY time (P1.2b), after placement lands — because
@@ -48,30 +56,55 @@ export interface LowerOptions {
   origin?: { x: number; y: number };
   /** Grid pitch in nm (default 20 mm). */
   pitchNm?: number;
+  /** Block columns per row (default 6); a full row wraps below the tallest block. */
   columns?: number;
 }
 
 const GROUND_RE = /^(gnd|ground)$/i;
+
+/** Block id from a namespaced part handle ("led0.R" → "led0"). */
+function blockIdOf(handle: string): string {
+  const dot = handle.indexOf(".");
+  return dot === -1 ? handle : handle.slice(0, dot);
+}
 
 export function lowerNetlist(netlist: ResolvedNetlist, opts: LowerOptions = {}): CompiledPlan {
   const origin = opts.origin ?? { x: 0, y: 0 };
   const pitchNm = opts.pitchNm ?? 20_000_000;
   const columns = Math.max(1, opts.columns ?? 6);
 
-  const placements: PlacementOp[] = [];
   const unresolvedRoles: string[] = [];
-  for (const part of netlist.parts) {
-    if (!part.componentId) {
-      unresolvedRoles.push(part.role);
-      continue;
-    }
-    const slot = placements.length;
+  const placeable = netlist.parts.filter((part) => {
+    if (part.componentId) return true;
+    unresolvedRoles.push(part.role);
+    return false;
+  });
+
+  // One column per block (first-appearance order), parts stacked top-down.
+  const blockColumn = new Map<string, number>();
+  const blockSize = new Map<string, number>();
+  for (const part of placeable) {
+    const blockId = blockIdOf(part.handle);
+    if (!blockColumn.has(blockId)) blockColumn.set(blockId, blockColumn.size);
+    blockSize.set(blockId, (blockSize.get(blockId) ?? 0) + 1);
+  }
+  const tallest = Math.max(1, ...blockSize.values());
+
+  const placements: PlacementOp[] = [];
+  const rowInBlock = new Map<string, number>();
+  for (const part of placeable) {
+    const blockId = blockIdOf(part.handle);
+    const blockIdx = blockColumn.get(blockId)!;
+    const row = rowInBlock.get(blockId) ?? 0;
+    rowInBlock.set(blockId, row + 1);
     placements.push({
       handle: part.handle,
-      componentId: part.componentId,
+      componentId: part.componentId!,
       positionNm: {
-        x: origin.x + (slot % columns) * pitchNm,
-        y: origin.y + Math.floor(slot / columns) * pitchNm,
+        x: origin.x + (blockIdx % columns) * pitchNm,
+        y:
+          origin.y +
+          (Math.floor(blockIdx / columns) * tallest + row) * pitchNm,
       },
       value: part.value,
       refPrefix: part.refPrefix,

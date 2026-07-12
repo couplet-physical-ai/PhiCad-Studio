@@ -69,7 +69,7 @@ export function makeDesignerCompileCircuitTool(
         "own pin-accurate internal wiring and part values (Ohm's law etc.) are computed deterministically, " +
         "so you connect only a few semantic ports and never touch pins. Part roles resolve to INSTALLED " +
         "library components; a missing role is reported (import it) — parts are never substituted. The " +
-        "composed result is ERC-checked and auto-applied as a single undoable batch. " +
+        "composed result is ERC-checked and auto-applied in one pass (revertible step-by-step via designer undo). " +
         `Available block recipes: ${recipes} (led_indicator ports: IN, GND; params: supplyV, vf, currentA). ` +
         "Connect nets by port ref \"<blockId>.<PORT>\" (e.g. \"led0.IN\"); name your vcc/gnd rails in `power`.",
       inputSchema: {

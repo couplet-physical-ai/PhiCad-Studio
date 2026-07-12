@@ -5,9 +5,11 @@
  * ids itself (types.ts:1069), so a compiled wire cannot be pre-resolved — we
  * place first, collect each `createdEntityId`, re-read the projection to learn
  * the real pin ids, then resolve every symbolic {handle, pin} and dispatch the
- * wires. All commands share one `groupId` so the whole compiled circuit is a
- * single undo. Revision is threaded through every dispatch (optimistic
- * concurrency); a mid-run conflict aborts the remaining wiring.
+ * wires. All commands share one `groupId` (dataset-capture attribution — history
+ * grouping is NOT wired to it yet, so undo is per-command) and run under the
+ * shared UI history session, so the user can step back through a compiled
+ * circuit with normal undo. Revision is threaded through every dispatch
+ * (optimistic concurrency); a mid-run conflict aborts the remaining wiring.
  */
 
 import type {
@@ -19,7 +21,10 @@ import { planNetConnect } from "../tools/schematic-targeting";
 import type { NetlistPin } from "./ir";
 import type { CompiledPlan } from "./lowering";
 
-const COMPILER_SESSION_ID = "assistant-compiler-session";
+// Designer history is per-session; the UI and every assistant write tool share
+// this id (designer-tools.ts AI_DESIGNER_SESSION_ID / useDesignerWorkspace.ts).
+// A private session here would make compiled circuits invisible to UI undo.
+const COMPILER_SESSION_ID = "designer-ui-session";
 
 /** Narrow slice of the DesignerSDK the compiler apply path needs. */
 export type DesignerApplyPort = Pick<
@@ -116,7 +121,9 @@ export async function applyCompiledPlan(
   }
   const placedCount = Object.keys(handleToPartId).length;
 
-  // 2. Re-read the now-committed projection to learn real pin ids.
+  // 2. Re-read the now-committed projection to learn real pin ids. Reused for
+  // the power-port planning below too: wires dispatched in between don't move
+  // pins, and planNetConnect only needs pin worldPosition + owner part.
   const projection = await designer.getSchematicProjection(designId);
   if (!projection) {
     errors.push("Schematic projection unavailable after placement.");

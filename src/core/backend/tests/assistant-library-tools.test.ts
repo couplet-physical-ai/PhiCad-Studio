@@ -14,6 +14,11 @@ const COMPONENTS: LibraryComponent[] = [
   // plain resistor query used to resolve here (alphabetical tie-break). It is a
   // sensor and must lose to the generic Resistor.
   component("openpcb.core.sensor.ldr", "LDR Photoresistor", ["sensor", "light", "photoresistor", "ldr"]),
+  // Regression fixture (S3 smoke): led-tagged and alphabetically before "LED".
+  // A plain "led" query used to tie every led-tagged part at the token score
+  // (the name-exact bonus compared against the concatenated query soup) and the
+  // alphabetical tie-break picked this INFRARED part over the generic LED.
+  component("openpcb.core.opto.ir-led-5mm", "IR LED 5 mm", ["opto", "led", "infrared"]),
 ];
 
 interface SearchOutput {
@@ -47,6 +52,16 @@ describe("assistant library tools", () => {
     expect(data.rewrittenQuery).toBe("led");
     expect(data.results[0]?.componentId).toBe("openpcb.core.opto.led");
     expect(data.normalizedRequirements.attributes).toContain("color:red");
+  });
+
+  test("search prefers generic LED over IR LED for a plain led query", async () => {
+    const tool = makeLibrarySearchComponentsTool(fakeCtx()) as unknown as AiTool<unknown, unknown>;
+
+    const result = await tool.execute(execCtx(), { query: "led", limit: 3 });
+    const data = result.data as SearchOutput;
+
+    expect(result.ok).toBe(true);
+    expect(data.results[0]?.componentId).toBe("openpcb.core.opto.led");
   });
 
   test("search resolves order-insensitive transistor query", async () => {

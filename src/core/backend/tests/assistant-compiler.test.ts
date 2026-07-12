@@ -118,7 +118,9 @@ describe("circuit compiler lowering", () => {
   test("lowers a resolved netlist to placements, wires, and power ports", () => {
     const plan = lowerNetlist(expandCircuit(twoLedCircuit(), RESOLVE));
 
-    // Four placed parts on a deterministic grid (20 mm pitch, from origin).
+    // Four placed parts, one column per block (20 mm pitch, from origin):
+    // parts stack vertically inside their block so intra-block auto-routes
+    // never run straight through a sibling pin (pin-on-wire = junction).
     expect(plan.placements.map((p) => p.handle)).toEqual([
       "led0.R",
       "led0.D",
@@ -126,7 +128,9 @@ describe("circuit compiler lowering", () => {
       "led1.D",
     ]);
     expect(plan.placements[0]?.positionNm).toEqual({ x: 0, y: 0 });
-    expect(plan.placements[1]?.positionNm).toEqual({ x: 20_000_000, y: 0 });
+    expect(plan.placements[1]?.positionNm).toEqual({ x: 0, y: 20_000_000 });
+    expect(plan.placements[2]?.positionNm).toEqual({ x: 20_000_000, y: 0 });
+    expect(plan.placements[3]?.positionNm).toEqual({ x: 20_000_000, y: 20_000_000 });
     expect(plan.placements[0]?.componentId).toBe("openpcb.core.passive.resistor");
     expect(plan.unresolvedRoles).toEqual([]);
 
