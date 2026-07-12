@@ -135,6 +135,40 @@ describe("compile_circuit tool", () => {
     expect(result.warnings[0]).toMatch(/Unknown block recipe/);
   });
 
+  test("floating block ports and dropped 1-pin nets flag the result partial", async () => {
+    // LLM-smoke regression (S3): the model wired only per-LED drive nets
+    // (1 pin each) and never referenced the GND ports — the circuit applied
+    // "clean" but every cathode floated and the rails were absent.
+    const { sdk, state } = makeFakeDesigner();
+    const tool = makeDesignerCompileCircuitTool(
+      fakeCtx(fakeLibrary(COMPONENTS), sdk),
+      fakeResolver(),
+    ) as unknown as AiTool<unknown, unknown>;
+
+    const ir: CircuitIr = {
+      version: 1,
+      blocks: [
+        { id: "led0", recipe: "led_indicator" },
+        { id: "led1", recipe: "led_indicator" },
+      ],
+      nets: [
+        { name: "CTRL0", ports: ["led0.IN"] },
+        { name: "CTRL1", ports: ["led1.IN"] },
+      ],
+      power: { vcc: "+5V", gnd: "GND" },
+    };
+    const result = await tool.execute(execCtx(), ir);
+    const data = result.data as CompileCircuitData;
+
+    expect(data.status).toBe("applied"); // parts + internal wires still land
+    expect(state.parts).toHaveLength(4);
+    expect(result.ok).toBe(false); // ...but the result is flagged, not "clean"
+    expect(result.status).toBe("partial");
+    expect(result.warnings.some((w) => w.includes('"CTRL0"'))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("led0.GND"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("led1.GND"))).toBe(true);
+  });
+
   test("ERC errors on the composed result surface in the tool output (ok=false)", async () => {
     const { sdk } = makeFakeDesigner({
       ercErrors: [{ code: "UNCONNECTED_INPUT_PIN", message: "U1 pin 3 floating" }],

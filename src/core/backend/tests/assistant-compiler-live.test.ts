@@ -250,5 +250,38 @@ describe("assistant compiler — live backend (S3)", () => {
       expect(bom.get(RESISTOR_ID)?.value).toBe("330Ω");
       expect(bom.get(LED_ID)?.quantity).toBe(5);
     });
+
+    test("recompile into a non-empty design offsets below existing parts (no stacking shorts)", async () => {
+      const design = await designer.createDesign({ name: "Live additive recompile" });
+      const tool = makeDesignerCompileCircuitTool(toolCtx(), stubResolver()) as unknown as AiTool<
+        unknown,
+        unknown
+      >;
+
+      const first = await tool.execute(execCtx(), { ...fiveLedCircuit(), designId: design.id });
+      expect((first.data as CompileCircuitData).status).toBe("applied");
+      const second = await tool.execute(execCtx(), { ...fiveLedCircuit(), designId: design.id });
+      expect((second.data as CompileCircuitData).status).toBe("applied");
+      expect((second.data as CompileCircuitData).ercErrors).toEqual([]);
+
+      const snapshot = await designer.getProjectionAndErc(design.id);
+      const { projection, erc } = snapshot!;
+      expect(projection.parts).toHaveLength(20);
+      // The second grid must sit strictly below the first — no coincident parts
+      // (stacked pins junction-merge the two compiles into ERC-invisible shorts).
+      const positions = new Set(
+        projection.parts.map((p) => `${p.positionNm.x},${p.positionNm.y}`),
+      );
+      expect(positions.size).toBe(20);
+      // Same rail names union on purpose; every internal net stays pairwise.
+      const vcc = projection.nets.find((n) => n.name === "VCC");
+      const gnd = projection.nets.find((n) => n.name === "GND");
+      expect(vcc?.pinIds).toHaveLength(10);
+      expect(gnd?.pinIds).toHaveLength(10);
+      const internal = projection.nets.filter((n) => n.name !== "VCC" && n.name !== "GND");
+      expect(internal).toHaveLength(10);
+      for (const net of internal) expect(net.pinIds).toHaveLength(2);
+      expect(erc.summary.errors).toBe(0);
+    });
   });
 });

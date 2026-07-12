@@ -149,6 +149,22 @@ describe("circuit compiler lowering", () => {
     expect(plan.placements).toEqual([]);
     expect(plan.unresolvedRoles).toEqual(["resistor", "led", "resistor", "led"]);
   });
+
+  test("warns on dropped 1-pin nets instead of silently shrinking the circuit", () => {
+    // LLM-smoke regression (S3): per-LED "drive" nets with a single port ref
+    // used to vanish without a trace, leaving resistors floating while the
+    // tool reported a clean apply.
+    const ir = {
+      version: 1 as const,
+      blocks: [{ id: "led0", recipe: "led_indicator" }],
+      nets: [{ name: "CTRL0", ports: ["led0.IN"] }],
+      power: { vcc: "+5V", gnd: "GND" },
+    };
+    const plan = lowerNetlist(expandCircuit(ir, RESOLVE));
+    expect(plan.wires.map((w) => w.net)).toEqual(["led0.n0"]); // internal only
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain('"CTRL0"');
+  });
 });
 
 // Minimal stateful DesignerSDK fake: models place_part (assigns id + pins from a

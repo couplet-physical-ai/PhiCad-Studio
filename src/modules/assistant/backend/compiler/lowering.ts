@@ -50,6 +50,8 @@ export interface CompiledPlan {
   assumptions: string[];
   /** Roles that did not resolve to a component id — the circuit is incomplete. */
   unresolvedRoles: string[];
+  /** Structural IR issues that silently reduce the circuit (e.g. dropped 1-pin nets). */
+  warnings: string[];
 }
 
 export interface LowerOptions {
@@ -59,6 +61,8 @@ export interface LowerOptions {
   /** Block columns per row (default 6); a full row wraps below the tallest block. */
   columns?: number;
 }
+
+export const DEFAULT_PITCH_NM = 20_000_000;
 
 const GROUND_RE = /^(gnd|ground)$/i;
 
@@ -70,7 +74,7 @@ function blockIdOf(handle: string): string {
 
 export function lowerNetlist(netlist: ResolvedNetlist, opts: LowerOptions = {}): CompiledPlan {
   const origin = opts.origin ?? { x: 0, y: 0 };
-  const pitchNm = opts.pitchNm ?? 20_000_000;
+  const pitchNm = opts.pitchNm ?? DEFAULT_PITCH_NM;
   const columns = Math.max(1, opts.columns ?? 6);
 
   const unresolvedRoles: string[] = [];
@@ -113,6 +117,7 @@ export function lowerNetlist(netlist: ResolvedNetlist, opts: LowerOptions = {}):
 
   const wires: WireOp[] = [];
   const powerPorts: PowerPortOp[] = [];
+  const warnings: string[] = [];
   for (const net of netlist.nets) {
     if (net.isPower) {
       if (net.pins.length === 0) continue;
@@ -125,8 +130,14 @@ export function lowerNetlist(netlist: ResolvedNetlist, opts: LowerOptions = {}):
       });
     } else if (net.pins.length >= 2) {
       wires.push({ net: net.name, pins: net.pins });
+    } else {
+      // The IR asked for a connection that cannot exist — surface it instead of
+      // quietly building a smaller circuit (a 1-pin "drive" net is usually a
+      // mis-named rail or a missing second port ref).
+      warnings.push(
+        `Net "${net.name}" connects ${net.pins.length} pin(s) — dropped, nothing to wire.`,
+      );
     }
-    // A non-power net with <2 pins has nothing to connect — silently dropped.
   }
 
   return {
@@ -135,5 +146,6 @@ export function lowerNetlist(netlist: ResolvedNetlist, opts: LowerOptions = {}):
     powerPorts,
     assumptions: netlist.assumptions,
     unresolvedRoles,
+    warnings,
   };
 }

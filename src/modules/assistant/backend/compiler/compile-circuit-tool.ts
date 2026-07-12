@@ -23,10 +23,10 @@ import {
 import type { ContextResolver } from "../context-resolver";
 import { failedTool, resolveDesignForTool } from "../tools/designer-tools";
 import { resolveRoleToComponentId } from "../tools/library-tools";
-import { listBlockRecipes } from "./blocks";
+import { getBlockDef, listBlockRecipes } from "./blocks";
 import { expandCircuit } from "./expander";
 import type { CircuitIr, ResolvedNetlist } from "./ir";
-import { lowerNetlist } from "./lowering";
+import { DEFAULT_PITCH_NM, lowerNetlist } from "./lowering";
 import { applyCompiledPlan, type ApplyCompiledPlanResult } from "./apply";
 
 export type CompileCircuitInput = CircuitIr & { designId?: string };
@@ -181,8 +181,37 @@ export function makeDesignerCompileCircuitTool(
       const netlist = expandCircuit(input, {
         resolveRole: (role) => roleMap.get(role),
       });
-      const plan = lowerNetlist(netlist);
+      // Recompiling into a non-empty design must not stack the new grid on the
+      // old one: coincident pins junction-merge across compiles (shorts ERC
+      // can't see, since all-passive pins fire no rule). Drop the new block
+      // grid below everything already placed.
+      const existing = await designer.getSchematicProjection(designId);
+      const partYs = (existing?.parts ?? []).map((p) => p.positionNm.y);
+      const plan = lowerNetlist(
+        netlist,
+        partYs.length > 0
+          ? { origin: { x: 0, y: Math.max(...partYs) + 2 * DEFAULT_PITCH_NM } }
+          : {},
+      );
       const bom = buildBom(netlist);
+
+      // Unreferenced block ports float silently (ERC can't flag all-passive
+      // pins): an IR whose nets miss a port compiles "clean" but leaves e.g.
+      // every LED cathode disconnected. Flag them so the model fixes the IR
+      // instead of shipping a smaller circuit than it asked for.
+      const referenced = new Set(input.nets.flatMap((n) => n.ports));
+      const structuralWarnings = [...plan.warnings];
+      for (const block of input.blocks) {
+        for (const port of getBlockDef(block.recipe)?.ports ?? []) {
+          const ref = `${block.id}.${port}`;
+          if (!referenced.has(ref)) {
+            structuralWarnings.push(
+              `Block port "${ref}" is not connected to any net — it floats. ` +
+                "Add it to a net (or a rail net named in `power`).",
+            );
+          }
+        }
+      }
 
       // Installed-parts-only guardrail: flag missing roles, never substitute.
       if (plan.unresolvedRoles.length > 0) {
@@ -239,12 +268,16 @@ export function makeDesignerCompileCircuitTool(
         assumptions: plan.assumptions,
         bom,
       };
-      const ok = applyResult.status === "applied" && ercErrors.length === 0;
+      const ok =
+        applyResult.status === "applied" &&
+        ercErrors.length === 0 &&
+        structuralWarnings.length === 0;
       return {
         ok,
         data,
         sources: [],
         warnings: [
+          ...structuralWarnings,
           ...plan.assumptions,
           ...applyResult.errors,
           ...ercErrors.map((v) => `ERC ${v.code}: ${v.message}`),
@@ -260,6 +293,7 @@ export function makeDesignerCompileCircuitTool(
           portCount: applyResult.portCount,
           ercErrorCount: ercErrors.length,
           ercErrors: ercErrors.slice(0, 10),
+          structuralWarnings,
           assumptions: plan.assumptions,
         },
       };
