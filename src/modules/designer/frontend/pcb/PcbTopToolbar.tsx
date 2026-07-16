@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { PcbLayerCount } from "../../../../sdks";
 import {
-  AudioWaveform,
   Cable,
   CircleDot,
   Eye,
@@ -13,13 +12,11 @@ import {
   Network,
   Plus,
   Redo2,
-  Ruler,
   ScanSearch,
   ShieldAlert,
   Square,
   Type,
   Undo2,
-  Waypoints,
 } from "lucide-react";
 import type { PcbTraceSegmentMode } from "../../../../sdks";
 import type { RoutePosture } from "./tools/route-tool-state";
@@ -419,6 +416,8 @@ function AddDropdown({
   onTogglePadMode,
   textMode,
   onToggleTextMode,
+  commentMode,
+  onToggleCommentMode,
 }: {
   holeMode: boolean;
   onToggleHoleMode: () => void;
@@ -426,6 +425,9 @@ function AddDropdown({
   onTogglePadMode: () => void;
   textMode: boolean;
   onToggleTextMode: () => void;
+  /** Comment tool — only offered when the caller wires it. */
+  commentMode?: boolean;
+  onToggleCommentMode?: () => void;
 }): ReactElement {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -477,7 +479,22 @@ function AddDropdown({
       activeClass:
         "border-cyan-500 bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300",
     },
-  ] as const;
+    ...(onToggleCommentMode
+      ? [
+          {
+            key: "comment",
+            label: "Comment",
+            hotkey: "C",
+            title: "Comment (C) — click on the board to drop a comment pin",
+            Icon: MessageSquarePlus,
+            active: commentMode ?? false,
+            onToggle: onToggleCommentMode,
+            activeClass:
+              "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+          },
+        ]
+      : []),
+  ];
 
   const activeItem = items.find((it) => it.active);
   const ButtonIcon = activeItem ? activeItem.Icon : Plus;
@@ -526,6 +543,124 @@ function AddDropdown({
                 className={`font-mono ${it.active ? "text-violet-100" : "text-slate-400"}`}
               >
                 {it.hotkey}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Canvas-overlay toggles (Ratsnest / Guides / DRC markers) collapsed into a
+ * single dropdown — only things drawn on the board or that change canvas
+ * behavior. UI panels (e.g. DRC panel) stay as toolbar buttons. Rows stay open
+ * on click so several can be flipped at once; only an outside click closes.
+ * Lives in its own toolbar container.
+ */
+function ViewToggleDropdown({
+  ratsnestVisible,
+  onToggleRatsnest,
+  alignmentGuidesVisible,
+  onToggleAlignmentGuides,
+  drcMarkersVisible,
+  onToggleDrcMarkers,
+}: {
+  ratsnestVisible: boolean;
+  onToggleRatsnest: () => void;
+  alignmentGuidesVisible: boolean;
+  onToggleAlignmentGuides: () => void;
+  drcMarkersVisible: boolean;
+  onToggleDrcMarkers: () => void;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const rows = [
+    {
+      key: "ratsnest",
+      label: "Ratsnest",
+      hint: "⇧B",
+      Icon: Network,
+      on: ratsnestVisible,
+      onToggle: onToggleRatsnest,
+    },
+    {
+      key: "guides",
+      label: "Guides",
+      hint: "⇧G",
+      Icon: Magnet,
+      on: alignmentGuidesVisible,
+      onToggle: onToggleAlignmentGuides,
+    },
+    {
+      key: "markers",
+      label: "DRC markers",
+      hint: "",
+      Icon: drcMarkersVisible ? Eye : EyeOff,
+      on: drcMarkersVisible,
+      onToggle: onToggleDrcMarkers,
+    },
+  ];
+
+  const activeCount = rows.filter((r) => r.on).length;
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Show/hide ratsnest, guides, and DRC overlays"
+        aria-pressed={open}
+        className={`relative inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
+          open
+            ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+            : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+        }`}
+      >
+        <Eye className="h-3.5 w-3.5" />
+        View
+        {activeCount > 0 ? (
+          <span className="font-mono text-slate-400">{activeCount}</span>
+        ) : null}
+        <span aria-hidden className="text-slate-400">
+          ▾
+        </span>
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full z-30 mt-1 min-w-[190px] overflow-hidden rounded-md border border-slate-200 bg-white text-xs shadow-xl dark:border-slate-700 dark:bg-slate-950">
+          {rows.map((row) => (
+            <button
+              key={row.key}
+              type="button"
+              onClick={row.onToggle}
+              aria-pressed={row.on}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <row.Icon
+                className={`h-3.5 w-3.5 ${row.on ? "text-violet-600 dark:text-violet-300" : "text-slate-400"}`}
+              />
+              <span className="flex-1">{row.label}</span>
+              {row.hint ? (
+                <span className="font-mono text-[10px] text-slate-400">
+                  {row.hint}
+                </span>
+              ) : null}
+              <span
+                className={`text-[10px] font-semibold ${row.on ? "text-violet-600 dark:text-violet-300" : "text-slate-400"}`}
+              >
+                {row.on ? "On" : "Off"}
               </span>
             </button>
           ))}
@@ -590,298 +725,201 @@ export function PcbTopToolbar({
   onToggleTextMode,
 }: PcbTopToolbarProps): ReactElement {
   return (
-    <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200/90 bg-white/95 px-2 py-1 shadow-sm backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/90">
-      <button
-        type="button"
-        onClick={onUndo}
-        disabled={!canUndo}
-        title="Undo (⌘/Ctrl+Z)"
-        aria-label="Undo"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
-      >
-        <Undo2 className="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        onClick={onRedo}
-        disabled={!canRedo}
-        title="Redo (⌘/Ctrl+Shift+Z)"
-        aria-label="Redo"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
-      >
-        <Redo2 className="h-3.5 w-3.5" />
-      </button>
-
-      <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
-
-      <button
-        type="button"
-        onClick={onZoomOut}
-        title="Zoom out"
-        aria-label="Zoom out"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-      >
-        <Minus className="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        onClick={onZoomIn}
-        title="Zoom in"
-        aria-label="Zoom in"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-      >
-        <Plus className="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        onClick={onFit}
-        title="Fit"
-        aria-label="Fit board"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-      >
-        <ScanSearch className="h-3.5 w-3.5" />
-      </button>
-
-      <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
-
-      <button
-        type="button"
-        onClick={onFlipSelection}
-        disabled={selectedPlacementCount === 0}
-        title={
-          selectedPlacementCount === 0
-            ? "Select a placement, then F to flip it to the other side"
-            : `Flip ${selectedPlacementCount} placement${selectedPlacementCount === 1 ? "" : "s"} to the opposite side (F)`
-        }
-        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent dark:text-slate-300 dark:hover:bg-slate-800 dark:disabled:hover:bg-transparent"
-      >
-        <FlipHorizontal2 className="h-3.5 w-3.5" />
-        Flip part
-      </button>
-
-      <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
-
-      <button
-        type="button"
-        onClick={onToggleRouteMode}
-        title="Route trace (R)"
-        className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-          routeMode
-            ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
-            : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-        }`}
-        aria-pressed={routeMode}
-      >
-        <Cable className="h-3.5 w-3.5" />
-        Route (R)
-      </button>
-
-      <button
-        type="button"
-        onClick={onToggleMeasureMode}
-        title="Measure distance (M)"
-        className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-          measureMode
-            ? "border-sky-500 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
-            : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-        }`}
-        aria-pressed={measureMode}
-      >
-        <Ruler className="h-3.5 w-3.5" />
-        Measure (M)
-      </button>
-
-      {onToggleTuneMode ? (
+    <div className="inline-flex items-start gap-2">
+      <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200/90 bg-white/95 px-2 py-1 shadow-sm backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/90">
         <button
           type="button"
-          onClick={onToggleTuneMode}
-          title="Tune length — add serpentines to hit a length target (U)"
-          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-            tuneMode
-              ? "border-sky-500 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
-              : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-          }`}
-          aria-pressed={tuneMode}
+          onClick={onUndo}
+          disabled={!canUndo}
+          title="Undo (⌘/Ctrl+Z)"
+          aria-label="Undo"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
         >
-          <AudioWaveform className="h-3.5 w-3.5" />
-          Tune (U)
+          <Undo2 className="h-3.5 w-3.5" />
         </button>
-      ) : null}
-
-      {onToggleBundleMode ? (
         <button
           type="button"
-          onClick={onToggleBundleMode}
-          title="Bundle — route several pads in parallel lanes at once"
-          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-            bundleMode
-              ? "border-sky-500 bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
-              : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-          }`}
-          aria-pressed={bundleMode}
+          onClick={onRedo}
+          disabled={!canRedo}
+          title="Redo (⌘/Ctrl+Shift+Z)"
+          aria-label="Redo"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
         >
-          <Waypoints className="h-3.5 w-3.5" />
-          Bundle
+          <Redo2 className="h-3.5 w-3.5" />
         </button>
-      ) : null}
 
-      {onToggleCommentMode ? (
+        <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+
         <button
           type="button"
-          onClick={onToggleCommentMode}
-          title="Comment (C)"
+          onClick={onZoomOut}
+          title="Zoom out"
+          aria-label="Zoom out"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+        >
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onZoomIn}
+          title="Zoom in"
+          aria-label="Zoom in"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onFit}
+          title="Fit"
+          aria-label="Fit board"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+        >
+          <ScanSearch className="h-3.5 w-3.5" />
+        </button>
+
+        <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+
+        <button
+          type="button"
+          onClick={onFlipSelection}
+          disabled={selectedPlacementCount === 0}
+          title={
+            selectedPlacementCount === 0
+              ? "Select a placement, then F to flip it to the other side"
+              : `Flip ${selectedPlacementCount} placement${selectedPlacementCount === 1 ? "" : "s"} to the opposite side (F)`
+          }
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent dark:text-slate-300 dark:hover:bg-slate-800 dark:disabled:hover:bg-transparent"
+        >
+          <FlipHorizontal2 className="h-3.5 w-3.5" />
+          Flip part
+        </button>
+
+        <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+
+        <button
+          type="button"
+          onClick={onToggleRouteMode}
+          title="Route trace (R)"
           className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-            commentMode
+            routeMode
               ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
               : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
           }`}
-          aria-pressed={commentMode}
+          aria-pressed={routeMode}
         >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
-          Comment
+          <Cable className="h-3.5 w-3.5" />
+          Route (R)
         </button>
-      ) : null}
 
-      {routeMode ? (
-        <>
-          <button
-            type="button"
-            onClick={onToggleSegmentMode}
-            title="Toggle 45°/90° corner (Shift+Space)"
-            className="inline-flex h-7 items-center rounded-md border border-transparent px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            {segmentMode === "manhattan-45" ? "45°" : "90°"}
-          </button>
-          <button
-            type="button"
-            onClick={onCyclePosture}
-            title="Track posture: auto / axis-first / diagonal-first (/)"
-            className="inline-flex h-7 items-center rounded-md border border-transparent px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            {POSTURE_LABEL[posture]}
-          </button>
-          <WidthDropdown
-            activeWidthMm={activeWidthMm}
-            presets={tracePresets}
-            onPick={onPickWidth}
-          />
-          {layerCount >= 4 ? <LayerPairSelect /> : null}
-          {routeSessionActive ? (
-            <>
-              <ViaPresetDropdown
-                activeDiameterMm={viaDiameterMm}
-                activeDrillMm={viaDrillMm}
-                onPick={onPickViaPreset}
-              />
-              <ViaSizeDropdown
-                label="Ø"
-                hotkeyTitle="Via diameter (route-time override)"
-                activeMm={viaDiameterMm}
-                defaultMm={viaDiameterDefaultMm}
-                presets={viaDiameterPresets}
-                onPick={onPickViaDiameter}
-              />
-              <ViaSizeDropdown
-                label="⌀"
-                hotkeyTitle="Via drill (route-time override)"
-                activeMm={viaDrillMm}
-                defaultMm={viaDrillDefaultMm}
-                presets={viaDrillPresets}
-                onPick={onPickViaDrill}
-              />
-            </>
-          ) : null}
-        </>
-      ) : null}
+        {/*
+        Measure (M), Tune (U), and Bundle tools are hidden from the toolbar to
+        avoid overflow — their implementation + hotkeys stay wired via props.
+        Comment moved into the Add dropdown below.
+      */}
 
-      <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
-
-      <AddDropdown
-        holeMode={holeMode}
-        onToggleHoleMode={onToggleHoleMode}
-        padMode={padMode}
-        onTogglePadMode={onTogglePadMode}
-        textMode={textMode}
-        onToggleTextMode={onToggleTextMode}
-      />
-
-      <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
-
-      <button
-        type="button"
-        onClick={onToggleRatsnest}
-        title="Toggle ratsnest visibility (Shift+B)"
-        className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-          ratsnestVisible
-            ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
-            : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-        }`}
-        aria-pressed={ratsnestVisible}
-      >
-        <Network className="h-3.5 w-3.5" />
-        Ratsnest
-      </button>
-
-      <button
-        type="button"
-        onClick={onToggleAlignmentGuides}
-        title="Toggle alignment guides + snap (Shift+G)"
-        className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-          alignmentGuidesVisible
-            ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
-            : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-        }`}
-        aria-pressed={alignmentGuidesVisible}
-      >
-        <Magnet className="h-3.5 w-3.5" />
-        Guides
-      </button>
-
-      <button
-        type="button"
-        onClick={onToggleDrcPanel}
-        title="Toggle DRC panel"
-        className={`relative inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
-          drcPanelOpen
-            ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
-            : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-        }`}
-        aria-pressed={drcPanelOpen}
-      >
-        <ShieldAlert className="h-3.5 w-3.5" />
-        DRC
-        {drcErrorCount !== undefined && drcErrorCount > 0 ? (
-          <span
-            aria-hidden
-            className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white dark:ring-slate-900"
-          />
+        {routeMode ? (
+          <>
+            <button
+              type="button"
+              onClick={onToggleSegmentMode}
+              title="Toggle 45°/90° corner (Shift+Space)"
+              className="inline-flex h-7 items-center rounded-md border border-transparent px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              {segmentMode === "manhattan-45" ? "45°" : "90°"}
+            </button>
+            <button
+              type="button"
+              onClick={onCyclePosture}
+              title="Track posture: auto / axis-first / diagonal-first (/)"
+              className="inline-flex h-7 items-center rounded-md border border-transparent px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              {POSTURE_LABEL[posture]}
+            </button>
+            <WidthDropdown
+              activeWidthMm={activeWidthMm}
+              presets={tracePresets}
+              onPick={onPickWidth}
+            />
+            {layerCount >= 4 ? <LayerPairSelect /> : null}
+            {routeSessionActive ? (
+              <>
+                <ViaPresetDropdown
+                  activeDiameterMm={viaDiameterMm}
+                  activeDrillMm={viaDrillMm}
+                  onPick={onPickViaPreset}
+                />
+                <ViaSizeDropdown
+                  label="Ø"
+                  hotkeyTitle="Via diameter (route-time override)"
+                  activeMm={viaDiameterMm}
+                  defaultMm={viaDiameterDefaultMm}
+                  presets={viaDiameterPresets}
+                  onPick={onPickViaDiameter}
+                />
+                <ViaSizeDropdown
+                  label="⌀"
+                  hotkeyTitle="Via drill (route-time override)"
+                  activeMm={viaDrillMm}
+                  defaultMm={viaDrillDefaultMm}
+                  presets={viaDrillPresets}
+                  onPick={onPickViaDrill}
+                />
+              </>
+            ) : null}
+          </>
         ) : null}
-      </button>
 
-      <button
-        type="button"
-        onClick={onToggleDrcMarkers}
-        title={
-          drcMarkersVisible
-            ? "Hide DRC markers on the board"
-            : "Show DRC markers on the board"
-        }
-        aria-label={drcMarkersVisible ? "Hide DRC markers" : "Show DRC markers"}
-        aria-pressed={!drcMarkersVisible}
-        className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition-colors ${
-          drcMarkersVisible
-            ? "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-            : "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
-        }`}
-      >
-        {drcMarkersVisible ? (
-          <Eye className="h-3.5 w-3.5" />
-        ) : (
-          <EyeOff className="h-3.5 w-3.5" />
-        )}
-      </button>
+        <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
 
-      <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+        <AddDropdown
+          holeMode={holeMode}
+          onToggleHoleMode={onToggleHoleMode}
+          padMode={padMode}
+          onTogglePadMode={onTogglePadMode}
+          textMode={textMode}
+          onToggleTextMode={onToggleTextMode}
+          commentMode={commentMode}
+          onToggleCommentMode={onToggleCommentMode}
+        />
+
+        <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+
+        {/* DRC panel is a UI panel toggle (not a canvas overlay) — stays in the
+            toolbar; the red dot flags outstanding violations. */}
+        <button
+          type="button"
+          onClick={onToggleDrcPanel}
+          title="Toggle DRC panel"
+          className={`relative inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
+            drcPanelOpen
+              ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+              : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+          }`}
+          aria-pressed={drcPanelOpen}
+        >
+          <ShieldAlert className="h-3.5 w-3.5" />
+          DRC
+          {drcErrorCount !== undefined && drcErrorCount > 0 ? (
+            <span
+              aria-hidden
+              className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white dark:ring-slate-900"
+            />
+          ) : null}
+        </button>
+      </div>
+
+      {/* Canvas-overlay toggles live in their own container next to the toolbar. */}
+      <div className="inline-flex items-center rounded-lg border border-slate-200/90 bg-white/95 px-1.5 py-1 shadow-sm backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/90">
+        <ViewToggleDropdown
+          ratsnestVisible={ratsnestVisible}
+          onToggleRatsnest={onToggleRatsnest}
+          alignmentGuidesVisible={alignmentGuidesVisible}
+          onToggleAlignmentGuides={onToggleAlignmentGuides}
+          drcMarkersVisible={drcMarkersVisible}
+          onToggleDrcMarkers={onToggleDrcMarkers}
+        />
+      </div>
     </div>
   );
 }
