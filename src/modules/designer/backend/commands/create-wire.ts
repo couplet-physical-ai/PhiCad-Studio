@@ -14,7 +14,7 @@ import {
  * single L-bend; the obstacle-aware auto-router (Phase 4) replaces this default
  * at the command layer when `pointsNm` is omitted.
  */
-function normalizePath(
+export function normalizeWirePath(
   source: Point,
   target: Point,
   pointsNm: Point[] | undefined,
@@ -38,7 +38,7 @@ function normalizePath(
   return repairToManhattan(pointsNm, source, target);
 }
 
-function validatePath(path: Point[]): string | null {
+export function validateWirePath(path: Point[]): string | null {
   if (path.length < 2) {
     return "wire path must contain at least 2 points (source and target must differ)";
   }
@@ -96,8 +96,8 @@ export function buildCreateWirePayload(
       invalidReason: "source and target pins are at the same point",
     };
   }
-  const normalizedPoints = normalizePath(source, target, pointsNm);
-  const invalidReason = validatePath(normalizedPoints);
+  const normalizedPoints = normalizeWirePath(source, target, pointsNm);
+  const invalidReason = validateWirePath(normalizedPoints);
   if (invalidReason) {
     return { payload: null, invalidReason };
   }

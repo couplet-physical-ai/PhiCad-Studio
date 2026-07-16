@@ -193,6 +193,7 @@ async function blueStats(
 }
 
 interface MoveScene {
+  designId: string;
   canvas: ReturnType<Page["locator"]>;
   box: { x: number; y: number; width: number; height: number };
   /** Page coords of part A's body center (safe grab point). */
@@ -274,6 +275,7 @@ async function seedAndOpenScene(
   const pinSpanPx = pinDotA2.cx - pinDotA1.cx;
   expect(pinSpanPx).toBeGreaterThan(40); // sane zoom: 4 mm pin span on screen
   return {
+    designId,
     canvas,
     box,
     grabX: box.x + (pinDotA1.cx + pinDotA2.cx) / 2,
@@ -282,6 +284,26 @@ async function seedAndOpenScene(
     originCy: (pinDotA1.cy + pinDotA2.cy) / 2,
     pinSpanPx,
   };
+}
+
+interface WireShape {
+  pointsNm: Array<{ x: number; y: number }>;
+}
+
+/** Fetch the first (only) wire's geometry from the schematic projection. */
+async function fetchWire(
+  request: APIRequestContext,
+  designId: string,
+): Promise<WireShape> {
+  const response = await request.get(
+    `${API}/designer/designs/${designId}/projection/schematic`,
+  );
+  const body = (await response.json()) as {
+    data?: { projection?: { wires?: WireShape[] } };
+  };
+  const wire = body.data?.projection?.wires?.[0];
+  if (!wire) throw new Error("expected a wire in the projection");
+  return wire;
 }
 
 /** Slow the move commands + projection refetch (as on large designs / slower
@@ -408,6 +430,63 @@ test("a plain click selects the part without moving it", async ({
     ).toBeGreaterThan(5);
     await page.waitForTimeout(60);
   }
+});
+
+test("dragging a wire segment reshapes the wire while keeping its endpoints pinned", async ({
+  page,
+  request,
+}) => {
+  const scene = await seedAndOpenScene(
+    page,
+    request,
+    `Wire segment drag ${Date.now()}`,
+  );
+
+  // Precondition: a single straight 2-point wire between the two parts.
+  const before = await fetchWire(request, scene.designId);
+  expect(before.pointsNm.length).toBe(2);
+  const src = before.pointsNm[0]!;
+  const tgt = before.pointsNm[before.pointsNm.length - 1]!;
+
+  // Fit the whole schematic so both parts + the full wire are on-screen, then
+  // grab the wire's midpoint between part A's right pin (cluster 1) and part
+  // B's left pin (cluster 2) — well clear of every pin dot and body text.
+  await page.getByRole("button", { name: "Fit schematic" }).click();
+  await page.waitForTimeout(500);
+  const shot = await scene.canvas.screenshot();
+  const clusters = await blueClusters(page, shot);
+  expect(clusters.length).toBeGreaterThanOrEqual(4); // A(2 pins) + B(2 pins)
+  const aRight = clusters[1]!;
+  const bLeft = clusters[2]!;
+  const wireX = scene.box.x + (aRight.cx + bLeft.cx) / 2;
+  const wireY = scene.box.y + (aRight.cy + bLeft.cy) / 2;
+
+  await dragBy(page, wireX, wireY, 0, 120);
+
+  // The update_wire_geometry command dispatches async — wait for the wire to
+  // gain interior waypoints (a straight run becomes a 4-point staple).
+  await expect
+    .poll(
+      async () => (await fetchWire(request, scene.designId)).pointsNm.length,
+      { timeout: 5000 },
+    )
+    .toBeGreaterThan(2);
+
+  const after = await fetchWire(request, scene.designId);
+  // Endpoints stay welded to the same pins.
+  expect(after.pointsNm[0]).toEqual(src);
+  expect(after.pointsNm[after.pointsNm.length - 1]).toEqual(tgt);
+  // Every segment stays orthogonal (Manhattan).
+  for (let i = 1; i < after.pointsNm.length; i += 1) {
+    const a = after.pointsNm[i - 1]!;
+    const b = after.pointsNm[i]!;
+    expect(a.x === b.x || a.y === b.y).toBe(true);
+  }
+  // The interior run moved off the endpoints' row — the segment actually slid.
+  const movedOff = after.pointsNm
+    .slice(1, -1)
+    .some((p) => p.y !== src.y);
+  expect(movedOff).toBe(true);
 });
 
 test("an immediate re-grab while the previous move is still saving stays consistent", async ({

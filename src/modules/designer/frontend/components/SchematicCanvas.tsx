@@ -90,6 +90,11 @@ import { routeSchematicWire } from "../../../../shared/schematic-routing/schemat
 import { collectWireObstacles } from "../../../../shared/schematic-routing/wire-obstacles";
 import { computeWireCrossingGaps } from "../../../../shared/schematic-routing/crossing-gaps";
 import {
+  dragWireSegment,
+  wireSegmentAxis,
+  type SegmentAxis,
+} from "../../../../shared/schematic-routing/segment-drag";
+import {
   applyPendingMoveToProjection,
   mergePendingMoves,
   type PendingMoveState,
@@ -142,21 +147,38 @@ type ArmedPrimitive =
   | { kind: "net_portal"; portalText: string }
   | null;
 
-/** Move-drag state machine. ARMED on pointerdown over a part/primitive;
+/** Move-drag state machine. ARMED on pointerdown over a part/primitive/wire;
  *  becomes ACTIVE only once the pointer travels DRAG_THRESHOLD_PX on screen,
  *  so a plain click can never leave a sticky move behind. Lives in a ref
  *  (stable identity across pointermove steps — window listeners register once
- *  per gesture); `dragVersion` state drives re-renders. */
-interface DragMoveState {
+ *  per gesture); `dragVersion` state drives re-renders.
+ *
+ *  Two kinds share the same threshold/commit plumbing:
+ *   - "move": reposition selected parts/primitives (attached wires re-route).
+ *   - "wireSegment": slide one orthogonal wire segment perpendicular to its axis
+ *     (Flux-style), keeping the wire's pinned endpoints fixed. */
+interface DragCommonState {
   phase: "armed" | "active";
-  initialPartPositionsNm: Map<string, PointNm>;
-  initialPrimitivePositionsNm: Map<string, PointNm>;
   startScreenPx: { x: number; y: number };
   startPointerNm: PointNm;
   deltaNm: PointNm;
   /** Removes the gesture's window listeners + releases pointer capture. */
   cleanup: () => void;
 }
+interface DragMovePayload {
+  kind: "move";
+  initialPartPositionsNm: Map<string, PointNm>;
+  initialPrimitivePositionsNm: Map<string, PointNm>;
+}
+interface DragWireSegmentPayload {
+  kind: "wireSegment";
+  wireId: string;
+  segmentIndex: number;
+  /** The wire's polyline at gesture start; the drag is recomputed from it. */
+  basePointsNm: PointNm[];
+}
+type DragMovePayloadUnion = DragMovePayload | DragWireSegmentPayload;
+type DragMoveState = DragCommonState & DragMovePayloadUnion;
 
 interface WireSession {
   sourcePinId: string;
@@ -1210,7 +1232,10 @@ export const SchematicCanvas = forwardRef<
   const renderedPartPositionNm = useCallback(
     (part: DesignerPlacedPart): PointNm => {
       const state = dragRef.current;
-      const initial = state?.initialPartPositionsNm.get(part.id);
+      const initial =
+        state?.kind === "move"
+          ? state.initialPartPositionsNm.get(part.id)
+          : undefined;
       if (state && initial) {
         return {
           x: initial.x + state.deltaNm.x,
@@ -1226,7 +1251,10 @@ export const SchematicCanvas = forwardRef<
   const renderedPrimitivePositionNm = useCallback(
     (primitive: DesignerPrimitive): PointNm => {
       const state = dragRef.current;
-      const initial = state?.initialPrimitivePositionsNm.get(primitive.id);
+      const initial =
+        state?.kind === "move"
+          ? state.initialPrimitivePositionsNm.get(primitive.id)
+          : undefined;
       if (state && initial) {
         return {
           x: initial.x + state.deltaNm.x,
@@ -1352,13 +1380,23 @@ export const SchematicCanvas = forwardRef<
   );
 
   const hitWire = useCallback(
-    (worldNm: PointNm): { wire: DesignerWire; projectedNm: PointNm } | null => {
+    (
+      worldNm: PointNm,
+    ): {
+      wire: DesignerWire;
+      projectedNm: PointNm;
+      /** Index of the nearest segment (points[i]..points[i+1]). */
+      segmentIndex: number;
+      /** Axis of that segment, or null if it is degenerate/non-orthogonal. */
+      axis: SegmentAxis | null;
+    } | null => {
       if (!effectiveProjection) {
         return null;
       }
       const cursor = toMm(worldNm);
       let bestWire: DesignerWire | null = null;
       let bestProjected: PointNm | null = null;
+      let bestIndex = -1;
       let bestDistance = Number.POSITIVE_INFINITY;
 
       for (const wire of effectiveProjection.wires) {
@@ -1377,16 +1415,26 @@ export const SchematicCanvas = forwardRef<
             bestDistance = metric.distance;
             bestWire = wire;
             bestProjected = toNm(metric.projected);
+            bestIndex = index - 1;
           }
         }
       }
 
-      if (!bestWire || !bestProjected || bestDistance > WIRE_HIT_MM) {
+      if (
+        !bestWire ||
+        !bestProjected ||
+        bestIndex < 0 ||
+        bestDistance > WIRE_HIT_MM
+      ) {
         return null;
       }
+      const a = bestWire.pointsNm[bestIndex];
+      const b = bestWire.pointsNm[bestIndex + 1];
       return {
         wire: bestWire,
         projectedNm: bestProjected,
+        segmentIndex: bestIndex,
+        axis: a && b ? wireSegmentAxis(a, b) : null,
       };
     },
     [effectiveProjection],
@@ -1786,6 +1834,18 @@ export const SchematicCanvas = forwardRef<
     if (!effectiveProjection || !state || state.phase !== "active") {
       return new Map<string, PointNm[]>();
     }
+    if (state.kind === "wireSegment") {
+      return new Map<string, PointNm[]>([
+        [
+          state.wireId,
+          dragWireSegment(
+            state.basePointsNm,
+            state.segmentIndex,
+            state.deltaNm,
+          ),
+        ],
+      ]);
+    }
     return computeDragWireOverrides(
       effectiveProjection,
       state.initialPartPositionsNm,
@@ -1810,6 +1870,44 @@ export const SchematicCanvas = forwardRef<
       setDragVersion((v) => v + 1);
       const hasMovement = state.deltaNm.x !== 0 || state.deltaNm.y !== 0;
       if (!commit || state.phase !== "active" || !hasMovement) return;
+
+      if (state.kind === "wireSegment") {
+        const finalPoints = dragWireSegment(
+          state.basePointsNm,
+          state.segmentIndex,
+          state.deltaNm,
+        );
+        // dragWireSegment returns the base array unchanged on a no-op.
+        if (finalPoints === state.basePointsNm) return;
+        setPendingMove((prev) =>
+          mergePendingMoves(prev, {
+            partPositionsNm: new Map(),
+            primitivePositionsNm: new Map(),
+            wirePointsNm: new Map([[state.wireId, finalPoints]]),
+          }),
+        );
+        movesInFlightRef.current += 1;
+        moveChainRef.current = moveChainRef.current
+          .then(() =>
+            actions.dispatchCommandsBatch([
+              {
+                type: "update_wire_geometry",
+                wireId: state.wireId,
+                pointsNm: finalPoints,
+              },
+            ]),
+          )
+          .catch((err) =>
+            actions.setError(
+              err instanceof Error ? err.message : "Failed to move wire",
+            ),
+          )
+          .finally(() => {
+            movesInFlightRef.current -= 1;
+            if (movesInFlightRef.current === 0) setPendingMove(null);
+          });
+        return;
+      }
 
       const commands: DesignerCommand[] = [];
       const partPositionsNm = new Map<string, PointNm>();
@@ -1881,8 +1979,7 @@ export const SchematicCanvas = forwardRef<
     (
       event: InteractionEvent,
       worldNm: PointNm,
-      initialPartPositionsNm: Map<string, PointNm>,
-      initialPrimitivePositionsNm: Map<string, PointNm>,
+      payload: DragMovePayloadUnion,
     ) => {
       // Never two live gestures — cancel any leftover state first.
       finalizeDragRef.current(false);
@@ -1893,9 +1990,8 @@ export const SchematicCanvas = forwardRef<
       window.addEventListener("pointercancel", handleCancel);
       window.addEventListener("blur", handleCancel);
       dragRef.current = {
+        ...payload,
         phase: "armed",
-        initialPartPositionsNm,
-        initialPrimitivePositionsNm,
         startScreenPx: { x: event.screenPoint.x, y: event.screenPoint.y },
         startPointerNm: worldNm,
         deltaNm: { x: 0, y: 0 },
@@ -2225,12 +2321,11 @@ export const SchematicCanvas = forwardRef<
             }
           }
 
-          armDrag(
-            event,
-            worldNm,
+          armDrag(event, worldNm, {
+            kind: "move",
             initialPartPositionsNm,
             initialPrimitivePositionsNm,
-          );
+          });
           return;
         }
 
@@ -2243,12 +2338,28 @@ export const SchematicCanvas = forwardRef<
               nextSelection.wireIds.add(wireHit.wire.id);
             }
             setSelection(nextSelection);
-          } else {
-            setSelection({
-              partIds: new Set(),
-              wireIds: new Set([wireHit.wire.id]),
-              labelIds: new Set(),
-              primitiveIds: new Set(),
+            return;
+          }
+          marquee.cancelMarquee();
+          setWireSession(null);
+          setSelection({
+            partIds: new Set(),
+            wireIds: new Set([wireHit.wire.id]),
+            labelIds: new Set(),
+            primitiveIds: new Set(),
+          });
+          // Arm a segment drag: grab anywhere on an orthogonal segment and slide
+          // it perpendicular to its axis (Flux-style). Below-threshold gestures
+          // stay a plain select; the endpoints remain pinned to their pins.
+          if (wireHit.axis) {
+            armDrag(event, worldNm, {
+              kind: "wireSegment",
+              wireId: wireHit.wire.id,
+              segmentIndex: wireHit.segmentIndex,
+              basePointsNm: wireHit.wire.pointsNm.map((p) => ({
+                x: p.x,
+                y: p.y,
+              })),
             });
           }
           return;
@@ -2331,12 +2442,11 @@ export const SchematicCanvas = forwardRef<
             }
           }
 
-          armDrag(
-            event,
-            worldNm,
+          armDrag(event, worldNm, {
+            kind: "move",
             initialPartPositionsNm,
             initialPrimitivePositionsNm,
-          );
+          });
           return;
         }
 
@@ -2886,6 +2996,7 @@ export const SchematicCanvas = forwardRef<
   const dragTouchIndicators = useMemo(() => {
     const state = dragRef.current;
     if (!effectiveProjection || !state || state.phase !== "active") return [];
+    if (state.kind !== "move") return [];
     const delta = state.deltaNm;
     if (delta.x === 0 && delta.y === 0) return [];
     const draggedPartIds = new Set(state.initialPartPositionsNm.keys());
@@ -2948,7 +3059,11 @@ export const SchematicCanvas = forwardRef<
   const displayedPrimitives = useMemo(() => {
     if (!effectiveProjection) return [];
     const state = dragRef.current;
-    if (!state || state.initialPrimitivePositionsNm.size === 0) {
+    if (
+      !state ||
+      state.kind !== "move" ||
+      state.initialPrimitivePositionsNm.size === 0
+    ) {
       return effectiveProjection.primitives;
     }
     return effectiveProjection.primitives.map((primitive) => {

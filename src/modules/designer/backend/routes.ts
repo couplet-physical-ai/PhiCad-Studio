@@ -31,6 +31,7 @@ import type {
   RouteOptions,
   DesignerCreateWireCommand,
   DesignerCreateWireJunctionCommand,
+  DesignerUpdateWireGeometryCommand,
   DesignerDeleteEntityCommand,
   DesignerMirrorPartCommand,
   DesignerMovePartCommand,
@@ -1200,6 +1201,22 @@ function parseCreateWireJunctionCommand(
   };
 }
 
+function parseUpdateWireGeometryCommand(
+  raw: Record<string, unknown>,
+): DesignerUpdateWireGeometryCommand {
+  const wireId = asString(raw.wireId);
+  if (!wireId) {
+    throw new ValidationError("command.wireId must be a string");
+  }
+  if (!Array.isArray(raw.pointsNm) || raw.pointsNm.length < 2) {
+    throw new ValidationError("command.pointsNm must have at least 2 points");
+  }
+  const pointsNm = raw.pointsNm.map((point, index) =>
+    parsePointNm(point, `command.pointsNm[${index}]`),
+  );
+  return { type: "update_wire_geometry", wireId, pointsNm };
+}
+
 const PCB_TRACE_SEGMENT_MODES = new Set<string>([
   "manhattan-90",
   "manhattan-45",
@@ -2092,6 +2109,9 @@ function parseCommandEnvelope(body: unknown): DesignerCommandEnvelope {
       break;
     case "create_wire_junction":
       command = parseCreateWireJunctionCommand(commandRecord);
+      break;
+    case "update_wire_geometry":
+      command = parseUpdateWireGeometryCommand(commandRecord);
       break;
     case "move_part":
       command = parseMovePartCommand(commandRecord);

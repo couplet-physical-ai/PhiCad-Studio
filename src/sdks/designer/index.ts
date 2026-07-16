@@ -44,6 +44,7 @@ export type {
   DesignerCommentTodoStatus,
   DesignerCreateWireCommand,
   DesignerCreateWireJunctionCommand,
+  DesignerUpdateWireGeometryCommand,
   DesignerDeleteEntityCommand,
   DesignerDerivedNet,
   DesignerDesignRecord,

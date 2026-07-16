@@ -909,6 +909,206 @@ describe("designer commands hardening", () => {
     expect(waypointed.pointsNm[0]).toEqual({ x: -2_000_000, y: 1_000_000 });
   });
 
+  test("update_wire_geometry replaces a wire's polyline, forces endpoints onto pins, and is undoable", async () => {
+    isolateTestDb("designer-update-wire-geometry");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+
+    const design = await designerSdk.createDesign({ name: "Segment drag" });
+    const dispatch = async (
+      baseRevision: number,
+      command: DesignerCommandEnvelope["command"],
+    ) => {
+      const result = await designerSdk.dispatchCommand(design.id, {
+        commandId: crypto.randomUUID(),
+        sessionId: "seg-drag",
+        aggregateId: design.id,
+        baseRevision,
+        issuedAt: Date.now(),
+        command,
+      });
+      expect(result.ok).toBe(true);
+      return result;
+    };
+
+    await dispatch(0, {
+      type: "place_part",
+      componentId,
+      positionNm: { x: 0, y: 0 },
+    });
+    await dispatch(1, {
+      type: "place_part",
+      componentId,
+      positionNm: { x: 20_000_000, y: 0 },
+    });
+
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const aRight = placed?.parts[0]?.pins[1]; // (2mm, 0)
+    const bLeft = placed?.parts[1]?.pins[0]; // (18mm, 0)
+    if (!aRight || !bLeft) throw new Error("Expected two placed parts with pins");
+
+    // Straight pin-to-pin wire (2 points).
+    const wire = await dispatch(2, {
+      type: "create_wire",
+      sourcePinId: aRight.id,
+      targetPinId: bLeft.id,
+    });
+    if (!wire.ok || !wire.createdEntityId) throw new Error("Expected wire id");
+
+    const beforeWire = (await designerSdk.getSchematicProjection(design.id))
+      ?.wires.find((w) => w.id === wire.createdEntityId);
+    expect(beforeWire?.pointsNm.length).toBe(2);
+
+    // Drag the segment up into a staple. Deliberately send WRONG endpoints to
+    // prove the backend forces them back onto the pins.
+    await dispatch(3, {
+      type: "update_wire_geometry",
+      wireId: wire.createdEntityId,
+      pointsNm: [
+        { x: 999, y: 999 },
+        { x: 2_000_000, y: 6_000_000 },
+        { x: 18_000_000, y: 6_000_000 },
+        { x: 888, y: 888 },
+      ],
+    });
+
+    const stapled = (await designerSdk.getSchematicProjection(design.id))
+      ?.wires.find((w) => w.id === wire.createdEntityId);
+    expect(stapled?.pointsNm).toEqual([
+      { x: 2_000_000, y: 0 }, // forced back to source pin
+      { x: 2_000_000, y: 6_000_000 },
+      { x: 18_000_000, y: 6_000_000 },
+      { x: 18_000_000, y: 0 }, // forced back to target pin
+    ]);
+
+    // Undo restores the prior 2-point geometry.
+    const undo = await designerSdk.undo(design.id, "seg-drag");
+    expect(undo.ok).toBe(true);
+    const afterUndo = (await designerSdk.getSchematicProjection(design.id))
+      ?.wires.find((w) => w.id === wire.createdEntityId);
+    expect(afterUndo?.pointsNm.length).toBe(2);
+
+    // A malformed (diagonal) interior is repaired into an orthogonal path
+    // rather than persisted verbatim.
+    const repaired = await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "seg-drag",
+      aggregateId: design.id,
+      baseRevision: undo.ok ? undo.revision : 4,
+      issuedAt: Date.now(),
+      command: {
+        type: "update_wire_geometry",
+        wireId: wire.createdEntityId,
+        pointsNm: [
+          { x: 2_000_000, y: 0 },
+          { x: 10_000_000, y: 5_000_000 }, // diagonal → repaired
+          { x: 18_000_000, y: 0 },
+        ],
+      },
+    });
+    expect(repaired.ok).toBe(true);
+    const repairedWire = (await designerSdk.getSchematicProjection(design.id))
+      ?.wires.find((w) => w.id === wire.createdEntityId);
+    const pts = repairedWire?.pointsNm ?? [];
+    expect(pts.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < pts.length; i += 1) {
+      const orthogonal =
+        pts[i - 1]!.x === pts[i]!.x || pts[i - 1]!.y === pts[i]!.y;
+      expect(orthogonal).toBe(true);
+    }
+  });
+
+  test("update_wire_geometry survives the HTTP command parser (fields not dropped)", async () => {
+    isolateTestDb("designer-update-wire-geometry-http");
+    const { moduleRuntime, server } = await createRuntimeAndServer();
+    const componentId = await importDrawnWireableComponent(server);
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+    const design = await designerSdk.createDesign({ name: "Segment drag HTTP" });
+
+    await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "seg-http",
+      aggregateId: design.id,
+      baseRevision: 0,
+      issuedAt: Date.now(),
+      command: { type: "place_part", componentId, positionNm: { x: 0, y: 0 } },
+    });
+    await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "seg-http",
+      aggregateId: design.id,
+      baseRevision: 1,
+      issuedAt: Date.now(),
+      command: {
+        type: "place_part",
+        componentId,
+        positionNm: { x: 20_000_000, y: 0 },
+      },
+    });
+    const placed = await designerSdk.getSchematicProjection(design.id);
+    const aRight = placed?.parts[0]?.pins[1];
+    const bLeft = placed?.parts[1]?.pins[0];
+    if (!aRight || !bLeft) throw new Error("Expected pins");
+    const wire = await designerSdk.dispatchCommand(design.id, {
+      commandId: crypto.randomUUID(),
+      sessionId: "seg-http",
+      aggregateId: design.id,
+      baseRevision: 2,
+      issuedAt: Date.now(),
+      command: {
+        type: "create_wire",
+        sourcePinId: aRight.id,
+        targetPinId: bLeft.id,
+      },
+    });
+    if (!wire.ok || !wire.createdEntityId) throw new Error("Expected wire id");
+
+    const envelope: DesignerCommandEnvelope = {
+      commandId: crypto.randomUUID(),
+      sessionId: "seg-http",
+      aggregateId: design.id,
+      baseRevision: 3,
+      issuedAt: Date.now(),
+      command: {
+        type: "update_wire_geometry",
+        wireId: wire.createdEntityId,
+        pointsNm: [
+          { x: 2_000_000, y: 0 },
+          { x: 2_000_000, y: 6_000_000 },
+          { x: 18_000_000, y: 6_000_000 },
+          { x: 18_000_000, y: 0 },
+        ],
+      },
+    };
+    const response = await server.fetch(
+      new Request(
+        `http://localhost/api/modules/designer/designs/${design.id}/commands`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(envelope),
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+
+    const after = (await designerSdk.getSchematicProjection(design.id))?.wires.find(
+      (w) => w.id === wire.createdEntityId,
+    );
+    // wireId + pointsNm survived the parser → the staple was applied.
+    expect(after?.pointsNm).toEqual([
+      { x: 2_000_000, y: 0 },
+      { x: 2_000_000, y: 6_000_000 },
+      { x: 18_000_000, y: 6_000_000 },
+      { x: 18_000_000, y: 0 },
+    ]);
+  });
+
   test("auto-route with no clean escape persists routeStatus 'colliding' and survives undo/redo", async () => {
     isolateTestDb("designer-hardening-colliding-flag");
     const { moduleRuntime, server } = await createRuntimeAndServer();

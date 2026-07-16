@@ -25,7 +25,11 @@ import {
   primitivePinId,
   serializePrimitivePayload,
 } from "./primitive-store";
-import { buildCreateWirePayload } from "./commands/create-wire";
+import {
+  buildCreateWirePayload,
+  normalizeWirePath,
+  validateWirePath,
+} from "./commands/create-wire";
 import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { autoRouteWirePointsDetailed } from "./routing/wire-obstacles";
 import { applyAutoArrange } from "./layout/arrange-schematic";
@@ -1493,6 +1497,43 @@ export function executeDesignerCommand({
       bumpRevision(tx, designId, revision, timestamp),
       branchBuild.payload.id,
     );
+  }
+
+  if (command.type === "update_wire_geometry") {
+    const wireRow = tx
+      .select()
+      .from(schematicWires)
+      .where(
+        and(
+          eq(schematicWires.designId, designId),
+          eq(schematicWires.id, command.wireId),
+        ),
+      )
+      .get();
+    if (!wireRow) return entityNotFound(command.wireId, "wire");
+    const sourcePin = resolvePinAny(tx, designId, wireRow.sourcePinId);
+    if (!sourcePin) return pinNotFound(wireRow.sourcePinId);
+    const targetPin = resolvePinAny(tx, designId, wireRow.targetPinId);
+    if (!targetPin) return pinNotFound(wireRow.targetPinId);
+    // Segment drag never moves the endpoints — force them back onto the pins and
+    // validate the caller-supplied interior geometry is orthogonal + non-overlapping.
+    const normalized = normalizeWirePath(
+      sourcePin.worldPositionNm,
+      targetPin.worldPositionNm,
+      command.pointsNm,
+    );
+    const invalidReason = validateWirePath(normalized);
+    if (invalidReason) return invalidWirePath(invalidReason);
+    tx.update(schematicWires)
+      .set({
+        pointsJson: JSON.stringify(normalized),
+        // A manual drag overrides any auto-router "colliding" flag.
+        routeStatus: null,
+        updatedAt: timestamp,
+      })
+      .where(eq(schematicWires.id, wireRow.id))
+      .run();
+    return okResult(bumpRevision(tx, designId, revision, timestamp), wireRow.id);
   }
 
   if (command.type === "auto_arrange_schematic") {

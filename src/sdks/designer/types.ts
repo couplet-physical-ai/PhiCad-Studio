@@ -1283,6 +1283,20 @@ export interface DesignerCreateWireJunctionCommand {
   }>;
 }
 
+/**
+ * Replace a schematic wire's polyline geometry (Flux-style segment drag). The
+ * backend forces the endpoints back onto the source/target pins and validates
+ * the path is orthogonal + non-overlapping; interior waypoints are kept verbatim.
+ */
+export interface DesignerUpdateWireGeometryCommand {
+  type: "update_wire_geometry";
+  wireId: string;
+  pointsNm: Array<{
+    x: number;
+    y: number;
+  }>;
+}
+
 export interface DesignerMovePartCommand {
   type: "move_part";
   partId: string;
@@ -1705,6 +1719,7 @@ export type DesignerCommand =
   | DesignerPlacePartCommand
   | DesignerCreateWireCommand
   | DesignerCreateWireJunctionCommand
+  | DesignerUpdateWireGeometryCommand
   | DesignerMovePartCommand
   | DesignerRotatePartCommand
   | DesignerMirrorPartCommand
