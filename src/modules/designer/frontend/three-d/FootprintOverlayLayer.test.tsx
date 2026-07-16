@@ -76,6 +76,10 @@ describe("FootprintOverlayLayer", () => {
       useLayerColors: true,
       surface: "pcb",
       placeholderSubstitutions: { reference: "U2" },
+      // 3D board view must depth-test so silk (incl. refdes text) is occluded
+      // by component bodies / pads instead of drawing always-on-top.
+      enableDepthTest: true,
+      hidePadNumbers: true,
     });
   });
 
