@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { PcbLayerCount } from "../../../../sdks";
 import {
   Cable,
+  PenTool,
   CircleDot,
   Eye,
   EyeOff,
@@ -80,6 +81,8 @@ interface PcbTopToolbarProps {
   routeMode: boolean;
   routeSessionActive: boolean;
   onToggleRouteMode: () => void;
+  boardShapeMode: boolean;
+  onToggleBoardShape: () => void;
   measureMode: boolean;
   onToggleMeasureMode: () => void;
   /** Length-Tune tool (pcb.lengthTuning). Button hidden when not provided. */
@@ -692,6 +695,8 @@ export function PcbTopToolbar({
   routeMode,
   routeSessionActive,
   onToggleRouteMode,
+  boardShapeMode,
+  onToggleBoardShape,
   measureMode,
   onToggleMeasureMode,
   tuneMode = false,
@@ -810,6 +815,21 @@ export function PcbTopToolbar({
         >
           <Cable className="h-3.5 w-3.5" />
           Route (R)
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleBoardShape}
+          title="Draw board outline (O) — click to place vertices, Enter to close"
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors ${
+            boardShapeMode
+              ? "border-violet-500 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+              : "border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+          }`}
+          aria-pressed={boardShapeMode}
+        >
+          <PenTool className="h-3.5 w-3.5" />
+          Board (O)
         </button>
 
         {/*

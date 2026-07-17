@@ -47,6 +47,8 @@ export const CODE_LABEL: Record<DrcRuleCode, string> = {
   VIA_LAYER_SPAN: "Invalid via layer span",
   VIA_ASPECT_RATIO: "Via aspect ratio too high",
   BOARD_OUTLINE_INVALID: "Invalid board outline",
+  OUTLINE_INTERNAL_RADIUS: "Internal corner radius too small",
+  OUTLINE_SLOT_WIDTH: "Board slot / neck too narrow",
   COPPER_OFF_BOARD: "Copper outside board",
   ISOLATED_COPPER_ISLAND: "Isolated copper island",
 };

@@ -46,6 +46,10 @@ interface PcbBoardPanelProps {
   editMode: boolean;
   /** Toggle board-dimension editing on/off. */
   onToggleEditMode: () => void;
+  /** Enter the canvas Board Shape tool to draw a custom polygon outline. */
+  onDrawShape: () => void;
+  /** Open the DXF import dialog to define the outline from a CAD drawing. */
+  onImportDxf: () => void;
 }
 
 function DimensionInput(props: {
@@ -119,6 +123,8 @@ export function PcbBoardPanel({
   onFitToParts,
   editMode,
   onToggleEditMode,
+  onDrawShape,
+  onImportDxf,
 }: PcbBoardPanelProps): ReactElement {
   const widthRef = useRef<HTMLInputElement>(null);
   const [shapeType, setShapeType] = useState<ShapeType>(() =>
@@ -181,11 +187,85 @@ export function PcbBoardPanel({
 
   const isCircle = shapeType === "circle";
   const valuesValid = valid && (shapeType !== "roundrect" || radiusValid);
+  // A drawn/imported outline: the parametric W/H picker would overwrite it, so
+  // edit mode shows a read-only bbox + on-canvas editing hint instead.
+  const isCustom =
+    currentOutline?.kind === "polygon" || currentOutline?.kind === "contour";
 
   return (
     <div className="flex flex-col gap-3 p-3">
       {editMode ? (
-        <>
+        isCustom ? (
+          <>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                disabled={workspace.saving || !canEdit}
+                onClick={onDrawShape}
+                className="flex-1 cursor-pointer rounded-control border border-dashed border-slate-300 px-2 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50 dark:border-slate-700"
+              >
+                ✏ Redraw shape
+              </button>
+              <button
+                type="button"
+                disabled={workspace.saving || !canEdit}
+                onClick={onImportDxf}
+                className="flex-1 cursor-pointer rounded-control border border-dashed border-slate-300 px-2 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50 dark:border-slate-700"
+              >
+                ⭳ Import DXF…
+              </button>
+            </div>
+            <div className="rounded-control border border-slate-200 px-2 py-1.5 dark:border-slate-700">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+                {shapeLabel(currentOutline)} · bounding box
+              </div>
+              <div className="text-sm font-semibold tabular-nums text-text-primary">
+                {widthText} × {heightText} mm
+              </div>
+            </div>
+            <p className="text-[11px] leading-snug text-text-secondary">
+              Edit on the canvas: drag a corner, or right-click an edge →{" "}
+              <span className="font-semibold">Set length…</span> · a corner →{" "}
+              <span className="font-semibold">Set position…</span> /{" "}
+              <span className="font-semibold">Fillet</span>.
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={workspace.saving || !canEdit}
+                onClick={() =>
+                  currentOutline &&
+                  onApplyOutline({
+                    kind: "rect",
+                    widthMm: currentOutline.widthMm,
+                    heightMm: currentOutline.heightMm,
+                    centerMm: currentOutline.centerMm,
+                  })
+                }
+              >
+                Reset to rectangle
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={workspace.saving || !canEdit}
+                onClick={onFitToParts}
+              >
+                Fit to parts
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto"
+                onClick={onToggleEditMode}
+              >
+                Done
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
           <div className="flex flex-wrap gap-1">
             {SHAPE_OPTIONS.map((opt) => (
               <button
@@ -202,6 +282,25 @@ export function PcbBoardPanel({
                 {opt.label}
               </button>
             ))}
+          </div>
+
+          <div className="flex gap-1">
+            <button
+              type="button"
+              disabled={workspace.saving || !canEdit}
+              onClick={onDrawShape}
+              className="flex-1 cursor-pointer rounded-control border border-dashed border-slate-300 px-2 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50 dark:border-slate-700"
+            >
+              ✏ Draw custom shape
+            </button>
+            <button
+              type="button"
+              disabled={workspace.saving || !canEdit}
+              onClick={onImportDxf}
+              className="flex-1 cursor-pointer rounded-control border border-dashed border-slate-300 px-2 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50 dark:border-slate-700"
+            >
+              ⭳ Import DXF…
+            </button>
           </div>
 
           {isCircle ? (
@@ -292,7 +391,8 @@ export function PcbBoardPanel({
           <p className="text-[10px] text-text-tertiary">
             Drag the board edges to resize
           </p>
-        </>
+          </>
+        )
       ) : (
         <>
           <div className="flex items-center justify-between gap-2">

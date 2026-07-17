@@ -4,6 +4,11 @@ import {
   validateTraceAgainstFab,
   validateViaAgainstFab,
 } from "../../pcb/fab-presets";
+import {
+  boardSlotRing,
+  findNarrowestSlot,
+  findSmallInternalRadii,
+} from "../../pcb/outline-manufacturability";
 import { below, type DrcContext } from "../drc-context";
 import { exceeds } from "../../pcb/tolerance";
 import type { DrcViolationDraft } from "../types";
@@ -183,6 +188,47 @@ export function checkManufacturability(ctx: DrcContext): DrcViolationDraft[] {
           locationMm: hole.center,
           measuredMm: fv.actualValue,
           requiredMm: fv.fabValue,
+        });
+      }
+    }
+  }
+
+  // Board-outline milling limits (fab-sourced, advisory): internal corner radius
+  // + slot/neck width. Custom fab has no capability floor, so it's skipped.
+  if (ctx.fabricator !== "custom") {
+    const preset = FAB_PRESETS[ctx.fabricator];
+    if (preset) {
+      for (const hit of findSmallInternalRadii(
+        ctx.projection.board.outline,
+        preset.minInternalRadiusMm,
+      )) {
+        out.push({
+          code: "OUTLINE_INTERNAL_RADIUS",
+          ruleClass: "manufacturability",
+          severity: "warning",
+          message: `Internal corner radius ${hit.radiusMm.toFixed(2)} mm < ${preset.name} min ${preset.minInternalRadiusMm.toFixed(2)} mm`,
+          anchors: [{ kind: "boardEdge" }],
+          locationMm: hit.locationMm,
+          measuredMm: hit.radiusMm,
+          requiredMm: preset.minInternalRadiusMm,
+        });
+      }
+      // Slot check on the coarse vertex ring (arcs as single edges) so a smooth
+      // curve's tessellation chords never read as a false narrow gap.
+      const slotRing = boardSlotRing(ctx.projection.board.outline);
+      const slot = slotRing
+        ? findNarrowestSlot(slotRing, preset.minSlotWidthMm)
+        : null;
+      if (slot) {
+        out.push({
+          code: "OUTLINE_SLOT_WIDTH",
+          ruleClass: "manufacturability",
+          severity: "warning",
+          message: `Board slot / neck ${slot.gapMm.toFixed(2)} mm < ${preset.name} min ${preset.minSlotWidthMm.toFixed(2)} mm`,
+          anchors: [{ kind: "boardEdge" }],
+          locationMm: slot.locationMm,
+          measuredMm: slot.gapMm,
+          requiredMm: preset.minSlotWidthMm,
         });
       }
     }

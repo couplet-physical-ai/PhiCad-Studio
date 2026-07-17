@@ -42,6 +42,13 @@ export interface PcbFabPreset {
   boardEdgeVcutMm: number;
   /** Minimum solder-mask dam between openings (mm, 1 oz). */
   maskDamMm: number;
+  /**
+   * Milling limits for the board outline / cutouts. A routed internal (concave)
+   * corner can't be sharper than the router-bit radius, and a slot / neck can't
+   * be narrower than the bit diameter. Advisory (warnings).
+   */
+  minInternalRadiusMm: number;
+  minSlotWidthMm: number;
 }
 
 export const FAB_PRESETS: Record<PcbFabPreset["id"], PcbFabPreset> = {
@@ -60,6 +67,8 @@ export const FAB_PRESETS: Record<PcbFabPreset["id"], PcbFabPreset> = {
     boardEdgeRoutedMm: 0.2,
     boardEdgeVcutMm: 0.4,
     maskDamMm: 0.1,
+    minInternalRadiusMm: 0.8,
+    minSlotWidthMm: 1.0,
   },
   jlcpcb_4l: {
     id: "jlcpcb_4l",
@@ -76,6 +85,8 @@ export const FAB_PRESETS: Record<PcbFabPreset["id"], PcbFabPreset> = {
     boardEdgeRoutedMm: 0.2,
     boardEdgeVcutMm: 0.4,
     maskDamMm: 0.1,
+    minInternalRadiusMm: 0.8,
+    minSlotWidthMm: 1.0,
   },
   // PCBWay rows: previous-generation values; re-fetch pending (P8 follow-up).
   pcbway_std: {
@@ -93,6 +104,8 @@ export const FAB_PRESETS: Record<PcbFabPreset["id"], PcbFabPreset> = {
     boardEdgeRoutedMm: 0.3,
     boardEdgeVcutMm: 0.4,
     maskDamMm: 0.1,
+    minInternalRadiusMm: 0.8,
+    minSlotWidthMm: 1.0,
   },
   pcbway_advanced: {
     id: "pcbway_advanced",
@@ -109,6 +122,8 @@ export const FAB_PRESETS: Record<PcbFabPreset["id"], PcbFabPreset> = {
     boardEdgeRoutedMm: 0.2,
     boardEdgeVcutMm: 0.4,
     maskDamMm: 0.1,
+    minInternalRadiusMm: 0.5,
+    minSlotWidthMm: 0.8,
   },
 };
 

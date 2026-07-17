@@ -393,6 +393,82 @@ describe("designer PCB custom board shapes", () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  test("normalizes an open contour by appending an explicit closing edge", async () => {
+    isolateTestDb("designer-pcb-contour-open");
+    const { moduleRuntime } = await createRuntime();
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+    const design = await designerSdk.createDesign({ name: "Open contour" });
+
+    const result = await designerSdk.dispatchCommand(design.id, {
+      commandId: "cmd-open-contour",
+      sessionId: "shape-test",
+      aggregateId: design.id,
+      baseRevision: 0,
+      issuedAt: Date.now(),
+      command: {
+        type: "pcb_set_board_outline",
+        outline: {
+          kind: "contour",
+          widthMm: 1,
+          heightMm: 1,
+          centerMm: { x: 0, y: 0 },
+          start: { x: 0, y: 0 },
+          // Only 2 segments and never returns to start — the executor must
+          // normalize it into a closed 3-segment triangle.
+          segments: [
+            { type: "line", to: { x: 20, y: 0 } },
+            { type: "line", to: { x: 0, y: 10 } },
+          ],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+
+    const projection = await designerSdk.getPcbProjection(design.id);
+    const outline = projection?.board.outline;
+    expect(outline?.kind).toBe("contour");
+    if (outline?.kind === "contour") {
+      expect(outline.segments.length).toBe(3);
+      expect(outline.segments[outline.segments.length - 1]?.to).toEqual({ x: 0, y: 0 });
+    }
+  });
+
+  test("rejects a self-intersecting contour", async () => {
+    isolateTestDb("designer-pcb-contour-bowtie");
+    const { moduleRuntime } = await createRuntime();
+    const designerSdk = moduleRuntime
+      .getSdkRegistry()
+      .resolve<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
+    const design = await designerSdk.createDesign({ name: "Bow-tie" });
+
+    const result = await designerSdk.dispatchCommand(design.id, {
+      commandId: "cmd-bowtie",
+      sessionId: "shape-test",
+      aggregateId: design.id,
+      baseRevision: 0,
+      issuedAt: Date.now(),
+      command: {
+        type: "pcb_set_board_outline",
+        outline: {
+          kind: "contour",
+          widthMm: 1,
+          heightMm: 1,
+          centerMm: { x: 0, y: 0 },
+          start: { x: 0, y: 0 },
+          segments: [
+            { type: "line", to: { x: 10, y: 10 } },
+            { type: "line", to: { x: 10, y: 0 } },
+            { type: "line", to: { x: 0, y: 10 } },
+            { type: "line", to: { x: 0, y: 0 } },
+          ],
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+  });
 });
 
 async function importFixtureComponent(

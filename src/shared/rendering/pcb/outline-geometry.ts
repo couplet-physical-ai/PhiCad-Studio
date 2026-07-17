@@ -17,6 +17,32 @@ import type {
 /** Segments used to discretise a full 360° circle; arcs scale by sweep. */
 export const DEFAULT_ARC_SEGMENTS = 64;
 
+/**
+ * Maximum chord deviation (mm) when discretising an arc — the single tolerance
+ * shared by rendering, DRC, DXF tessellation, and Gerber so every consumer
+ * agrees on how finely a curve flattens.
+ */
+export const MAX_CHORD_DEVIATION_MM = 0.01;
+export const MIN_ARC_SEGMENTS = 2;
+export const MAX_ARC_SEGMENTS = 512;
+
+/**
+ * Number of chords for an arc of `radiusMm` sweeping `sweepRad`, chosen so the
+ * chord-to-arc error stays within {@link MAX_CHORD_DEVIATION_MM}. Clamped to
+ * [{@link MIN_ARC_SEGMENTS}, {@link MAX_ARC_SEGMENTS}].
+ *
+ * Chord deviation d for a step angle θ is `d = r·(1 − cos(θ/2))`, so the widest
+ * allowed step is `θ = 2·acos(1 − d/r)`.
+ */
+export function arcSegmentCount(radiusMm: number, sweepRad: number): number {
+  const r = Math.abs(radiusMm);
+  const sweep = Math.abs(sweepRad);
+  if (r <= MAX_CHORD_DEVIATION_MM || sweep <= 0) return MIN_ARC_SEGMENTS;
+  const maxStep = 2 * Math.acos(Math.max(-1, 1 - MAX_CHORD_DEVIATION_MM / r));
+  const steps = Math.ceil(sweep / Math.max(1e-6, maxStep));
+  return Math.min(MAX_ARC_SEGMENTS, Math.max(MIN_ARC_SEGMENTS, steps));
+}
+
 export interface OutlineBboxMm {
   widthMm: number;
   heightMm: number;
@@ -28,7 +54,7 @@ function arcPoints(
   end: PcbPointMm,
   center: PcbPointMm,
   cw: boolean,
-  fullCircleSegments: number,
+  _fullCircleSegments: number,
 ): PcbPointMm[] {
   const r = Math.hypot(start.x - center.x, start.y - center.y);
   let a0 = Math.atan2(start.y - center.y, start.x - center.x);
@@ -40,13 +66,17 @@ function arcPoints(
     while (a1 <= a0) a1 += Math.PI * 2;
   }
   const sweep = Math.abs(a1 - a0);
-  const steps = Math.max(
-    1,
-    Math.ceil((sweep / (Math.PI * 2)) * fullCircleSegments),
-  );
+  const steps = arcSegmentCount(r, sweep);
   const pts: PcbPointMm[] = [];
   // Skip i=0 (== start, already emitted by the previous segment); include end.
+  // The final point is the *exact* `end` — never a start-radius reprojection —
+  // so a caller whose arc endpoints differ slightly in radius still closes
+  // without a gap (the validator keeps that difference within tolerance).
   for (let i = 1; i <= steps; i += 1) {
+    if (i === steps) {
+      pts.push({ x: end.x, y: end.y });
+      break;
+    }
     const a = a0 + ((a1 - a0) * i) / steps;
     pts.push({ x: center.x + Math.cos(a) * r, y: center.y + Math.sin(a) * r });
   }
@@ -267,6 +297,68 @@ function pointInRing(ring: readonly PcbPointMm[], p: PcbPointMm): boolean {
     if (intersects) inside = !inside;
   }
   return inside;
+}
+
+function ccw(a: PcbPointMm, b: PcbPointMm, c: PcbPointMm): number {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+const COLLINEAR_EPS = 1e-9;
+
+/** True when `p` (collinear with a-b) lies within the a-b bounding box. */
+function onSegment(a: PcbPointMm, b: PcbPointMm, p: PcbPointMm): boolean {
+  return (
+    p.x <= Math.max(a.x, b.x) + COLLINEAR_EPS &&
+    p.x >= Math.min(a.x, b.x) - COLLINEAR_EPS &&
+    p.y <= Math.max(a.y, b.y) + COLLINEAR_EPS &&
+    p.y >= Math.min(a.y, b.y) - COLLINEAR_EPS
+  );
+}
+
+/**
+ * True when open segments a-b and c-d touch at all — a proper crossing, a
+ * T-touch (an endpoint lying on the other segment), or a collinear overlap.
+ * Shared endpoints of *adjacent* ring edges are excluded by the caller.
+ */
+export function segmentsIntersectInclusive(
+  a: PcbPointMm,
+  b: PcbPointMm,
+  c: PcbPointMm,
+  d: PcbPointMm,
+): boolean {
+  const d1 = ccw(a, b, c);
+  const d2 = ccw(a, b, d);
+  const d3 = ccw(c, d, a);
+  const d4 = ccw(c, d, b);
+  if (d1 * d2 < 0 && d3 * d4 < 0) return true; // proper crossing
+  if (Math.abs(d1) <= COLLINEAR_EPS && onSegment(a, b, c)) return true;
+  if (Math.abs(d2) <= COLLINEAR_EPS && onSegment(a, b, d)) return true;
+  if (Math.abs(d3) <= COLLINEAR_EPS && onSegment(c, d, a)) return true;
+  if (Math.abs(d4) <= COLLINEAR_EPS && onSegment(c, d, b)) return true;
+  return false;
+}
+
+/**
+ * True when any two non-adjacent edges of the closed ring touch — a
+ * self-intersecting or self-touching (invalid) outline. O(n²); outline rings
+ * are small. `ring` is an open ring (the closing edge from `ring[n-1]` back to
+ * `ring[0]` is implied).
+ */
+export function ringSelfIntersects(ring: readonly PcbPointMm[]): boolean {
+  const n = ring.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i += 1) {
+    const a = ring[i]!;
+    const b = ring[(i + 1) % n]!;
+    for (let j = i + 1; j < n; j += 1) {
+      // Skip adjacent edges and the wrap-around pair (they share a vertex).
+      if ((j + 1) % n === i || (i + 1) % n === j) continue;
+      const c = ring[j]!;
+      const d = ring[(j + 1) % n]!;
+      if (segmentsIntersectInclusive(a, b, c, d)) return true;
+    }
+  }
+  return false;
 }
 
 /**

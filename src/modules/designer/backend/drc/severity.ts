@@ -43,6 +43,8 @@ export const DEFAULT_SEVERITY_BY_CODE: Record<DrcRuleCode, DrcSeverity> = {
   VIA_LAYER_SPAN: "error",
   PLACED_PART_MISSING_FOOTPRINT: "error",
   BOARD_OUTLINE_INVALID: "error",
+  OUTLINE_INTERNAL_RADIUS: "warning",
+  OUTLINE_SLOT_WIDTH: "warning",
   // connectivity
   UNCONNECTED_NET: "error",
   ISOLATED_COPPER_ISLAND: "warning",

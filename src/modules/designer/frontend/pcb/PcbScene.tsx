@@ -38,6 +38,7 @@ import {
   effectiveRenderOrder,
 } from "../../../../shared/frontend/canvas/layers";
 import { useCanvasTheme } from "../../../../shared/frontend/canvas/theme";
+import { isEditableOutline, outlineVertices } from "./pcb-outline-edit";
 import { TraceLayer } from "./layers/TraceLayer";
 import { TracePreviewLayer } from "./layers/TracePreviewLayer";
 import { CopperFillLayer } from "./layers/CopperFillLayer";
@@ -48,6 +49,11 @@ import { FreePadLayer } from "./layers/FreePadLayer";
 import { OverlayLayer } from "./layers/OverlayLayer";
 import { DrcMarkerLayer } from "./layers/DrcMarkerLayer";
 import { DrcSelectionHighlight } from "./layers/DrcSelectionHighlight";
+import {
+  OutlineEdgeLabels,
+  type DimEdge,
+} from "./layers/OutlineEdgeLabels";
+import type { InferResult } from "./sketch-inference";
 import { BOARD_HANDLES, handlePointMm } from "./pcb-board-resize";
 import {
   cutoutToPath,
@@ -295,6 +301,221 @@ function BoardResizeHandles({
           </mesh>
         );
       })}
+    </group>
+  );
+}
+
+/**
+ * Editable-outline grips: a square at every vertex (drag to reshape) and a
+ * translucent dot at each line-edge midpoint (click to insert a vertex). Shown
+ * for polygon / contour outlines in board-dimension edit mode. Hit-testing +
+ * commit happen in PcbCanvas; these are purely visual.
+ */
+function OutlineVertexHandles({
+  outline,
+}: {
+  outline: PcbBoardOutline;
+}): ReactElement | null {
+  const { theme } = useCanvasTheme();
+  if (!isEditableOutline(outline)) return null;
+  const verts = outlineVertices(outline);
+  const accent = theme.pcbCanvas.selectionOutline;
+  const dimEdges: DimEdge[] = [];
+  for (let i = 0; i < verts.length; i += 1) {
+    // Length labels on straight edges only (arcs carry a radius, not a length).
+    if (outline.kind === "contour" && outline.segments[i]?.type !== "line") {
+      continue;
+    }
+    dimEdges.push({ a: verts[i]!, b: verts[(i + 1) % verts.length]! });
+  }
+  return (
+    <group>
+      <OutlineEdgeLabels edges={dimEdges} />
+      {verts.map((v, i) => (
+        <mesh
+          key={`v${i}`}
+          position={[v.x, v.y, 0]}
+          renderOrder={RENDER_ORDER.BOARD_OUTLINE + 2}
+        >
+          <planeGeometry args={[0.8, 0.8]} />
+          <meshBasicMaterial
+            color={accent}
+            depthTest={false}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+      {verts.map((v, i) => {
+        // Insert dots only on straight edges (arc edges have no mid-edge insert).
+        if (
+          outline.kind === "contour" &&
+          outline.segments[i]?.type !== "line"
+        ) {
+          return null;
+        }
+        const next = verts[(i + 1) % verts.length]!;
+        const mid = { x: (v.x + next.x) / 2, y: (v.y + next.y) / 2 };
+        return (
+          <mesh
+            key={`m${i}`}
+            position={[mid.x, mid.y, 0]}
+            renderOrder={RENDER_ORDER.BOARD_OUTLINE + 1}
+          >
+            <circleGeometry args={[0.35, 12]} />
+            <meshBasicMaterial
+              color={accent}
+              transparent
+              opacity={0.5}
+              depthTest={false}
+              depthWrite={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
+/**
+ * Live overlay for the Board Shape draw tool: the committed polygon edges (in
+ * the Edge.Cuts colour), a rubber-band from the last vertex to the cursor, and
+ * a grip at each vertex (the start vertex enlarged — click it to close). Purely
+ * visual; hit-testing / commit happen in PcbCanvas.
+ */
+function SketchPreviewLayer({
+  vertices,
+  preview,
+  infer = null,
+}: {
+  vertices: readonly PcbPointMm[];
+  preview: PcbPointMm | null;
+  infer?: InferResult | null;
+}): ReactElement | null {
+  const { theme } = useCanvasTheme();
+  const committed = useMemo(() => {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i + 1 < vertices.length; i += 1) {
+      pts.push(new THREE.Vector3(vertices[i]!.x, vertices[i]!.y, 0));
+      pts.push(new THREE.Vector3(vertices[i + 1]!.x, vertices[i + 1]!.y, 0));
+    }
+    return new THREE.BufferGeometry().setFromPoints(pts);
+  }, [vertices]);
+  const rubber = useMemo(() => {
+    if (!preview || vertices.length === 0) return null;
+    const last = vertices[vertices.length - 1]!;
+    return new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(last.x, last.y, 0),
+      new THREE.Vector3(preview.x, preview.y, 0),
+    ]);
+  }, [preview, vertices]);
+  const guideGeom = useMemo(() => {
+    if (!infer?.guide) return null;
+    const a = infer.guide.fromMm;
+    const b = infer.guide.toMm;
+    const g = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(a.x, a.y, 0),
+      new THREE.Vector3(b.x, b.y, 0),
+    ]);
+    // lineDashedMaterial needs a per-vertex lineDistance attribute (what
+    // Line.computeLineDistances() would set): 0 at the start, length at the end.
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    g.setAttribute("lineDistance", new THREE.Float32BufferAttribute([0, len], 1));
+    return g;
+  }, [infer]);
+  useEffect(() => () => committed.dispose(), [committed]);
+  useEffect(() => () => rubber?.dispose(), [rubber]);
+  useEffect(() => () => guideGeom?.dispose(), [guideGeom]);
+  const dimEdges = useMemo(() => {
+    const es: DimEdge[] = [];
+    for (let i = 0; i + 1 < vertices.length; i += 1) {
+      es.push({ a: vertices[i]!, b: vertices[i + 1]! });
+    }
+    if (preview && vertices.length > 0) {
+      es.push({ a: vertices[vertices.length - 1]!, b: preview, live: true });
+    }
+    return es;
+  }, [vertices, preview]);
+
+  if (vertices.length === 0) return null;
+  const accent = theme.pcbCanvas.selectionOutline;
+  return (
+    <group>
+      <lineSegments
+        geometry={committed}
+        renderOrder={RENDER_ORDER.BOARD_OUTLINE + 1}
+      >
+        <lineBasicMaterial
+          color={PCB_LAYER_COLORS["Edge.Cuts"]}
+          depthTest={false}
+          depthWrite={false}
+          transparent
+          opacity={0.95}
+        />
+      </lineSegments>
+      {rubber ? (
+        <lineSegments
+          geometry={rubber}
+          renderOrder={RENDER_ORDER.BOARD_OUTLINE + 1}
+        >
+          <lineBasicMaterial
+            color={accent}
+            depthTest={false}
+            depthWrite={false}
+            transparent
+            opacity={0.7}
+          />
+        </lineSegments>
+      ) : null}
+      {guideGeom ? (
+        <lineSegments
+          geometry={guideGeom}
+          renderOrder={RENDER_ORDER.BOARD_OUTLINE + 1}
+        >
+          <lineDashedMaterial
+            color="#f59e0b"
+            dashSize={1.2}
+            gapSize={0.8}
+            depthTest={false}
+            depthWrite={false}
+            transparent
+            opacity={0.9}
+          />
+        </lineSegments>
+      ) : null}
+      {infer?.kind === "vertex" && preview ? (
+        <mesh
+          position={[preview.x, preview.y, 0]}
+          renderOrder={RENDER_ORDER.BOARD_OUTLINE + 2}
+        >
+          <ringGeometry args={[0.9, 1.3, 20]} />
+          <meshBasicMaterial
+            color="#f59e0b"
+            depthTest={false}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+            transparent
+            opacity={0.95}
+          />
+        </mesh>
+      ) : null}
+      {vertices.map((v, i) => (
+        <mesh
+          key={i}
+          position={[v.x, v.y, 0]}
+          renderOrder={RENDER_ORDER.BOARD_OUTLINE + 2}
+        >
+          <planeGeometry args={i === 0 ? [1.1, 1.1] : [0.7, 0.7]} />
+          <meshBasicMaterial
+            color={accent}
+            depthTest={false}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+      <OutlineEdgeLabels edges={dimEdges} />
     </group>
   );
 }
@@ -1137,6 +1358,14 @@ interface PcbSceneProps {
   outlineOverride?: PcbBoardOutline | null;
   /** Show draggable board resize handles (select tool). */
   boardHandlesVisible?: boolean;
+  /** Show draggable vertex grips + edge-insert dots for editable outlines. */
+  vertexHandlesVisible?: boolean;
+  /** Live board-shape draw preview (committed vertices + rubber-band cursor). */
+  sketchPreview?: {
+    vertices: readonly PcbPointMm[];
+    preview: PcbPointMm | null;
+    infer?: InferResult | null;
+  } | null;
   /** Per-placement live drag preview positions (group drag). */
   dragOverride?: ReadonlyMap<string, PcbPointMm> | null;
   /** Live drag preview positions for free primitives (hole/pad/text). */
@@ -1284,6 +1513,8 @@ export function PcbScene({
   selection,
   outlineOverride = null,
   boardHandlesVisible = false,
+  vertexHandlesVisible = false,
+  sketchPreview = null,
   dragOverride,
   freePrimitiveDragOverrides,
   highlightedNetId,
@@ -1325,6 +1556,8 @@ export function PcbScene({
     selection,
     outlineOverride,
     boardHandlesVisible,
+    vertexHandlesVisible,
+    sketchPreview,
     dragOverride,
     freePrimitiveDragOverrides,
     highlightedNetId,
@@ -1686,6 +1919,18 @@ export function PcbScene({
         />
         {boardHandlesVisible ? (
           <BoardResizeHandles
+            outline={outlineOverride ?? projection.board.outline}
+          />
+        ) : null}
+        {sketchPreview ? (
+          <SketchPreviewLayer
+            vertices={sketchPreview.vertices}
+            preview={sketchPreview.preview}
+            infer={sketchPreview.infer ?? null}
+          />
+        ) : null}
+        {vertexHandlesVisible ? (
+          <OutlineVertexHandles
             outline={outlineOverride ?? projection.board.outline}
           />
         ) : null}

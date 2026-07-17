@@ -16,6 +16,7 @@ import type {
   DesignerCommentThreadStatus,
   DesignerCommentTodoStatus,
   DesignerDispatchResult,
+  PcbBoardContour,
   PcbBoardOutline,
   PcbCopperLayerId,
   PcbPlacedPart,
@@ -147,9 +148,44 @@ import { buildPreviewPath } from "./tools/route-preview-geometry";
 import { resolveRouteClickAction } from "./tools/route-interactions";
 import {
   initialMeasureToolState,
+  measureBetween,
   measureToolReducer,
   type MeasureAnchor,
 } from "./tools/measure-tool-state";
+import {
+  canCloseSketch,
+  initialSketchToolState,
+  MIN_SKETCH_VERTICES,
+  sketchToolReducer,
+} from "./tools/sketch-tool-state";
+import { verticesToContour } from "./sketch-geometry";
+import {
+  appendToEntry,
+  backspaceEntry,
+  emptySketchEntry,
+  entryHasValue,
+  parsedEntry,
+  toggleEntryField,
+  type SketchEntry,
+} from "./sketch-dimensions";
+import {
+  resolveSketchTarget,
+  type InferResult,
+} from "./sketch-inference";
+import { SketchDimEntry } from "./SketchDimEntry";
+import {
+  deleteVertex,
+  hitEdge as hitOutlineEdge,
+  hitVertex as hitOutlineVertex,
+  insertVertexAtEdge,
+  isEditableOutline,
+  moveVertex,
+  outlineVertices,
+  type EditableOutline,
+} from "./pcb-outline-edit";
+import { CornerOpModal } from "./CornerOpModal";
+import { EdgeDimModal, type DimEditTarget } from "./EdgeDimModal";
+import { DxfImportModal } from "./import/DxfImportModal";
 import { findMeasureSnapTarget } from "./measure-snap";
 import { usePcbWorkspace } from "./usePcbWorkspace";
 import { useDrcStore } from "./drc/drc-store";
@@ -271,7 +307,11 @@ type ToolMode =
   | "pad"
   | "text"
   | "tune"
-  | "bundle";
+  | "bundle"
+  | "boardShape";
+
+/** Grab radius (mm) for closing a board-shape sketch by clicking near its start. */
+const SKETCH_CLOSE_THRESHOLD_MM = 1.5;
 
 /** Default drill size for the "drop mounting hole" tool. 3.2 mm matches an
  * M3 plus-clearance hole, the most common mechanical mount. */
@@ -303,6 +343,14 @@ interface BoardResizeSession {
   /** Offset from the pointer to the grabbed handle at press — keeps the edge
    * pinned under the cursor instead of jumping to it on the first move. */
   pointerOffsetMm: PcbPointMm;
+  moved: boolean;
+}
+
+/** Dragging one vertex of an editable (polygon / contour) board outline. */
+interface VertexDragSession {
+  vIndex: number;
+  initial: EditableOutline;
+  current: PcbBoardOutline;
   moved: boolean;
 }
 
@@ -420,6 +468,36 @@ function MeasureHintStrip({ active }: { active: boolean }): ReactElement {
   );
 }
 
+function SketchHintStrip({ active }: { active: boolean }): ReactElement {
+  if (!active) {
+    return (
+      <div className="rounded-full border border-slate-700/80 bg-slate-950/80 px-3 py-1 text-[11px] font-medium text-slate-300 shadow-lg backdrop-blur">
+        Click to place the first corner · Esc exit
+      </div>
+    );
+  }
+  const keys: ReadonlyArray<[string, string]> = [
+    ["type", "Length"],
+    ["Tab", "∠ Angle"],
+    ["Shift", "45° lock"],
+    ["Enter", "Close/Place"],
+    ["⌫", "Undo"],
+    ["Esc", "Cancel"],
+  ];
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-950/90 px-3 py-1 text-[11px] text-slate-300 shadow-xl backdrop-blur">
+      {keys.map(([key, label]) => (
+        <span key={key} className="inline-flex items-center gap-1">
+          <kbd className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-100 shadow-inner">
+            {key}
+          </kbd>
+          <span>{label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   const gridEnabled = props.gridVisible ?? false;
   // Stable identities — several per-pointer-move memos (bundlePreview, …)
@@ -503,6 +581,22 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     useState<BoardResizeSession | null>(null);
   const boardResizeSessionRef = useRef<BoardResizeSession | null>(null);
   boardResizeSessionRef.current = boardResizeSession;
+  // Dragging a single vertex of an editable (polygon / contour) outline.
+  const [vertexDragSession, setVertexDragSession] =
+    useState<VertexDragSession | null>(null);
+  const vertexDragSessionRef = useRef<VertexDragSession | null>(null);
+  vertexDragSessionRef.current = vertexDragSession;
+  const [dxfImportOpen, setDxfImportOpen] = useState(false);
+  // Active fillet / chamfer numeric editor + its live preview outline.
+  const [cornerOp, setCornerOp] = useState<{
+    mode: "fillet" | "chamfer";
+    vIndex: number;
+    contour: PcbBoardContour;
+  } | null>(null);
+  const [cornerPreviewOutline, setCornerPreviewOutline] =
+    useState<PcbBoardOutline | null>(null);
+  // Active numeric edge-length / vertex-XY editor (reuses cornerPreviewOutline).
+  const [dimOp, setDimOp] = useState<DimEditTarget | null>(null);
   // Holds the just-committed outline so the preview persists across the async
   // backend refresh — without it the board flashes back to its old size for a
   // few frames before the new projection lands.
@@ -536,6 +630,32 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     measureToolReducer,
     initialMeasureToolState,
   );
+  // Board Shape draw tool (pcb custom-outline sketch). Only committed vertices
+  // live in the reducer; the canvas rubber-bands to the cursor and commits the
+  // finished polygon as one `pcb_set_board_outline`. Read through a ref inside
+  // the memoised interaction handler / keydown effect to avoid restaging them.
+  const [sketchState, dispatchSketch] = useReducer(
+    sketchToolReducer,
+    initialSketchToolState,
+  );
+  const sketchStateRef = useRef(sketchState);
+  sketchStateRef.current = sketchState;
+  // Typed-dimension buffer for the draw tool (SolidWorks-style at-cursor entry).
+  // UI-ephemeral like the route width input, so it lives here, not in the
+  // reducer. Read through a ref inside the interaction handler / keydown effect.
+  const [sketchEntry, setSketchEntry] = useState<SketchEntry | null>(null);
+  const sketchEntryRef = useRef(sketchEntry);
+  sketchEntryRef.current = sketchEntry;
+  // Drop the typed buffer whenever we leave the active draw loop (finish,
+  // cancel, or tool switch) so a stale value can't leak into the next sketch.
+  useEffect(() => {
+    if (
+      (toolMode !== "boardShape" || sketchState.kind !== "drawing") &&
+      sketchEntryRef.current
+    ) {
+      setSketchEntry(null);
+    }
+  }, [toolMode, sketchState]);
   // Length-Tune tool session (pcb.lengthTuning) + its inline target editor.
   const [tuneState, dispatchTune] = useReducer(
     tuneToolReducer,
@@ -737,6 +857,23 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   alignmentGuidesEnabledRef.current = alignmentGuidesEnabled;
   const cameraControlsRef = useRef<PcbCameraControls | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  // Close the board-shape sketch: build a canonical contour from the collected
+  // vertices, persist it as one `pcb_set_board_outline`, exit to select, and
+  // reframe. Held in a ref so the interaction handler / keydown effect call the
+  // latest closure without listing it (and `workspace`) in their dep arrays.
+  const finishSketchRef = useRef<(verticesMm: PcbPointMm[]) => void>(
+    () => undefined,
+  );
+  finishSketchRef.current = (verticesMm) => {
+    if (verticesMm.length < MIN_SKETCH_VERTICES) return;
+    const outline = verticesToContour(verticesMm);
+    dispatchSketch({ kind: "cancel" });
+    setToolMode("select");
+    void workspace
+      .updateBoardOutline(outline)
+      .then(() => cameraControlsRef.current?.fit())
+      .catch(() => undefined);
+  };
   // Apply a cross-tab "center on violation" request from the DRC tab once the
   // camera is ready. Board mirror flips X on bottom view, so flip the target.
   useEffect(() => {
@@ -2528,6 +2665,40 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           return;
         }
 
+        // Board Shape mode — each click drops a polygon vertex (Shift locks the
+        // edge to 45°). Clicking near the start vertex (>= 3 placed) or pressing
+        // Enter closes the outline into one committed contour.
+        if (toolMode === "boardShape") {
+          const snapped = snapPoint(cursor);
+          const sketch = sketchStateRef.current;
+          if (sketch.kind !== "drawing") {
+            dispatchSketch({ kind: "start", pointMm: snapped });
+            return;
+          }
+          const verts = sketch.session.verticesMm;
+          const last = verts[verts.length - 1]!;
+          const entry = sketchEntryRef.current;
+          const { point } = resolveSketchTarget(last, snapped, {
+            shiftLock: shiftHeldRef.current,
+            ...(entry ? parsedEntry(entry) : {}),
+            others: verts.slice(0, -1),
+            tolMm: SNAP_THRESHOLD_PX / drcZoomRef.current,
+          });
+          const first = verts[0]!;
+          if (
+            canCloseSketch(sketch) &&
+            Math.hypot(point.x - first.x, point.y - first.y) <=
+              SKETCH_CLOSE_THRESHOLD_MM
+          ) {
+            finishSketchRef.current(verts);
+            setSketchEntry(null);
+            return;
+          }
+          dispatchSketch({ kind: "commit-vertex", pointMm: point });
+          setSketchEntry(null);
+          return;
+        }
+
         // Route mode takes the click first.
         if (toolMode === "route") {
           if (!defaultNetClass) return;
@@ -2642,11 +2813,43 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           return;
         }
 
-        // Board resize — a grip on the board edge/corner wins over everything
-        // else in select mode. Gated behind the explicit Board-dimensions
-        // toggle. The bbox handles resize any outline kind.
+        // Board editing (behind the Board-dimensions toggle). Editable outlines
+        // (polygon / contour) get direct vertex/edge manipulation — this also
+        // avoids the arc-corrupting non-uniform bbox scale. Parametric outlines
+        // (rect / roundrect / circle) get the bbox resize grips.
         const outline = workspace.projection?.board.outline;
-        if (boardDimModeRef.current && outline) {
+        if (boardDimModeRef.current && outline && isEditableOutline(outline)) {
+          const vIndex = hitOutlineVertex(
+            outline,
+            cursor,
+            BOARD_HANDLE_TOLERANCE_MM,
+          );
+          if (vIndex !== null) {
+            setSelection(emptyPcbSelection());
+            setVertexDragSession({
+              vIndex,
+              initial: outline,
+              current: outline,
+              moved: false,
+            });
+            return;
+          }
+          const edge = hitOutlineEdge(outline, cursor, BOARD_HANDLE_TOLERANCE_MM);
+          if (edge) {
+            const inserted = insertVertexAtEdge(
+              outline,
+              edge.edgeIndex,
+              snapPoint(edge.pointMm),
+            );
+            setCommittedOutlineOverride(inserted);
+            void workspace
+              .updateBoardOutline(inserted)
+              .catch(() => undefined)
+              .finally(() => setCommittedOutlineOverride(null));
+            return;
+          }
+        }
+        if (boardDimModeRef.current && outline && !isEditableOutline(outline)) {
           const handle = hitBoardHandle(
             outline,
             cursor,
@@ -2972,10 +3175,26 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           return;
         }
 
-        // Hover affordance for board handles (board-dim mode, any outline).
+        // Vertex drag in flight — reshape the outline live to the snapped cursor.
+        if (vertexDragSessionRef.current) {
+          const snapped = snapPoint(cursor);
+          setVertexDragSession((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  current: moveVertex(prev.initial, prev.vIndex, snapped),
+                  moved: true,
+                }
+              : prev,
+          );
+          return;
+        }
+
+        // Hover affordance for the bbox resize grips (parametric outlines only;
+        // editable outlines use vertex grips, not axis-resize cursors).
         if (boardDimModeRef.current && toolMode === "select") {
           const outline = workspace.projection?.board.outline;
-          if (outline) {
+          if (outline && !isEditableOutline(outline)) {
             const handle = hitBoardHandle(
               outline,
               cursor,
@@ -3098,6 +3317,19 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
           }
           return;
         }
+        const vertexDrag = vertexDragSessionRef.current;
+        if (vertexDrag) {
+          setVertexDragSession(null);
+          if (vertexDrag.moved) {
+            const next = vertexDrag.current;
+            setCommittedOutlineOverride(next);
+            void workspace
+              .updateBoardOutline(next)
+              .catch(() => undefined)
+              .finally(() => setCommittedOutlineOverride(null));
+          }
+          return;
+        }
         if (marquee.marqueeSession) {
           marquee.finishMarquee();
           return;
@@ -3187,6 +3419,128 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       onContextMenu(event) {
         const cursor = eventToMm(event);
         const groups: ContextMenuGroup[] = [];
+
+        // Board-outline corner ops (board-dim mode + editable outline): fillet /
+        // chamfer / delete the vertex under the cursor. Fillet & chamfer need a
+        // contour (arc-capable); polygon corners only delete in v1.
+        const editOutline = workspace.projection?.board.outline;
+        if (
+          boardDimModeRef.current &&
+          editOutline &&
+          isEditableOutline(editOutline)
+        ) {
+          const vIndex = hitOutlineVertex(
+            editOutline,
+            cursor,
+            BOARD_HANDLE_TOLERANCE_MM,
+          );
+          if (vIndex !== null) {
+            const apply = (next: PcbBoardOutline | null): void => {
+              if (!next) return;
+              void workspace.updateBoardOutline(next).catch(() => undefined);
+            };
+            const contour =
+              editOutline.kind === "contour" ? editOutline : null;
+            openContextMenu({
+              scope: "pcb",
+              position: { x: event.screenPoint.x, y: event.screenPoint.y },
+              groups: [
+                {
+                  id: "outline-corner",
+                  items: [
+                    {
+                      kind: "action",
+                      id: "fillet-corner",
+                      label: "Fillet corner…",
+                      disabled: !contour,
+                      onSelect: () => {
+                        if (contour) {
+                          setCornerOp({ mode: "fillet", vIndex, contour });
+                        }
+                      },
+                    },
+                    {
+                      kind: "action",
+                      id: "chamfer-corner",
+                      label: "Chamfer corner…",
+                      disabled: !contour,
+                      onSelect: () => {
+                        if (contour) {
+                          setCornerOp({ mode: "chamfer", vIndex, contour });
+                        }
+                      },
+                    },
+                    {
+                      kind: "action",
+                      id: "set-vertex-position",
+                      label: "Set position…",
+                      onSelect: () =>
+                        setDimOp({
+                          kind: "vertex-xy",
+                          outline: editOutline,
+                          vIndex,
+                        }),
+                    },
+                    { kind: "separator", id: "sep-del-vertex" },
+                    {
+                      kind: "action",
+                      id: "delete-vertex",
+                      label: "Delete vertex",
+                      onSelect: () => apply(deleteVertex(editOutline, vIndex)),
+                    },
+                  ],
+                },
+              ],
+            });
+            return;
+          }
+          // No vertex under the cursor — offer edge ops when over a straight edge.
+          const edge = hitOutlineEdge(
+            editOutline,
+            cursor,
+            BOARD_HANDLE_TOLERANCE_MM,
+          );
+          if (edge) {
+            openContextMenu({
+              scope: "pcb",
+              position: { x: event.screenPoint.x, y: event.screenPoint.y },
+              groups: [
+                {
+                  id: "outline-edge",
+                  items: [
+                    {
+                      kind: "action",
+                      id: "set-edge-length",
+                      label: "Set length…",
+                      onSelect: () =>
+                        setDimOp({
+                          kind: "edge-length",
+                          outline: editOutline,
+                          edgeIndex: edge.edgeIndex,
+                        }),
+                    },
+                    {
+                      kind: "action",
+                      id: "insert-edge-vertex",
+                      label: "Insert vertex here",
+                      onSelect: () =>
+                        void workspace
+                          .updateBoardOutline(
+                            insertVertexAtEdge(
+                              editOutline,
+                              edge.edgeIndex,
+                              edge.pointMm,
+                            ),
+                          )
+                          .catch(() => undefined),
+                    },
+                  ],
+                },
+              ],
+            });
+            return;
+          }
+        }
 
         if (routeState.kind !== "idle") {
           groups.push({
@@ -3658,6 +4012,23 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         return;
       }
       if (
+        (event.key === "o" || event.key === "O") &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        routeState.kind !== "routing"
+      ) {
+        event.preventDefault();
+        dispatchSketch({ kind: "cancel" });
+        setBoardDimMode(false);
+        setToolMode((prev) =>
+          prev === "boardShape" ? "select" : "boardShape",
+        );
+        dispatchRoute({ kind: "cancel" });
+        dispatchMeasure({ kind: "clear" });
+        return;
+      }
+      if (
         (event.key === "p" || event.key === "P") &&
         routeState.kind !== "routing"
       ) {
@@ -3817,6 +4188,81 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         if (toolMode === "route") dispatchRoute({ kind: "cancel" });
         dispatchMeasure({ kind: "clear" });
         return;
+      }
+
+      // Board-shape sketch keys: Enter closes, Esc cancels + exits, Backspace
+      // removes the last vertex.
+      if (toolMode === "boardShape") {
+        const sketch = sketchStateRef.current;
+        const drawing = sketch.kind === "drawing";
+        // Typed numeric entry: digits / dot / (angle) minus build the buffer.
+        if (
+          drawing &&
+          (/^[0-9]$/.test(event.key) || event.key === "." || event.key === "-")
+        ) {
+          event.preventDefault();
+          setSketchEntry((cur) =>
+            appendToEntry(cur ?? emptySketchEntry(), event.key),
+          );
+          return;
+        }
+        if (drawing && event.key === "Tab") {
+          event.preventDefault();
+          setSketchEntry((cur) => toggleEntryField(cur ?? emptySketchEntry()));
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const entry = sketchEntryRef.current;
+          if (drawing && entry && entryHasValue(entry)) {
+            // Commit exactly what the readout shows (preview folds in the typed
+            // dims), or close the loop when it lands on the start vertex.
+            const verts = sketch.session.verticesMm;
+            const point = sketchPreviewRef.current?.preview ?? null;
+            if (point) {
+              const first = verts[0]!;
+              if (
+                canCloseSketch(sketch) &&
+                Math.hypot(point.x - first.x, point.y - first.y) <=
+                  SKETCH_CLOSE_THRESHOLD_MM
+              ) {
+                finishSketchRef.current(verts);
+              } else {
+                dispatchSketch({ kind: "commit-vertex", pointMm: point });
+              }
+            }
+            setSketchEntry(null);
+            return;
+          }
+          if (drawing && canCloseSketch(sketch)) {
+            finishSketchRef.current(sketch.session.verticesMm);
+          }
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          if (sketchEntryRef.current) {
+            setSketchEntry(null); // first Esc drops the typed buffer
+            return;
+          }
+          dispatchSketch({ kind: "cancel" });
+          setToolMode("select");
+          return;
+        }
+        if (event.key === "Backspace") {
+          event.preventDefault();
+          const entry = sketchEntryRef.current;
+          if (
+            drawing &&
+            entry &&
+            (entry.lengthText !== "" || entry.angleText !== "")
+          ) {
+            setSketchEntry(backspaceEntry(entry));
+            return;
+          }
+          dispatchSketch({ kind: "undo-vertex" });
+          return;
+        }
       }
 
       // Routing-only keys.
@@ -4192,6 +4638,8 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   // moves or deletes any of them — this is purely informational.
   const effectiveOutlineRect: PcbBoardOutline | null =
     boardResizeSession?.currentRect ??
+    vertexDragSession?.current ??
+    cornerPreviewOutline ??
     committedOutlineOverride ??
     workspace.projection?.board.outline ??
     null;
@@ -4613,6 +5061,38 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     };
   }, [autoFinishProposal, routeState]);
 
+  // Board-shape draw preview: committed vertices + the rubber-band to the
+  // (snapped, optionally 45°-locked) cursor. Null unless actively drawing.
+  const sketchPreview = useMemo(() => {
+    if (toolMode !== "boardShape" || sketchState.kind !== "drawing") return null;
+    const vertices = sketchState.session.verticesMm;
+    let preview: PcbPointMm | null = null;
+    let infer: InferResult | null = null;
+    if (cursorMm) {
+      const last = vertices[vertices.length - 1]!;
+      const snapped = snapPoint(cursorMm);
+      const resolved = resolveSketchTarget(last, snapped, {
+        shiftLock: shiftHeldRef.current,
+        ...(sketchEntry ? parsedEntry(sketchEntry) : {}),
+        others: vertices.slice(0, -1),
+        tolMm: SNAP_THRESHOLD_PX / drcZoomRef.current,
+      });
+      preview = resolved.point;
+      infer = resolved.infer;
+    }
+    return { vertices, preview, infer };
+  }, [cursorMm, snapPoint, sketchState, toolMode, sketchEntry]);
+  const sketchPreviewRef = useRef(sketchPreview);
+  sketchPreviewRef.current = sketchPreview;
+
+  // Live length/angle of the rubber-band edge, for the at-cursor readout box.
+  const sketchReadout = useMemo(() => {
+    if (!sketchPreview?.preview || sketchPreview.vertices.length === 0) return null;
+    const last = sketchPreview.vertices[sketchPreview.vertices.length - 1]!;
+    const m = measureBetween(last, sketchPreview.preview);
+    return { lengthMm: m.distanceMm, angleDeg: m.angleDeg };
+  }, [sketchPreview]);
+
   const sceneMarqueeOverlay = useMemo(
     () => ({
       a: marquee.overlayProps.a,
@@ -4715,9 +5195,24 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
             projection={workspace.projection}
             selection={sceneSelection}
             outlineOverride={
-              boardResizeSession?.currentRect ?? committedOutlineOverride
+              boardResizeSession?.currentRect ??
+              vertexDragSession?.current ??
+              cornerPreviewOutline ??
+              committedOutlineOverride
             }
-            boardHandlesVisible={boardDimMode && toolMode === "select"}
+            boardHandlesVisible={
+              boardDimMode &&
+              toolMode === "select" &&
+              !!workspace.projection &&
+              !isEditableOutline(workspace.projection.board.outline)
+            }
+            vertexHandlesVisible={
+              boardDimMode &&
+              toolMode === "select" &&
+              !!workspace.projection &&
+              isEditableOutline(workspace.projection.board.outline)
+            }
+            sketchPreview={sketchPreview}
             dragOverride={dragOverride}
             freePrimitiveDragOverrides={freePrimitiveDragOverrides}
             highlightedNetId={workspace.highlightedNetId}
@@ -4917,6 +5412,16 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                 setToolMode((prev) => (prev === "route" ? "select" : "route"));
                 if (toolMode === "route") dispatchRoute({ kind: "cancel" });
                 dispatchMeasure({ kind: "clear" });
+              }}
+              boardShapeMode={toolMode === "boardShape"}
+              onToggleBoardShape={() => {
+                dispatchSketch({ kind: "cancel" });
+                dispatchRoute({ kind: "cancel" });
+                dispatchMeasure({ kind: "clear" });
+                setBoardDimMode(false);
+                setToolMode((prev) =>
+                  prev === "boardShape" ? "select" : "boardShape",
+                );
               }}
               measureMode={toolMode === "measure"}
               onToggleMeasureMode={() => {
@@ -5251,6 +5756,25 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         </div>
       ) : null}
 
+      {vertexDragSession &&
+      cursorClientPx &&
+      isEditableOutline(vertexDragSession.current)
+        ? (() => {
+            const v = outlineVertices(vertexDragSession.current)[
+              vertexDragSession.vIndex
+            ];
+            if (!v) return null;
+            return (
+              <div
+                className="pointer-events-none fixed z-30 rounded-full border border-violet-500/60 bg-slate-950/95 px-2.5 py-0.5 text-[11px] font-semibold tabular-nums text-slate-100 shadow-lg backdrop-blur"
+                style={{ left: cursorClientPx.x + 14, top: cursorClientPx.y + 14 }}
+              >
+                {roundDimMm(v.x)}, {roundDimMm(v.y)} mm
+              </div>
+            );
+          })()
+        : null}
+
       {toolMode === "route" && cursorClientPx ? (
         <div
           className="pointer-events-none fixed z-30 flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-950/90 px-2 py-0.5 text-[10px] font-medium text-slate-100 shadow-lg backdrop-blur"
@@ -5328,6 +5852,19 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
         <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2">
           <MeasureHintStrip active={measureState.kind === "measuring"} />
         </div>
+      ) : null}
+      {toolMode === "boardShape" ? (
+        <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2">
+          <SketchHintStrip active={sketchState.kind === "drawing"} />
+        </div>
+      ) : null}
+      {toolMode === "boardShape" && sketchState.kind === "drawing" ? (
+        <SketchDimEntry
+          entry={sketchEntry}
+          readout={sketchReadout}
+          constraint={sketchPreview?.infer?.kind ?? null}
+          cursorClientPx={cursorClientPx}
+        />
       ) : null}
 
       {workspace.projection && props.layersPanelTarget
@@ -5463,10 +6000,70 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
                   return !prev;
                 })
               }
+              onDrawShape={() => {
+                dispatchSketch({ kind: "cancel" });
+                dispatchRoute({ kind: "cancel" });
+                dispatchMeasure({ kind: "clear" });
+                setBoardDimMode(false);
+                setToolMode("boardShape");
+              }}
+              onImportDxf={() => {
+                setBoardDimMode(false);
+                setDxfImportOpen(true);
+              }}
             />,
             props.boardPanelTarget,
           )
         : null}
+      {dxfImportOpen ? (
+        <DxfImportModal
+          backendURL={props.backendURL ?? null}
+          onApply={(outline) => {
+            void workspace
+              .updateBoardOutline(outline)
+              .then(() => cameraControlsRef.current?.fit())
+              .catch(() => undefined);
+          }}
+          onClose={() => setDxfImportOpen(false)}
+        />
+      ) : null}
+      {cornerOp ? (
+        <CornerOpModal
+          mode={cornerOp.mode}
+          contour={cornerOp.contour}
+          vIndex={cornerOp.vIndex}
+          onPreview={setCornerPreviewOutline}
+          onApply={(outline) => {
+            // Pin the result across the async projection refresh (no flash).
+            setCommittedOutlineOverride(outline);
+            void workspace
+              .updateBoardOutline(outline)
+              .catch(() => undefined)
+              .finally(() => setCommittedOutlineOverride(null));
+          }}
+          onClose={() => {
+            setCornerOp(null);
+            setCornerPreviewOutline(null);
+          }}
+        />
+      ) : null}
+      {dimOp ? (
+        <EdgeDimModal
+          target={dimOp}
+          onPreview={setCornerPreviewOutline}
+          onApply={(outline) => {
+            setCommittedOutlineOverride(outline);
+            void workspace
+              .updateBoardOutline(outline)
+              .catch(() => undefined)
+              .finally(() => setCommittedOutlineOverride(null));
+          }}
+          onClose={() => {
+            setDimOp(null);
+            setCornerPreviewOutline(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

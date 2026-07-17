@@ -127,6 +127,7 @@ import {
   validateViaAgainstFab,
 } from "./pcb/fab-presets";
 import { computeOutlineBboxMm } from "./pcb/outline-geometry";
+import { firstContourError, normalizeContour } from "./pcb/contour-validation";
 import { below } from "./pcb/tolerance";
 import { copperLayerIndex } from "../../../sdks/designer";
 import {
@@ -187,15 +188,10 @@ function validateBoardOutlineGeometry(outline: PcbBoardOutline): string | null {
       }
       return null;
     case "contour":
-      if (!isFinitePoint(outline.start)) return "contour start must be finite";
-      if (outline.segments.length < 3) return "contour needs >= 3 segments";
-      for (const seg of outline.segments) {
-        if (!isFinitePoint(seg.to)) return "contour points must be finite";
-        if (seg.type === "arc" && !isFinitePoint(seg.centerMm)) {
-          return "contour arc centers must be finite";
-        }
-      }
-      return null;
+      // Deep contour rules (closure, arc-radius consistency, self-intersection)
+      // live in the shared validator. Callers must {@link normalizeContour}
+      // first so the explicit-closure check holds.
+      return firstContourError(outline);
     default:
       return null;
   }
@@ -593,16 +589,30 @@ export function executeDesignerCommand({
   }
 
   if (command.type === "pcb_set_board_outline") {
-    const invalid = validateBoardOutlineGeometry(command.outline);
+    // Canonicalise contours (drop degenerate edges, force explicit closure)
+    // before validating so every producer — draw tool, edits, DXF import, raw
+    // HTTP — is held to the same shape contract.
+    const normalizedOutline =
+      command.outline.kind === "contour"
+        ? normalizeContour(command.outline)
+        : command.outline;
+    const invalid = validateBoardOutlineGeometry(normalizedOutline);
     if (invalid) return invalidPcbBoardSettings(invalid);
-    for (const cut of command.cutouts ?? []) {
+    const normalizedCutouts = command.cutouts?.map((cut) => ({
+      ...cut,
+      shape:
+        cut.shape.kind === "contour"
+          ? normalizeContour(cut.shape)
+          : cut.shape,
+    }));
+    for (const cut of normalizedCutouts ?? []) {
       const cutInvalid = validateBoardOutlineGeometry(cut.shape);
       if (cutInvalid) return invalidPcbBoardSettings(`cutout: ${cutInvalid}`);
     }
     // Recompute the cached bbox so non-rect shapes report a correct footprint.
-    const bbox = computeOutlineBboxMm(command.outline);
-    const outline = { ...command.outline, ...bbox };
-    const cutouts = command.cutouts?.map((cut) => ({
+    const bbox = computeOutlineBboxMm(normalizedOutline);
+    const outline = { ...normalizedOutline, ...bbox };
+    const cutouts = normalizedCutouts?.map((cut) => ({
       ...cut,
       shape: { ...cut.shape, ...computeOutlineBboxMm(cut.shape) },
     }));

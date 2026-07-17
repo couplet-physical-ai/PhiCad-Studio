@@ -9,6 +9,8 @@ import {
   ValidationError,
 } from "../../../core/contracts/errors";
 import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
+import { inspectDxf } from "./import/dxf/to-outline";
+import { DxfImportError } from "./import/dxf/parse-dxf";
 import { buildExportBundle } from "./export";
 import {
   buildBomCsv,
@@ -3033,6 +3035,35 @@ export function registerRoutes(
       body.bytes,
     );
     return success({ report });
+  });
+
+  // Read-only DXF outline inspect: parse → candidate loops. No writes — the
+  // client confirms a chosen loop through the normal `pcb_set_board_outline`
+  // command (one undo / revision check / idempotency).
+  router.post("/imports/dxf/inspect", async ({ req }) => {
+    const body = await parseJsonBody<{
+      content?: unknown;
+      unitScaleMm?: unknown;
+    }>(req);
+    if (typeof body.content !== "string" || body.content.length === 0) {
+      throw new ValidationError("content (DXF text) is required");
+    }
+    const unitScaleMm =
+      typeof body.unitScaleMm === "number" && body.unitScaleMm > 0
+        ? body.unitScaleMm
+        : undefined;
+    try {
+      const result = inspectDxf(
+        body.content,
+        unitScaleMm ? { unitScaleMm } : undefined,
+      );
+      return success({ result });
+    } catch (err) {
+      if (err instanceof DxfImportError) {
+        throw new ValidationError(err.message);
+      }
+      throw err;
+    }
   });
 
   router.post("/imports/kicad-project", async (routeCtx) => {
