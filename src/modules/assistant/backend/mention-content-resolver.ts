@@ -159,6 +159,24 @@ export class MentionContentResolver {
         return { content: "", images: [] };
       }
 
+      // PDF-engine pages have no Tiptap doc to convert. Return a stub so the
+      // reference still resolves; full text extraction is a follow-up.
+      if (pageData.content.engine === "pdf") {
+        const data = pageData.content.data as {
+          fileName?: string;
+          pageCount?: number;
+        };
+        const name = data.fileName ?? pageData.title;
+        const pages =
+          typeof data.pageCount === "number"
+            ? `${data.pageCount} page${data.pageCount === 1 ? "" : "s"}`
+            : "PDF";
+        return {
+          content: `[PDF document "${name}" — ${pages}. Attached PDF; text not extracted.]`,
+          images: [],
+        };
+      }
+
       const extracted = extractImagesFromTiptap(pageData.content.data)
         .filter((img) => img.byteSize <= MENTION_LIMITS.MAX_IMAGE_BYTE_SIZE)
         .slice(0, MENTION_LIMITS.MAX_IMAGES_PER_PAGE)

@@ -5,6 +5,7 @@ import { Button } from "@shared/frontend/ui/button";
 import { useKnowledgeApi, useAutosave } from "../../hooks";
 import { useTreeStore } from "../../stores/tree-store";
 import { TiptapEditor } from "./TiptapEditor";
+import { PdfViewer } from "./PdfViewer";
 import { FixedToolbar } from "./FixedToolbar";
 import { LinkDialog } from "./LinkDialog";
 import { findParentNode } from "../Sidebar/PageTree";
@@ -235,6 +236,10 @@ export function PageEditor({
 
   const breadcrumb = pageId ? buildBreadcrumb(tree, pageId) : [];
   const editedRelative = page ? formatRelativeTime(page.updated_at) : null;
+  const pdfData =
+    page && page.content_engine === "pdf" && page.content_json.engine === "pdf"
+      ? page.content_json.data
+      : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -304,33 +309,52 @@ export function PageEditor({
               <span aria-hidden>·</span>
             </>
           )}
-          <span>
-            {wordCount} {wordCount === 1 ? "word" : "words"}
-          </span>
+          {pdfData ? (
+            <span>
+              {pdfData.pageCount
+                ? `${pdfData.pageCount} ${pdfData.pageCount === 1 ? "page" : "pages"}`
+                : "PDF"}
+            </span>
+          ) : (
+            <span>
+              {wordCount} {wordCount === 1 ? "word" : "words"}
+            </span>
+          )}
         </div>
       </div>
 
-      {editor && <FixedToolbar editor={editor} onLinkClick={() => setLinkDialogOpen(true)} />}
+      {editor && !pdfData && (
+        <FixedToolbar editor={editor} onLinkClick={() => setLinkDialogOpen(true)} />
+      )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {isLoading && !page ? (
-          <div className="p-4 text-sm text-text-tertiary">Loading page...</div>
-        ) : error ? (
-          <div className="flex items-center gap-2 p-4 text-sm text-status-danger">
-            <AlertCircle className="h-4 w-4" />
-            {error}
-          </div>
-        ) : page ? (
-          <TiptapEditor
-            initialContent={page.content_json}
-            onChange={triggerSave}
-            onReady={setEditor}
-            readOnly={false}
+      {pdfData ? (
+        <div className="min-h-0 flex-1">
+          <PdfViewer
+            pdfUrl={api.pdfUrl(page!.id)}
+            fileName={pdfData.fileName}
           />
-        ) : null}
-      </div>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {isLoading && !page ? (
+            <div className="p-4 text-sm text-text-tertiary">Loading page...</div>
+          ) : error ? (
+            <div className="flex items-center gap-2 p-4 text-sm text-status-danger">
+              <AlertCircle className="h-4 w-4" />
+              {error}
+            </div>
+          ) : page ? (
+            <TiptapEditor
+              initialContent={page.content_json}
+              onChange={triggerSave}
+              onReady={setEditor}
+              readOnly={false}
+            />
+          ) : null}
+        </div>
+      )}
 
-      {editor && (
+      {editor && !pdfData && (
         <LinkDialog
           editor={editor}
           open={linkDialogOpen}

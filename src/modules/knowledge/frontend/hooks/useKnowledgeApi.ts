@@ -38,6 +38,16 @@ interface ApiResponse<T> {
 
 export interface KnowledgeApi {
   createPage: (params: CreatePageParams) => Promise<Page | null>;
+  importPdf: (
+    file: File,
+    options?: {
+      project_id?: string;
+      parent_id?: string;
+      page_count?: number;
+    },
+  ) => Promise<Page | null>;
+  /** URL that streams the stored PDF for a pdf-engine page (empty if no backend). */
+  pdfUrl: (pageId: string) => string;
   getPage: (pageId: string, options?: { signal?: AbortSignal }) => Promise<Page | null>;
   updatePageMeta: (
     pageId: string,
@@ -153,6 +163,56 @@ export function createKnowledgeApi(
     if (result.error) throw result.error;
     return result.data?.page ?? null;
   };
+
+  const importPdf = async (
+    file: File,
+    options?: {
+      project_id?: string;
+      parent_id?: string;
+      page_count?: number;
+    },
+  ) => {
+    if (!base) {
+      throw new KnowledgeApiError({
+        status: 503,
+        code: "BACKEND_NOT_READY",
+      });
+    }
+    const form = new FormData();
+    form.set("file", file);
+    form.set("workspace_id", DEFAULT_WORKSPACE);
+    if (options?.project_id) form.set("project_id", options.project_id);
+    if (options?.parent_id) form.set("parent_id", options.parent_id);
+    if (options?.page_count != null) {
+      form.set("page_count", String(options.page_count));
+    }
+
+    // Raw fetch (not fetchApi) so the browser sets the multipart boundary.
+    const response = await fetch(`${base}/pages/import/pdf`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => undefined);
+      const code =
+        typeof errorData === "object" &&
+        errorData !== null &&
+        "error" in errorData &&
+        typeof (errorData as { error?: unknown }).error === "string"
+          ? (errorData as { error: string }).error
+          : `HTTP_${response.status}`;
+      throw new KnowledgeApiError({
+        status: response.status,
+        code,
+        payload: errorData,
+      });
+    }
+    const data = (await response.json()) as { page?: Page };
+    return data?.page ?? null;
+  };
+
+  const pdfUrl = (pageId: string) =>
+    base ? `${base}/pages/${pageId}/pdf` : "";
 
   const getPage = async (
     pageId: string,
@@ -304,6 +364,8 @@ export function createKnowledgeApi(
 
   return {
     createPage,
+    importPdf,
+    pdfUrl,
     getPage,
     updatePageMeta,
     updatePageContent,

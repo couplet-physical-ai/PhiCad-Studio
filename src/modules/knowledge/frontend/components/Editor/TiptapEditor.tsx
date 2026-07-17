@@ -1,11 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import Placeholder from "@tiptap/extension-placeholder";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
-import Image from "@tiptap/extension-image";
-import Link from "@tiptap/extension-link";
+import { createKnowledgeEditorExtensions } from "./tiptap-extensions";
 import type { EditorContent as EditorContentType } from "../../../shared/types";
 
 interface TiptapEditorProps {
@@ -42,19 +37,7 @@ export function TiptapEditor({
   }, [onChange]);
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: { levels: [1, 2, 3] },
-      }),
-      Placeholder.configure({
-        placeholder: "Start typing...",
-        emptyEditorClass: "tiptap-is-empty",
-      }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
-      Image.configure({ inline: false, allowBase64: true }),
-      Link.configure({ openOnClick: false }),
-    ],
+    extensions: createKnowledgeEditorExtensions(),
     content: (() => {
       const data = initialContent?.data;
       if (data && typeof data === "object" && "type" in data) {

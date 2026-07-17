@@ -24,11 +24,27 @@ export interface PageProperties {
   [propertyId: string]: PageProperty;
 }
 
-export interface EditorContent {
+export interface TiptapContent {
   engine: "tiptap";
   version: number;
   data: unknown;
 }
+
+export interface PdfContentData {
+  sha256: string;
+  fileName: string;
+  byteSize: number;
+  mimeType: "application/pdf";
+  pageCount?: number;
+}
+
+export interface PdfContent {
+  engine: "pdf";
+  version: number;
+  data: PdfContentData;
+}
+
+export type EditorContent = TiptapContent | PdfContent;
 
 export interface Page {
   id: string;
@@ -76,6 +92,8 @@ export interface CreatePageParams {
   parent_id?: string;
   title: string;
   after_sibling_id?: string;
+  /** Initial page body. Defaults to an empty Tiptap doc when omitted. */
+  content?: EditorContent;
 }
 
 export interface UpdatePageMetaParams {

@@ -1,10 +1,14 @@
 import { useCallback, useState, useEffect, useRef } from "react";
-import { Search, Plus, Loader2, FileText, X } from "lucide-react";
+import { Search, Plus, Loader2, FileText, Upload, X } from "lucide-react";
 import { Button } from "@shared/frontend/ui/button";
 import { PageTree } from "./PageTree";
 import { useKnowledgeApi } from "../../hooks";
 import { useTreeStore } from "../../stores/tree-store";
+import { fileToEditorContent } from "../../lib/import-content";
 import type { PageSearchResult } from "../../../shared/types";
+
+const IMPORT_ACCEPT =
+  ".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf";
 
 interface SidebarProps {
   onSelectPage: (id: string) => void;
@@ -21,11 +25,14 @@ export function Sidebar({
 }: SidebarProps) {
   const api = useKnowledgeApi();
   const [isCreating, setIsCreating] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const refreshToken = useTreeStore((state) => state.refreshToken);
+  const requestRefresh = useTreeStore((state) => state.requestRefresh);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const performSearch = useCallback(
     async (query: string) => {
@@ -96,6 +103,43 @@ export function Sidebar({
     }
   }, [api, designId, onSelectPage]);
 
+  const handleImportFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      setIsImporting(true);
+      let lastPageId: string | null = null;
+      try {
+        for (const file of Array.from(files)) {
+          const isPdf =
+            /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+          const page = isPdf
+            ? await api.importPdf(file, { project_id: designId ?? undefined })
+            : await (async () => {
+                const { title, content } = await fileToEditorContent(file);
+                return api.createPage({
+                  workspace_id: "default",
+                  project_id: designId ?? undefined,
+                  title,
+                  content,
+                });
+              })();
+          if (page) lastPageId = page.id;
+        }
+        requestRefresh();
+        if (lastPageId) onSelectPage(lastPageId);
+      } catch (err) {
+        console.error("Failed to import document:", err);
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [api, designId, onSelectPage, requestRefresh],
+  );
+
+  const handleImportClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
   const isInSearchMode = searchQuery.length >= 2;
 
   return (
@@ -122,10 +166,36 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="sm"
+          icon={
+            isImporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Upload className="h-4 w-4" />
+            )
+          }
+          onClick={handleImportClick}
+          disabled={isImporting}
+          title="Import .txt / .md / .pdf"
+          aria-label="Import document"
+        />
+        <Button
+          variant="ghost"
+          size="sm"
           icon={isCreating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
           onClick={handleCreatePage}
           disabled={isCreating}
           aria-label="New page"
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={IMPORT_ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            void handleImportFiles(e.target.files);
+            e.target.value = "";
+          }}
         />
       </div>
 

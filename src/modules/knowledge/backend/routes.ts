@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type {
   CoreBackendModuleContext,
   ModuleRouterHandle,
@@ -7,6 +8,11 @@ import { PageRepository } from "./db/repositories/page-repository";
 import { PageContentConflictError, PageService } from "./services/page-service";
 import { SearchService } from "./services/search-service";
 import { PageEventService } from "./services/page-event-service";
+import {
+  PDF_SIZE_LIMIT_BYTES,
+  pdfAbsolutePath,
+  writePdf,
+} from "./services/pdf-store";
 import type {
   CreatePageParams,
   MovePageParams,
@@ -31,6 +37,22 @@ function isValidEditorContent(
     typeof record.version === "number" &&
     "data" in record
   );
+}
+
+const PDF_MAGIC = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // "%PDF-"
+
+function hasPdfMagic(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < PDF_MAGIC.length) return false;
+  for (let i = 0; i < PDF_MAGIC.length; i += 1) {
+    if (bytes[i] !== PDF_MAGIC[i]) return false;
+  }
+  return true;
+}
+
+/** Derive a page title from an uploaded filename (basename minus .pdf). */
+function titleFromFileName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? name;
+  return base.replace(/\.pdf$/i, "").trim() || "Untitled PDF";
 }
 
 function json<T>(data: T, status = 200): Response {
@@ -153,6 +175,63 @@ export function registerRoutes(
     }
   });
 
+  // Import a PDF as a new page (content_engine="pdf"); bytes are stored on disk,
+  // content_json keeps only the sha256 + metadata. Served back via /pages/:id/pdf.
+  router.post("/pages/import/pdf", async ({ req }) => {
+    try {
+      const formData = await req.formData();
+      const file = formData.get("file");
+      if (!(file instanceof File)) {
+        return error("file must be a file upload", 400);
+      }
+      if (file.size > PDF_SIZE_LIMIT_BYTES) {
+        return error("PDF exceeds the 50MB size limit", 413);
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!hasPdfMagic(bytes)) {
+        return error("File is not a PDF (missing %PDF- header)", 400);
+      }
+
+      const stored = await writePdf(bytes);
+
+      const projectId = formData.get("project_id");
+      const parentId = formData.get("parent_id");
+      const workspaceId = formData.get("workspace_id");
+      const pageCountRaw = formData.get("page_count");
+      const pageCount =
+        typeof pageCountRaw === "string" && pageCountRaw.length > 0
+          ? Number(pageCountRaw)
+          : undefined;
+
+      const page = await pageService.createPage({
+        workspace_id:
+          typeof workspaceId === "string" && workspaceId.length > 0
+            ? workspaceId
+            : DEFAULT_WORKSPACE,
+        project_id: typeof projectId === "string" ? projectId : undefined,
+        parent_id: typeof parentId === "string" ? parentId : undefined,
+        title: titleFromFileName(file.name),
+        content: {
+          engine: "pdf",
+          version: 1,
+          data: {
+            sha256: stored.sha256,
+            fileName: file.name,
+            byteSize: stored.byteSize,
+            mimeType: "application/pdf",
+            ...(pageCount !== undefined && Number.isFinite(pageCount)
+              ? { pageCount }
+              : {}),
+          },
+        },
+      });
+      return json({ page }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return error(message);
+    }
+  });
+
   router.get("/pages/:pageId", async ({ params }) => {
     try {
       const pageId = params.getOrThrow("pageId");
@@ -161,6 +240,47 @@ export function registerRoutes(
         return error("PAGE_NOT_FOUND", 404);
       }
       return json({ page });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return error(message, 500);
+    }
+  });
+
+  // Stream the stored PDF for a pdf-engine page (embedded viewer + download).
+  router.get("/pages/:pageId/pdf", async ({ params }) => {
+    try {
+      const pageId = params.getOrThrow("pageId");
+      const page = await pageService.getPage(pageId);
+      if (!page) {
+        return error("PAGE_NOT_FOUND", 404);
+      }
+      const content = page.content_json;
+      if (content.engine !== "pdf") {
+        return error("NOT_A_PDF_PAGE", 400);
+      }
+      // Use node:fs (not Bun.file): the desktop app runs the backend in
+      // Electron's Node runtime where `Bun` is undefined.
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(pdfAbsolutePath(content.data.sha256));
+      } catch (err) {
+        if (
+          err instanceof Error &&
+          (err as NodeJS.ErrnoException).code === "ENOENT"
+        ) {
+          return error("PDF_NOT_FOUND", 404);
+        }
+        throw err;
+      }
+      return new Response(new Uint8Array(bytes), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `inline; filename="${encodeURIComponent(
+            content.data.fileName,
+          )}"`,
+          "Cache-Control": "private, max-age=86400",
+        },
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       return error(message, 500);

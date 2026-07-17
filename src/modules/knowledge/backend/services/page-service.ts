@@ -87,6 +87,11 @@ export class PageService {
     }
 
     const now = new Date();
+    const content: EditorContent = params.content ?? {
+      engine: "tiptap",
+      version: 1,
+      data: { type: "doc", content: [{ type: "paragraph" }] },
+    };
     const data: NewKnowledgePage = {
       id: crypto.randomUUID(),
       workspace_id: params.workspace_id,
@@ -94,11 +99,8 @@ export class PageService {
       parent_id: params.parent_id ?? null,
       title: params.title,
       order_key: orderKey,
-      content_json: {
-        engine: "tiptap",
-        version: 1,
-        data: { type: "doc", content: [{ type: "paragraph" }] },
-      },
+      content_engine: content.engine,
+      content_json: content,
       created_at: now,
       updated_at: now,
     };
