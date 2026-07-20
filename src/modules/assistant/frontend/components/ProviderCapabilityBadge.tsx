@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { getPresetByKind } from "@openpcb/ai-core";
 import type { AssistantProviderConfig } from "../../../../sdks/assistant";
 
 export function ProviderCapabilityBadge({
@@ -10,9 +11,10 @@ export function ProviderCapabilityBadge({
   if (!provider.enabled)
     return <Dot color="bg-slate-500" title={`${provider.label} disabled`} />;
   const caps = provider.capabilities;
-  // Heuristic: providers without API key requirement (lmstudio / omlx / openai-compatible) are OK without a key.
+  // Single source of truth: the provider preset's `requiresApiKey` (openai /
+  // openrouter). Local kinds + openpcb-cloud (per-run bearer) never need a key.
   const needsKey =
-    (provider.kind === "openai" || provider.kind === "openrouter") &&
+    (getPresetByKind(provider.kind)?.requiresApiKey ?? false) &&
     !provider.hasApiKey;
   if (needsKey) return <Dot color="bg-red-500" title="API key required" />;
   if (caps) {

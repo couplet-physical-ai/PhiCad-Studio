@@ -76,16 +76,4 @@ export const cloudApi = {
       `/v1/core-lib/${channel}/latest`,
     ),
 
-  // AI component search returns a streamed text response (SSE-ish).
-  aiComponentSearch: async (query: string): Promise<Response> => {
-    const cfg = readCloudConfig();
-    const auth = await authHeader();
-    const headers = new Headers({ "content-type": "application/json" });
-    if (auth) headers.set("authorization", auth);
-    return fetch(`${cfg.apiUrl}/v1/ai/component-search`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ query }),
-    });
-  },
 };

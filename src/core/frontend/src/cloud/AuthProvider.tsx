@@ -32,6 +32,10 @@ interface AuthContextValue {
   acceptInviteToken: (token: string, newPassword: string) => Promise<void>;
   // Update the current user's password (signed-in change + recovery completion).
   updatePassword: (newPassword: string) => Promise<void>;
+  // Force a GoTrue token refresh (used to recover from a mid-run 401 on a cloud
+  // run). onAuthStateChange installs the refreshed session; the returned session
+  // carries the fresh access_token synchronously (React state lags a tick).
+  refresh: () => Promise<Session | null>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -221,6 +225,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [sb],
   );
 
+  const refresh = useCallback(async () => {
+    if (!sb) return null;
+    const { data, error } = await sb.auth.refreshSession();
+    if (error) throw error;
+    return data.session;
+  }, [sb]);
+
   const user = session?.user ?? null;
   const tier: Tier =
     (user?.app_metadata as { tier?: string } | undefined)?.tier === "pro"
@@ -239,6 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut,
       acceptInviteToken,
       updatePassword,
+      refresh,
     }),
     [
       cfg.enabled,
@@ -251,6 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut,
       acceptInviteToken,
       updatePassword,
+      refresh,
     ],
   );
 

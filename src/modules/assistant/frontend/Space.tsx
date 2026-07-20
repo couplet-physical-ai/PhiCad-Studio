@@ -43,12 +43,12 @@ import type {
   AssistantWriteProposalDto,
   SubmitAssistantMessageResult,
 } from "../../../sdks/assistant";
+import { useCloudProviderSeed } from "./cloud/use-cloud-provider-seed";
+import { useAuth } from "../../../core/frontend/src/cloud/AuthProvider";
+import { readCloudConfig } from "../../../core/frontend/src/cloud/config";
 import type { Task, TaskEvent } from "../../../sdks/tasks";
 import { MessageCard } from "./components/MessageCard";
 import { ModelSelectorPill } from "./components/ModelSelectorPill";
-import { CopilotPlanCard } from "./components/CopilotPlanCard";
-import { useCloudChatMode } from "./cloud/use-cloud-chat-mode";
-import type { CopilotUsageFrameData } from "@openpcb/contracts";
 import { ChatComposer } from "./components/ChatComposer";
 import { useChatUserState } from "./components/useChatUserState";
 import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
@@ -154,6 +154,8 @@ export function AssistantSpace({
   moduleId,
   params,
 }: ModuleSpaceProps): ReactElement {
+  // D15: ensure the openpcb-cloud provider is seeded/enabled for Pro users.
+  useCloudProviderSeed(backendURL);
   const base = useMemo(
     () => (backendURL ? `${backendURL}/api/modules/${moduleId}` : null),
     [backendURL, moduleId],
@@ -208,16 +210,6 @@ export function AssistantSpace({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [titleCommitting, setTitleCommitting] = useState(false);
-  // Cloud Copilot run state (mirrors DesignerChatDock): plan-refetch trigger per
-  // chat from {_copilotFrame}s, live credits from copilot.usage frames, budget CTA.
-  const [cloudRunsByChat, setCloudRunsByChat] = useState<
-    Record<string, { cloudRunId: string; refreshKey: number }>
-  >({});
-  const [credits, setCredits] = useState<{
-    remaining: number;
-    low: boolean;
-  } | null>(null);
-  const [budgetHit, setBudgetHit] = useState(false);
   const userState = useChatUserState();
   const navigateToModule = useNavigationStore((s) => s.navigateToModule);
   const activeChatIdRef = useRef<string | null>(null);
@@ -265,11 +257,12 @@ export function AssistantSpace({
 
   const selectedChat = chats.find((c) => c.id === selectedChatId) ?? null;
   const selectedLinked = linkedDesign(selectedChat ?? undefined);
-  // Cloud Copilot mode (selectable in the model picker). Pro users default to it.
-  const cloud = useCloudChatMode({
-    backendURL,
-    designId: selectedLinked?.id ?? null,
-  });
+  // Cloud session + config for the auto-seeded `openpcb-cloud` provider (R4):
+  // submit forwards the bearer + cloud URLs when that provider is selected.
+  const { session, refresh } = useAuth();
+  const cloudCfg = useMemo(() => readCloudConfig(), []);
+  // One silent bearer-refresh retry per chat per run (see onAiEvent / submit).
+  const cloudRetryRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!base) return;
@@ -283,9 +276,6 @@ export function AssistantSpace({
   );
   const selectedRun = selectedChatId
     ? activeRunsByChat[selectedChatId]
-    : undefined;
-  const selectedCloudRun = selectedChatId
-    ? cloudRunsByChat[selectedChatId]
     : undefined;
 
   const toolEventsByMessage = useMemo(() => {
@@ -531,36 +521,7 @@ export function AssistantSpace({
         lastError: mapped.error,
       });
     },
-    onCopilotFrame: (ctx, frame) => {
-      // Cloud-only frames: live credits (advisory) + plan-refetch trigger.
-      if (frame.type === "copilot.usage") {
-        const usage = frame.data as Partial<CopilotUsageFrameData>;
-        if (typeof usage.creditsRemaining === "number") {
-          setCredits({
-            remaining: usage.creditsRemaining,
-            low: usage.lowBalance === true,
-          });
-        }
-        return;
-      }
-      setCloudRunsByChat((prev) => {
-        const current = prev[ctx.chatId];
-        return {
-          ...prev,
-          [ctx.chatId]: {
-            cloudRunId: frame.runId,
-            refreshKey: (current?.refreshKey ?? 0) + 1,
-          },
-        };
-      });
-    },
     onAiEvent: (ctx, event) => {
-      if (
-        event.type === "run.warning" &&
-        event.data.code === "budget_credits"
-      ) {
-        setBudgetHit(true);
-      }
       // Re-fetch tool events for the active chat so cards update live.
       if (!base) return;
       if (event.type === "run.tool.requested") {
@@ -603,6 +564,44 @@ export function AssistantSpace({
           updateRun(ctx.chatId, { emptyResponse: true });
         }
       } else if (event.type === "run.failed") {
+        // R4.5: a mid-run 401 from the metered proxy — silently refresh the
+        // GoTrue session and resubmit once with the fresh bearer. Only for runs
+        // authenticated by the GoTrue bearer — a 401 from a BYO provider (bad
+        // API key) must not trigger a refresh + resubmit.
+        const is401 =
+          event.data.errorCode === "401" ||
+          /token[-_ ]?expired/i.test(event.data.errorMessage ?? "");
+        const isCloudRun = selectedProvider?.kind === "openpcb-cloud";
+        const run = activeRunsByChat[ctx.chatId];
+        if (
+          is401 &&
+          isCloudRun &&
+          session &&
+          run &&
+          !cloudRetryRef.current.has(ctx.chatId)
+        ) {
+          cloudRetryRef.current.add(ctx.chatId);
+          const content = run.userMessageContent;
+          void (async () => {
+            try {
+              const refreshed = await refresh();
+              const bearer = refreshed?.access_token;
+              if (!bearer || !content.trim()) throw new Error("no session");
+              setActiveRunsByChat((prev) => {
+                const next = { ...prev };
+                delete next[ctx.chatId];
+                return next;
+              });
+              await submit(undefined, content, bearer);
+            } catch {
+              updateRun(ctx.chatId, {
+                status: "failed",
+                currentStage: "Session expired — sign in again to continue.",
+              });
+            }
+          })();
+          return;
+        }
         updateRun(ctx.chatId, {
           status: "failed",
           currentStage: "Assistant stopped before completing.",
@@ -623,6 +622,7 @@ export function AssistantSpace({
     onTerminal: (ctx, status, message) => {
       setLoading(false);
       if (status === "completed") {
+        cloudRetryRef.current.delete(ctx.chatId);
         setActiveRunsByChat((prev) => {
           const current = prev[ctx.chatId];
           // A run that completed with no visible answer keeps a retry card instead of
@@ -898,32 +898,32 @@ export function AssistantSpace({
     return chat.id;
   }, [createChat]);
 
-  const submit = async (event?: FormEvent, contentOverride?: string) => {
+  const submit = async (
+    event?: FormEvent,
+    contentOverride?: string,
+    bearerOverride?: string,
+  ) => {
     event?.preventDefault();
     const submittedContent = (contentOverride ?? input).trim();
     if (!base || !submittedContent) return;
-    // Cloud runs need a cloud-linked design; prompt to sync instead of a run
-    // that would fail "not linked". Only block when confirmed unlinked.
-    if (cloud.mode === "cloud" && cloud.linked === false) {
-      setError(
-        "Sync this design to the cloud to use Cloud Copilot (Sync button above), or pick a local provider.",
-      );
-      return;
-    }
     setLoading(true);
     setError(null);
-    setBudgetHit(false);
     try {
       const chatId = await ensureActiveChat();
-      const cloudMode = cloud.mode === "cloud";
+      // A manual submit (no bearer override) opens a fresh retry budget.
+      if (!bearerOverride) cloudRetryRef.current.delete(chatId);
+      // The zero-config `openpcb-cloud` provider (R4) needs the per-request
+      // bearer, but runs as a normal assistant.chat.
+      const cloudProvider = selectedProvider?.kind === "openpcb-cloud";
+      const bearer = bearerOverride ?? session?.access_token;
       const submitHeaders: Record<string, string> = {
         "content-type": "application/json",
       };
-      if (cloudMode && cloud.session) {
+      if (cloudProvider && bearer) {
         // Per-request cloud creds (backend seals them into the task payload).
-        submitHeaders["x-cloud-bearer"] = cloud.session.access_token;
-        submitHeaders["x-cloud-api-url"] = cloud.apiUrl;
-        submitHeaders["x-cloud-copilot-url"] = cloud.copilotUrl;
+        submitHeaders["x-cloud-bearer"] = bearer;
+        submitHeaders["x-cloud-api-url"] = cloudCfg.apiUrl;
+        submitHeaders["x-cloud-copilot-url"] = cloudCfg.copilotUrl;
       }
       const result = await api<SubmitAssistantMessageResult>(
         `${base}/chats/${chatId}/messages`,
@@ -935,7 +935,6 @@ export function AssistantSpace({
             providerConfigId: providerId,
             model,
             promptPresetId,
-            ...(cloudMode ? { mode: "cloud" as const } : {}),
           }),
         },
       );
@@ -1432,10 +1431,7 @@ export function AssistantSpace({
             <ModelSelectorPill
               providers={providers}
               providerId={providerId}
-              onProviderChange={(id) => {
-                cloud.selectLocal();
-                setProviderId(id);
-              }}
+              onProviderChange={setProviderId}
               model={model}
               onModelChange={setModel}
               models={models}
@@ -1448,9 +1444,6 @@ export function AssistantSpace({
               promptPresetId={promptPresetId}
               onPresetChange={setPromptPresetId}
               selectedProvider={selectedProvider}
-              cloudAvailable={cloud.available}
-              cloudSelected={cloud.mode === "cloud"}
-              onSelectCloud={cloud.selectCloud}
             />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1675,44 +1668,6 @@ export function AssistantSpace({
           <div className="h-20 bg-gradient-to-t from-slate-50 to-transparent dark:from-slate-950" />
           <div className="bg-slate-50 px-4 pb-4 dark:bg-slate-950">
             <div className="pointer-events-auto mx-auto w-full max-w-5xl">
-              {cloud.mode === "cloud" && cloud.linked === false ? (
-                <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-                  <span>
-                    Sync this design to the cloud to use Cloud Copilot.
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void cloud.link()}
-                    disabled={cloud.linking || !cloud.actionHeaders}
-                    className="shrink-0 rounded-control bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-                  >
-                    {cloud.linking ? "Syncing…" : "Sync design"}
-                  </button>
-                </div>
-              ) : null}
-              {cloud.linkError ? (
-                <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-                  {cloud.linkError}
-                </div>
-              ) : null}
-              {budgetHit ? (
-                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-                  Cloud AI credits exhausted — top up in the dashboard to
-                  continue.
-                </div>
-              ) : null}
-              {selectedChatId && selectedCloudRun && cloud.actionHeaders && base ? (
-                <div className="mb-2">
-                  <CopilotPlanCard
-                    assistantBase={base}
-                    chatId={selectedChatId}
-                    cloudRunId={selectedCloudRun.cloudRunId}
-                    refreshKey={selectedCloudRun.refreshKey}
-                    cloudHeaders={cloud.actionHeaders}
-                    onError={setError}
-                  />
-                </div>
-              ) : null}
               {showNewMessagesPill ? (
                 <div className="mb-2 flex justify-center">
                   <button
@@ -1754,16 +1709,6 @@ export function AssistantSpace({
                 />
               </div>
               <div className="mt-1.5 text-center text-[10px] text-slate-500">
-                {cloud.mode === "cloud" && credits ? (
-                  <span
-                    className={
-                      credits.low ? "text-amber-600 dark:text-amber-400" : ""
-                    }
-                  >
-                    Cloud Copilot · {credits.remaining} credits
-                    {credits.low ? " (low)" : ""} ·{" "}
-                  </span>
-                ) : null}
                 Assistant can make mistakes. Verify critical design decisions.
               </div>
             </div>

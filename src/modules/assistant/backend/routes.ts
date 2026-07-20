@@ -182,6 +182,19 @@ export function registerRoutes(
     ),
   );
 
+  // D15: zero-config openpcb-cloud provider seed / disable. Idempotent; the
+  // renderer calls seed when a Pro session is present, disable on tier loss.
+  router.post("/providers/cloud/seed", async (ctx) => {
+    const creds = cloudCredsFromHeaders(ctx.req);
+    if (!creds)
+      throw new ValidationError("A signed-in cloud session is required");
+    return json(await getAssistantService().seedCloudProvider(creds));
+  });
+  router.post("/providers/cloud/disable", () => {
+    getAssistantService().disableCloudProvider();
+    return json({ ok: true });
+  });
+
   // Tool events
   router.get("/chats/:id/tool-events", (ctx) => {
     const id = chatId(ctx);

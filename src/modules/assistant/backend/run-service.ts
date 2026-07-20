@@ -4,6 +4,7 @@ import {
   AiToolRegistry,
   type AiChatMessage,
   type AiRunEvent,
+  type AiTool,
   type AiToolCall,
 } from "@openpcb/ai-core";
 import type { CoreBackendModuleContext } from "../../../core/contracts/modules/backend-module";
@@ -23,11 +24,17 @@ import type {
   ResolvedMentionContent,
   MentionImage,
 } from "./mention-resolver-types";
-import type { ProviderStore } from "./provider-store";
+import type { ProviderStore, InternalProviderConfig } from "./provider-store";
+import {
+  openCloudCredentials,
+  type CloudCredentials,
+} from "./cloud/token-crypto";
 import type { SettingsStore } from "./settings-store";
 import type { PromptService } from "./prompt-service";
 import type { ContextResolver } from "./context-resolver";
 import { buildAiProviderClient } from "./providers/openpcb-provider-factory";
+import { loadRemoteTools } from "./cloud/remote-tool";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { BuildIntentStore } from "./verification/build-intent-store";
 import { runDefinitionOfDone } from "./verification/run-dod";
 import { buildDesignContextSummary } from "./context-summary";
@@ -41,6 +48,13 @@ export interface SubmitPayload {
   assistantMessageId: string;
   providerConfigId: string;
   model: string;
+  /**
+   * AES-GCM-sealed {bearer, apiUrl, copilotUrl} (see cloud/token-crypto.ts).
+   * Present only when the selected provider is `openpcb-cloud` (D8): the bearer
+   * is unsealed at run time and used as the per-run apiKey — no key is stored on
+   * the provider row.
+   */
+  cloudBearerEnc?: string;
 }
 
 export interface RunServiceOptions {
@@ -338,6 +352,9 @@ export class RunService {
     callSummaries: Map<string, AssistantToolCallSummary>,
     toolEventsByCall: Map<string, AssistantToolEventDto>,
     runState: AssistantTurnState,
+    runProvider: InternalProviderConfig,
+    remoteTools: AiTool[],
+    cloudHeaders: Record<string, string> | undefined,
   ): Promise<DeficiencyReport | null> {
     const designer = this.designerSdk();
     if (!designer) return null;
@@ -369,21 +386,25 @@ export class RunService {
       const correctionMessages = buildCorrectionMessages(goal, summary, report);
       callSummaries.clear();
       toolEventsByCall.clear();
+      const passRegistry = this.options.buildRegistry(
+        this.options.settings.getSettings().allowRawToolData,
+      );
+      this.registerRemoteTools(passRegistry, remoteTools);
       for await (const event of runChat({
         client: (this.options.buildClient ?? buildAiProviderClient)(
-          this.options.providers.getProviderInternal(payload.providerConfigId)!,
+          runProvider,
+          cloudHeaders ? { extraHeaders: cloudHeaders } : undefined,
         ),
-        registry: this.options.buildRegistry(
-          this.options.settings.getSettings().allowRawToolData,
-        ),
+        registry: passRegistry,
+        // Stitch cloud LLM + tool usage under one run id (matches the
+        // x-openpcb-run-id header + the desktop's own emitted-event runId).
+        runId: payload.chatId,
         model: payload.model,
         messages: correctionMessages,
         bindings: this.options.contextResolver.listBindings(payload.chatId),
         limits: resolveToolLimits({
           preference: this.options.settings.getSettings().contextSizePreference,
-          modelContextTokens: this.options.providers.getProviderInternal(
-            payload.providerConfigId,
-          )?.capabilities?.maxContextTokens,
+          modelContextTokens: runProvider.capabilities?.maxContextTokens,
         }),
         chatId: payload.chatId,
         maxToolIterations: 8,
@@ -420,15 +441,143 @@ export class RunService {
     return report;
   }
 
-  private async execute(
-    taskCtx: TaskExecutionContext<SubmitPayload>,
-  ): Promise<unknown> {
-    const payload = taskCtx.task.payload;
+  /**
+   * Resolve the run's provider config, injecting the live GoTrue bearer as the
+   * apiKey for the `openpcb-cloud` provider (D8/D15). The bearer is sealed into
+   * the task payload at submit and never stored on the provider row; every other
+   * kind uses its stored key unchanged. The sealed credentials are unsealed
+   * exactly once here and returned alongside (null for every non-cloud kind) so
+   * resolveCloudContext doesn't decrypt a second time.
+   */
+  private resolveRunProvider(payload: SubmitPayload): {
+    provider: InternalProviderConfig;
+    cloudCreds: CloudCredentials | null;
+  } {
     const provider = this.options.providers.getProviderInternal(
       payload.providerConfigId,
     );
     if (!provider)
       throw new Error(`Provider not found: ${payload.providerConfigId}`);
+    if (provider.kind !== "openpcb-cloud")
+      return { provider, cloudCreds: null };
+    if (!payload.cloudBearerEnc)
+      throw new Error(
+        "OpenPCB Cloud requires a signed-in session (missing bearer).",
+      );
+    const creds = openCloudCredentials(payload.cloudBearerEnc);
+    return {
+      provider: { ...provider, apiKey: creds.bearer },
+      cloudCreds: creds,
+    };
+  }
+
+  /**
+   * Resolve the per-run cloud attribution context for an `openpcb-cloud` run:
+   * the unsealed {bearer, apiUrl} plus the caller's personal workspace id. The
+   * metered proxy REQUIRES `x-openpcb-workspace-id` on every /v1/llm and
+   * workspace-scoped /v1/tools call (a bare Pro bearer 400s), and the desktop
+   * has no workspace context of its own — so we resolve it from cloud-api at run
+   * time (`GET {apiUrl}/v1/workspaces/me/personal`, which idempotently creates
+   * the personal workspace and makes the caller its owner → satisfies the
+   * proxy's workspace-member RBAC). Returns null for any non-cloud run; throws
+   * a user-readable error (never a raw fetch failure) when resolution fails.
+   */
+  private async resolveCloudContext(
+    creds: CloudCredentials | null,
+  ): Promise<{ bearer: string; workspaceId: string } | null> {
+    if (!creds) return null;
+    const { bearer, apiUrl } = creds;
+    if (!apiUrl.trim())
+      throw new Error(
+        "OpenPCB Cloud run is missing the cloud API URL — sign out and back in, then retry.",
+      );
+    const base = apiUrl.replace(/\/$/, "");
+    let res: Response;
+    try {
+      res = await fetch(`${base}/v1/workspaces/me/personal`, {
+        headers: { authorization: `Bearer ${bearer}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (err) {
+      throw new Error(
+        `OpenPCB Cloud workspace resolution failed (${err instanceof Error ? err.message : String(err)}).`,
+      );
+    }
+    if (!res.ok)
+      throw new Error(
+        `OpenPCB Cloud workspace resolution failed (HTTP ${res.status}).`,
+      );
+    const body = (await res.json()) as { id?: string };
+    if (!body.id)
+      throw new Error("OpenPCB Cloud workspace resolution returned no id.");
+    return { bearer, workspaceId: body.id };
+  }
+
+  /**
+   * Static headers the ai-core client must send on every metered-proxy call for
+   * an `openpcb-cloud` run: workspace attribution (required) + run stitching.
+   */
+  private cloudHeaders(
+    payload: SubmitPayload,
+    cloud: { workspaceId: string } | null,
+  ): Record<string, string> | undefined {
+    if (!cloud) return undefined;
+    return {
+      "x-openpcb-workspace-id": cloud.workspaceId,
+      "x-openpcb-run-id": payload.chatId,
+    };
+  }
+
+  /**
+   * Load the cloud tool-plane tools for a Pro openpcb-cloud run (R4.4). Best
+   * effort: returns [] for any non-cloud provider, a missing flag/bearer, or a
+   * manifest fetch failure, so the run degrades to local tools only.
+   */
+  private async loadRemoteToolsFor(
+    provider: InternalProviderConfig,
+    workspaceId: string | undefined,
+  ): Promise<AiTool[]> {
+    if (provider.kind !== "openpcb-cloud") return [];
+    if (!isFeatureEnabled("cloud.copilot")) return [];
+    const bearer = provider.apiKey;
+    if (!bearer) return [];
+    // provider.baseUrl = {copilotUrl}/v1/llm — tools live at {copilotUrl}/v1/tools.
+    const copilotBase = provider.baseUrl.replace(/\/v1\/llm\/?$/, "");
+    try {
+      return await loadRemoteTools({
+        copilotBase,
+        getBearer: () => bearer,
+        workspaceId,
+      });
+    } catch (err) {
+      console.warn(
+        "[RunService] cloud tool manifest fetch failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+  }
+
+  /** Register remote tools into a registry, skipping any that fail to register. */
+  private registerRemoteTools(
+    registry: AiToolRegistry,
+    tools: AiTool[],
+  ): void {
+    for (const tool of tools) {
+      try {
+        registry.register(tool);
+      } catch {
+        // A tool whose schema won't compile or whose name collides is skipped;
+        // the rest still register.
+      }
+    }
+  }
+
+  private async execute(
+    taskCtx: TaskExecutionContext<SubmitPayload>,
+  ): Promise<unknown> {
+    const payload = taskCtx.task.payload;
+    const { provider, cloudCreds } = this.resolveRunProvider(payload);
     if (!provider.enabled)
       throw new Error(`Provider disabled: ${provider.label}`);
 
@@ -448,8 +597,20 @@ export class RunService {
     const registry = providerAllowsTools
       ? stageRegistryForBindings(configuredRegistry, hasBoundDesign)
       : new AiToolRegistry();
+    // R4: resolve the cloud workspace context once (throws with a clear message
+    // if it can't) — the proxy requires x-openpcb-workspace-id on every call.
+    const cloud = await this.resolveCloudContext(cloudCreds);
+    const cloudHeaders = this.cloudHeaders(payload, cloud);
+    // R4.4: augment with the cloud tool plane for an openpcb-cloud Pro run.
+    // Respect the provider-level tool-calling gate: a provider forced/probed to
+    // chat-only must not advertise remote tools either.
+    const remoteTools = providerAllowsTools
+      ? await this.loadRemoteToolsFor(provider, cloud?.workspaceId)
+      : [];
+    this.registerRemoteTools(registry, remoteTools);
     const client = (this.options.buildClient ?? buildAiProviderClient)(
       provider,
+      cloudHeaders ? { extraHeaders: cloudHeaders } : undefined,
     );
     const limits = resolveToolLimits({
       preference: settings.contextSizePreference,
@@ -530,6 +691,7 @@ export class RunService {
       for await (const event of runChat({
         client,
         registry,
+        runId: payload.chatId,
         model: payload.model,
         messages,
         bindings,
@@ -568,6 +730,7 @@ export class RunService {
         for await (const event of runChat({
           client,
           registry: new AiToolRegistry(),
+          runId: payload.chatId,
           model: payload.model,
           messages: messages.filter((m) => m.role !== "tool" && !m.toolCalls),
           bindings,
@@ -602,6 +765,7 @@ export class RunService {
         for await (const event of runChat({
           client,
           registry: new AiToolRegistry(),
+          runId: payload.chatId,
           model: payload.model,
           messages: initialMessages.filter(
             (m) => m.role !== "tool" && !m.toolCalls,
@@ -649,6 +813,9 @@ export class RunService {
               callSummaries,
               toolEventsByCall,
               runState,
+              provider,
+              remoteTools,
+              cloudHeaders,
             )
           : null;
 

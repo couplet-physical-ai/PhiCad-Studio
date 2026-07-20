@@ -86,6 +86,9 @@ const VALID_KINDS: AiProviderKind[] = [
   "openai-compatible",
   "lmstudio",
   "omlx",
+  // Auto-seeded for Pro users (D15); never created via "Add provider", but a
+  // valid stored kind so the seed + update paths accept it.
+  "openpcb-cloud",
 ];
 
 // Curated built-ins seeded on first run. `openai-compatible` is intentionally
@@ -113,6 +116,9 @@ const CLOUD_ENV: Partial<
     model: "OPENROUTER_MODEL",
   },
 };
+
+/** Stable row id for the D15 auto-seeded OpenPCB Cloud provider. */
+const CLOUD_PROVIDER_ROW_ID = "openpcb-cloud";
 
 export class ProviderStore {
   private readonly rawSql: RawSqlFn;
@@ -162,6 +168,68 @@ export class ProviderStore {
         ],
       );
     }
+  }
+
+  /**
+   * D15 zero-config seed: idempotently upsert the openpcb-cloud provider row for
+   * a signed-in Pro session. `baseUrl` targets the metered LLM proxy; the bearer
+   * is supplied per run (never stored). Re-enables an existing row and refreshes
+   * its baseUrl/model. Returns the public config.
+   */
+  seedCloudProvider(input: {
+    baseUrl: string;
+    defaultModel?: string;
+  }): AssistantProviderConfig {
+    const timestamp = now();
+    const existing = this.rawSql(
+      "SELECT default_model FROM assistant_provider_config WHERE id=?",
+      [CLOUD_PROVIDER_ROW_ID],
+    )[0];
+    if (existing) {
+      // Keep any model already resolved unless a fresh one is supplied. Also
+      // default a missing tool-calling override to "on" (COALESCE keeps an
+      // explicit user on/off) — see the INSERT note below.
+      const model =
+        input.defaultModel?.trim() || String(existing.default_model ?? "");
+      this.rawSql(
+        "UPDATE assistant_provider_config SET base_url=?, default_model=?, enabled=1, tool_calling_override=COALESCE(tool_calling_override, 1), updated_at=? WHERE id=?",
+        [input.baseUrl, model, timestamp, CLOUD_PROVIDER_ROW_ID],
+      );
+    } else {
+      const preset = getPresetByKind("openpcb-cloud");
+      // tool_calling_override=1: the capability probe runs WITHOUT the per-run
+      // bearer (it is never stored), so a user-triggered probe would record
+      // toolCalling=false and silently strip every tool from cloud runs. The
+      // proxy definitively supports tool calling — force it on; the user can
+      // still set the override off explicitly.
+      this.rawSql(
+        "INSERT INTO assistant_provider_config (id,label,kind,base_url,api_key,default_model,enabled,is_builtin,tool_calling_override,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          CLOUD_PROVIDER_ROW_ID,
+          preset?.label ?? "OpenPCB Cloud",
+          "openpcb-cloud",
+          input.baseUrl,
+          null,
+          input.defaultModel?.trim() ?? "",
+          1,
+          1,
+          1,
+          timestamp,
+          timestamp,
+        ],
+      );
+    }
+    const provider = this.getProvider(CLOUD_PROVIDER_ROW_ID);
+    if (!provider) throw new Error("Cloud provider seed failed");
+    return provider;
+  }
+
+  /** D15: disable (never delete) the cloud provider on tier loss. */
+  disableCloudProvider(): void {
+    this.rawSql(
+      "UPDATE assistant_provider_config SET enabled=0, updated_at=? WHERE id=?",
+      [now(), CLOUD_PROVIDER_ROW_ID],
+    );
   }
 
   listProviders(): AssistantProviderConfig[] {
@@ -426,9 +494,10 @@ export class ProviderStore {
       }
     }
     if (requireAll && !input.defaultModel?.trim()) {
-      // Allow empty default model for omlx preset (user fills in later).
+      // Allow an empty default model where it's filled in later: omlx (user
+      // enters it) and openpcb-cloud (resolved from GET /v1/llm/models).
       const preset = input.kind ? getPresetByKind(input.kind) : undefined;
-      if (preset?.kind !== "omlx") {
+      if (preset?.kind !== "omlx" && preset?.kind !== "openpcb-cloud") {
         throw new ValidationError("Default model is required");
       }
     }

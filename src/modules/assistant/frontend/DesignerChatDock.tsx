@@ -22,9 +22,6 @@ import { contextBudgetKb } from "./components/chat-format";
 import { useNavigationStore } from "../../../core/frontend/src/stores/navigation-store";
 import { useAuth } from "../../../core/frontend/src/cloud/AuthProvider";
 import { readCloudConfig } from "../../../core/frontend/src/cloud/config";
-import { cloudApi } from "../../../core/frontend/src/cloud/cloud-api";
-import { useFeatureFlag } from "../../../core/frontend/src/feature-flags";
-import type { CopilotUsageFrameData, WalletBalance } from "@openpcb/contracts";
 
 const QUICK_ACTIONS = [
   "Wire the schematic",
@@ -44,13 +41,13 @@ import type {
   AssistantWriteProposalDto,
   SubmitAssistantMessageResult,
 } from "../../../sdks/assistant";
+import { useCloudProviderSeed } from "./cloud/use-cloud-provider-seed";
 import type { Task, TaskEvent } from "../../../sdks/tasks";
 import { MessageCard } from "./components/MessageCard";
 import type {
   ActiveRunState,
   ActiveRunStatus,
 } from "./components/AssistantRunStatusCard";
-import { CopilotPlanCard } from "./components/CopilotPlanCard";
 import { useAssistantStream } from "./hooks/useAssistantStream";
 import { isNearBottom, useScrollAnchor } from "./hooks/useScrollAnchor";
 
@@ -141,29 +138,16 @@ function taskStage(task: Task | TaskEvent): {
   }
 }
 
-// Persisted chat-mode choice. Signed-in Pro users default to Cloud Copilot; the
-// stored value only records an *explicit* override (so a Pro user who switches
-// back to Local BYOK keeps that on reload). null ⇒ follow the smart default.
-const CHAT_MODE_STORAGE_KEY = "openpcb.assistant.chatMode";
-
-function readStoredChatMode(): "local" | "cloud" | null {
-  try {
-    const value = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
-    return value === "local" || value === "cloud" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 export function DesignerChatDock({
   backendURL,
   designId,
   designName,
-  designRevision,
   onClose,
   onOpenFull,
   onDesignChanged,
 }: DesignerChatDockProps): ReactElement {
+  // D15: ensure the openpcb-cloud provider is seeded/enabled for Pro users.
+  useCloudProviderSeed(backendURL);
   const navigateToModule = useNavigationStore((s) => s.navigateToModule);
   const assistantBase = useMemo(
     () => (backendURL ? `${backendURL}/api/modules/assistant` : null),
@@ -190,58 +174,15 @@ export function DesignerChatDock({
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // S6 cloud chat mode: offered only when the flag is on, a copilot URL is
-  // configured, and the user has a cloud session (bearer to forward).
-  const cloudCopilotFlag = useFeatureFlag("cloud.copilot");
-  const { session, tier } = useAuth();
+  // Cloud session + config for the auto-seeded `openpcb-cloud` provider (R4):
+  // submit forwards the bearer + cloud URLs when that provider is selected.
+  const { session, refresh } = useAuth();
   const cloudCfg = useMemo(() => readCloudConfig(), []);
-  // Pro-tier gate (UX): copilot is a pro feature. The cloud-copilot service enforces
-  // tier=pro server-side (the real boundary); this just hides a dead toggle for non-pro.
-  const cloudModeAvailable =
-    cloudCopilotFlag &&
-    Boolean(cloudCfg.copilotUrl) &&
-    Boolean(session) &&
-    tier === "pro";
-  // Explicit user override (persisted); null ⇒ follow the default. When cloud is
-  // available the default is "cloud" (Pro users get Cloud Copilot by default);
-  // otherwise it falls back to Local. Derived — no effect needed, so it settles
-  // correctly once the async cloud session/tier resolves.
-  const [chatModeOverride, setChatModeOverride] = useState<
-    "local" | "cloud" | null
-  >(() => readStoredChatMode());
-  const chooseChatMode = useCallback((mode: "local" | "cloud") => {
-    setChatModeOverride(mode);
-    try {
-      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
-    } catch {
-      // ignore persistence failures (e.g. storage disabled)
-    }
-  }, []);
-  const effectiveMode: "local" | "cloud" =
-    cloudModeAvailable && (chatModeOverride ?? "cloud") === "cloud"
-      ? "cloud"
-      : "local";
   const [menuOpen, setMenuOpen] = useState(false);
   const [toolCount, setToolCount] = useState<number | null>(null);
   const [activeRunsByChat, setActiveRunsByChat] = useState<
     Record<string, ActiveRunState>
   >({});
-  // S7: cloud run + plan-refetch trigger per chat (set from {_copilotFrame}s).
-  const [cloudRunsByChat, setCloudRunsByChat] = useState<
-    Record<string, { cloudRunId: string; refreshKey: number }>
-  >({});
-  // Remaining Cloud AI credits: seeded from the wallet on mount, live-updated
-  // from `copilot.usage` frames. null ⇒ no indicator (local/unlimited).
-  const [credits, setCredits] = useState<{
-    remaining: number;
-    low: boolean;
-  } | null>(null);
-  // Set by a `run.warning{code:'budget_credits'}` frame — shows the top-up CTA.
-  const [budgetHit, setBudgetHit] = useState(false);
-  // Cloud Copilot requires the bound design to be cloud-linked (the agent reads
-  // the synced projection). null ⇒ unknown/loading; false ⇒ show the sync prompt.
-  const [cloudLinked, setCloudLinked] = useState<boolean | null>(null);
-  const [linking, setLinking] = useState(false);
   const [messagesPage, setMessagesPage] = useState({
     oldestCursor: null as string | null,
     hasMore: false,
@@ -249,89 +190,16 @@ export function DesignerChatDock({
     initialLoadedChatId: null as string | null,
   });
   const activeChatIdRef = useRef<string | null>(null);
+  // Chats that already consumed their one silent bearer-refresh retry this run.
+  // Cleared on a fresh manual submit + on successful completion (see submit /
+  // onTerminal) so a later legitimate expiry can refresh again.
+  const cloudRetryRef = useRef<Set<string>>(new Set());
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
   const scroll = useScrollAnchor();
 
   const selectedRun = selectedChatId
     ? activeRunsByChat[selectedChatId]
     : undefined;
-  const selectedCloudRun = selectedChatId
-    ? cloudRunsByChat[selectedChatId]
-    : undefined;
-  const cloudActionHeaders = useMemo(() => {
-    if (!session || !cloudCfg.copilotUrl) return null;
-    const headers: Record<string, string> = {
-      "x-cloud-bearer": session.access_token,
-      "x-cloud-copilot-url": cloudCfg.copilotUrl,
-    };
-    if (cloudCfg.apiUrl) headers["x-cloud-api-url"] = cloudCfg.apiUrl;
-    return headers;
-  }, [session, cloudCfg]);
-  const designerBase = useMemo(
-    () => (backendURL ? `${backendURL}/api/modules/designer` : null),
-    [backendURL],
-  );
-  // In cloud mode, read whether the bound design is cloud-linked so we can prompt
-  // the user to sync before the agent run (which would otherwise fail "not linked").
-  useEffect(() => {
-    if (effectiveMode !== "cloud" || !designerBase || !designId) {
-      setCloudLinked(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(
-          `${designerBase}/designs/${encodeURIComponent(designId)}/cloud-link`,
-        );
-        if (cancelled) return;
-        if (!res.ok) {
-          setCloudLinked(null);
-          return;
-        }
-        const body = (await res.json()) as {
-          data?: { link?: unknown } | null;
-          link?: unknown;
-        };
-        const link = body.data?.link ?? body.link ?? null;
-        if (!cancelled) setCloudLinked(Boolean(link));
-      } catch {
-        if (!cancelled) setCloudLinked(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [effectiveMode, designerBase, designId, designRevision]);
-
-  const linkDesignForCloud = useCallback(async () => {
-    if (!designerBase || !designId || !cloudActionHeaders) return;
-    setLinking(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${designerBase}/designs/${encodeURIComponent(designId)}/cloud-link`,
-        {
-          method: "POST",
-          headers: { ...cloudActionHeaders, "content-type": "application/json" },
-          body: JSON.stringify({}),
-        },
-      );
-      if (!res.ok) {
-        const detail = await res
-          .json()
-          .then((b: { detail?: string; title?: string }) => b.detail ?? b.title)
-          .catch(() => null);
-        throw new Error(detail ?? `Sync failed (HTTP ${res.status})`);
-      }
-      setCloudLinked(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLinking(false);
-    }
-  }, [designerBase, designId, cloudActionHeaders]);
-
   const selectedProvider =
     providers.find((provider) => provider.id === providerId) ?? null;
   const selectedChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
@@ -496,37 +364,47 @@ export function DesignerChatDock({
         lastError: mapped.error,
       });
     },
-    onCopilotFrame: (ctx, frame) => {
-      // Live credit surfacing: advisory, no plan refetch.
-      if (frame.type === "copilot.usage") {
-        const usage = frame.data as Partial<CopilotUsageFrameData>;
-        if (typeof usage.creditsRemaining === "number") {
-          setCredits({
-            remaining: usage.creditsRemaining,
-            low: usage.lowBalance === true,
-          });
-        }
-        return;
-      }
-      // Any other copilot-only frame both identifies the cloud run and
-      // invalidates the plan view (plan created/updated/checkpoint, approval park).
-      setCloudRunsByChat((prev) => {
-        const current = prev[ctx.chatId];
-        return {
-          ...prev,
-          [ctx.chatId]: {
-            cloudRunId: frame.runId,
-            refreshKey: (current?.refreshKey ?? 0) + 1,
-          },
-        };
-      });
-    },
     onAiEvent: (ctx, event) => {
-      if (
-        event.type === "run.warning" &&
-        event.data.code === "budget_credits"
-      ) {
-        setBudgetHit(true);
+      // R4.5: a mid-run 401 from the metered proxy surfaces as run.failed
+      // (errorCode "401" / "token-expired"). Silently refresh the GoTrue session
+      // and resubmit once with the fresh bearer; one retry per chat per run.
+      if (event.type === "run.failed") {
+        const is401 =
+          event.data.errorCode === "401" ||
+          /token[-_ ]?expired/i.test(event.data.errorMessage ?? "");
+        // Only for runs authenticated by the GoTrue bearer — a 401 from a BYO
+        // provider (bad API key) must not trigger a refresh + resubmit.
+        const isCloudRun = selectedProvider?.kind === "openpcb-cloud";
+        const run = activeRunsByChat[ctx.chatId];
+        if (
+          is401 &&
+          isCloudRun &&
+          session &&
+          run &&
+          !cloudRetryRef.current.has(ctx.chatId)
+        ) {
+          cloudRetryRef.current.add(ctx.chatId);
+          const content = run.userMessageContent;
+          void (async () => {
+            try {
+              const refreshed = await refresh();
+              const bearer = refreshed?.access_token;
+              if (!bearer || !content.trim()) throw new Error("no session");
+              setActiveRunsByChat((prev) => {
+                const next = { ...prev };
+                delete next[ctx.chatId];
+                return next;
+              });
+              await submit(undefined, content, bearer);
+            } catch {
+              updateRun(ctx.chatId, {
+                status: "failed",
+                currentStage: "Session expired — sign in again to continue.",
+              });
+            }
+          })();
+          return;
+        }
       }
       if (!assistantBase) return;
       updateRun(ctx.chatId, {
@@ -547,6 +425,7 @@ export function DesignerChatDock({
     onTerminal: (ctx, status, message) => {
       setLoading(false);
       if (status === "completed") {
+        cloudRetryRef.current.delete(ctx.chatId);
         setActiveRunsByChat((prev) => {
           const next = { ...prev };
           delete next[ctx.chatId];
@@ -610,50 +489,6 @@ export function DesignerChatDock({
       .then((tools) => setToolCount(Array.isArray(tools) ? tools.length : null))
       .catch(() => setToolCount(null));
   }, [assistantBase]);
-
-  // Baseline credit balance for cloud mode — seeds the composer footer before a
-  // run; `copilot.usage` frames keep it live during one. Best-effort (frames are
-  // the live source); a stale/failed read just leaves the last value.
-  useEffect(() => {
-    if (effectiveMode !== "cloud" || !assistantBase || !cloudActionHeaders)
-      return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const ws = await cloudApi.personalWorkspace();
-        const res = await fetch(
-          `${assistantBase}/cloud/wallet?workspaceId=${encodeURIComponent(ws.id)}`,
-          { headers: cloudActionHeaders },
-        );
-        if (cancelled || !res.ok) return;
-        const wallet = (await res.json()) as WalletBalance;
-        if (cancelled) return;
-        setCredits(
-          !wallet.unlimited && typeof wallet.balanceCredits === "number"
-            ? { remaining: wallet.balanceCredits, low: wallet.lowBalance === true }
-            : null,
-        );
-      } catch {
-        // best-effort — live frames still update the indicator
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [effectiveMode, assistantBase, cloudActionHeaders]);
-
-  const openDashboardBilling = useCallback(() => {
-    const base = cloudCfg.webUrl.replace(/\/$/, "");
-    if (!base) return;
-    const url = `${base}/billing`;
-    const electron = (
-      window as unknown as {
-        electronAPI?: { openExternal?: (u: string) => Promise<void> };
-      }
-    ).electronAPI;
-    if (electron?.openExternal) void electron.openExternal(url);
-    else window.open(url, "_blank", "noopener,noreferrer");
-  }, [cloudCfg.webUrl]);
 
   useEffect(() => {
     setMessages([]);
@@ -779,31 +614,32 @@ export function DesignerChatDock({
     selectedChatId,
   ]);
 
-  const submit = async (event?: FormEvent, contentOverride?: string) => {
+  const submit = async (
+    event?: FormEvent,
+    contentOverride?: string,
+    bearerOverride?: string,
+  ) => {
     event?.preventDefault();
     const content = (contentOverride ?? input).trim();
     if (!assistantBase || !content || !designId) return;
-    // Cloud runs need a cloud-linked design; prompt to sync instead of firing a
-    // run that would fail "not linked". Only block when confirmed unlinked.
-    if (effectiveMode === "cloud" && cloudLinked === false) {
-      setError(
-        "Sync this design to the cloud to use Cloud Copilot (Sync button above), or switch to Local.",
-      );
-      return;
-    }
     setLoading(true);
     setError(null);
-    setBudgetHit(false);
     try {
       const chatId = await ensureDesignChat();
-      const cloudMode = effectiveMode === "cloud";
+      // A manual submit (no bearer override) opens a fresh retry budget.
+      if (!bearerOverride) cloudRetryRef.current.delete(chatId);
+      // The zero-config `openpcb-cloud` provider (R4) runs the LOCAL agent loop
+      // against the metered proxy, so it needs the per-request bearer — but it's
+      // a normal assistant.chat run.
+      const cloudProvider = selectedProvider?.kind === "openpcb-cloud";
+      const bearer = bearerOverride ?? session?.access_token;
       const submitHeaders: Record<string, string> = {
         "content-type": "application/json",
       };
-      if (cloudMode && session) {
+      if (cloudProvider && bearer) {
         // Per-request cloud creds (never stored by the backend raw — the task
         // payload carries them AES-GCM sealed; see backend cloud/token-crypto).
-        submitHeaders["x-cloud-bearer"] = session.access_token;
+        submitHeaders["x-cloud-bearer"] = bearer;
         submitHeaders["x-cloud-api-url"] = cloudCfg.apiUrl;
         submitHeaders["x-cloud-copilot-url"] = cloudCfg.copilotUrl;
       }
@@ -817,7 +653,6 @@ export function DesignerChatDock({
             providerConfigId: providerId,
             model,
             promptPresetId,
-            ...(cloudMode ? { mode: "cloud" as const } : {}),
           }),
         },
       );
@@ -1002,10 +837,7 @@ export function DesignerChatDock({
           <ModelSelectorPill
             providers={providers}
             providerId={providerId}
-            onProviderChange={(id) => {
-              chooseChatMode("local");
-              setProviderId(id);
-            }}
+            onProviderChange={setProviderId}
             model={model}
             onModelChange={setModel}
             models={models}
@@ -1019,9 +851,6 @@ export function DesignerChatDock({
             onPresetChange={setPromptPresetId}
             selectedProvider={selectedProvider}
             align="left"
-            cloudAvailable={cloudModeAvailable}
-            cloudSelected={effectiveMode === "cloud"}
-            onSelectCloud={() => chooseChatMode("cloud")}
           />
           {toolCount !== null ? (
             <span
@@ -1052,19 +881,6 @@ export function DesignerChatDock({
         {error ? (
           <div className="m-3 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
             {error}
-          </div>
-        ) : null}
-        {effectiveMode === "cloud" && cloudLinked === false ? (
-          <div className="m-3 flex items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-            <span>Sync this design to the cloud to use Cloud Copilot.</span>
-            <button
-              type="button"
-              onClick={() => void linkDesignForCloud()}
-              disabled={linking || !cloudActionHeaders}
-              className="shrink-0 rounded-control bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-            >
-              {linking ? "Syncing…" : "Sync design"}
-            </button>
           </div>
         ) : null}
         {messages.length === 0 ? (
@@ -1124,34 +940,8 @@ export function DesignerChatDock({
             ));
           })()
         )}
-        {selectedChatId && selectedCloudRun && cloudActionHeaders && assistantBase ? (
-          <div className="p-2">
-            <CopilotPlanCard
-              assistantBase={assistantBase}
-              chatId={selectedChatId}
-              cloudRunId={selectedCloudRun.cloudRunId}
-              refreshKey={selectedCloudRun.refreshKey}
-              cloudHeaders={cloudActionHeaders}
-              onError={setError}
-            />
-          </div>
-        ) : null}
       </div>
       <div className="shrink-0 border-t border-slate-200 p-2.5 dark:border-slate-800">
-        {budgetHit ? (
-          <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-            <span className="flex-1">
-              Out of Cloud AI credits — this run may stop early.
-            </span>
-            <button
-              type="button"
-              onClick={openDashboardBilling}
-              className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-700"
-            >
-              <ExternalLink className="h-3 w-3" /> Top up in dashboard
-            </button>
-          </div>
-        ) : null}
         <ChatComposer
           value={input}
           onChange={setInput}
@@ -1172,10 +962,6 @@ export function DesignerChatDock({
           backendURL={backendURL}
           workspaceId="default"
           chatId={selectedChatId ?? undefined}
-          creditsRemaining={
-            effectiveMode === "cloud" ? (credits?.remaining ?? null) : null
-          }
-          lowBalance={credits?.low ?? false}
           compact
         />
       </div>

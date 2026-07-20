@@ -201,6 +201,20 @@ export class AssistantService {
     const provider = cloudMode
       ? null
       : this.requireUsableProvider(input.providerConfigId ?? chat.providerConfigId);
+    // The openpcb-cloud provider runs the LOCAL agent loop against the metered
+    // LLM proxy; it carries no stored key, so a signed-in session is mandatory.
+    if (provider?.kind === "openpcb-cloud" && !cloudCreds) {
+      throw new ValidationError(
+        "OpenPCB Cloud provider requires a signed-in cloud session.",
+      );
+    }
+    // Workspace resolution (x-openpcb-workspace-id) needs cloud-api — fail fast
+    // here instead of deep inside the detached run.
+    if (provider?.kind === "openpcb-cloud" && !cloudCreds?.apiUrl) {
+      throw new ValidationError(
+        "OpenPCB Cloud provider requires the cloud API URL (x-cloud-api-url).",
+      );
+    }
     const model = input.model ?? chat.model;
     const promptPresetId = input.promptPresetId ?? chat.promptPresetId;
     if (provider) {
@@ -246,6 +260,10 @@ export class AssistantService {
             assistantMessageId: assistantMessage.id,
             providerConfigId: provider!.id,
             model,
+            // openpcb-cloud: seal the live bearer into the detached task (D8).
+            ...(provider!.kind === "openpcb-cloud" && cloudCreds
+              ? { cloudBearerEnc: sealCloudCredentials(cloudCreds) }
+              : {}),
           },
           correlation: { scopeId: chatId },
           tags: ["assistant", provider!.id],
@@ -259,6 +277,52 @@ export class AssistantService {
         this.conversation.getMessage(assistantMessage.id) ?? assistantMessage,
       taskId: result.task.id,
     };
+  }
+
+  // ─── cloud provider (D15 zero-config seed) ────────────────────────────
+  /** Idempotently seed + enable the openpcb-cloud provider for a Pro session. */
+  async seedCloudProvider(creds: CloudCredentials) {
+    // The seed path writes the row directly (no assertProviderInput), so
+    // validate the header-supplied URL here — garbage would brick every run.
+    try {
+      new URL(creds.copilotUrl);
+    } catch {
+      throw new ValidationError("Copilot URL must be a valid URL");
+    }
+    const baseUrl = `${creds.copilotUrl.replace(/\/+$/, "")}/v1/llm`;
+    const defaultModel = await this.fetchDefaultCloudModel(
+      baseUrl,
+      creds.bearer,
+    );
+    return this.providers.seedCloudProvider({ baseUrl, defaultModel });
+  }
+
+  /** Disable the openpcb-cloud provider on tier loss. */
+  disableCloudProvider(): void {
+    this.providers.disableCloudProvider();
+  }
+
+  /** Best-effort fetch of the proxy's default model alias (D11/D15). */
+  private async fetchDefaultCloudModel(
+    baseUrl: string,
+    bearer: string,
+  ): Promise<string> {
+    try {
+      const res = await fetch(`${baseUrl}/models`, {
+        headers: { authorization: `Bearer ${bearer}` },
+        // Bounded: a hung proxy must not stall the seed route (falls back below).
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) return "openpcb-fast";
+      const bodyJson = (await res.json()) as {
+        data?: Array<{ id?: string; default?: boolean }>;
+      };
+      const list = bodyJson.data ?? [];
+      const chosen = list.find((m) => m.default) ?? list[0];
+      return chosen?.id ?? "openpcb-fast";
+    } catch {
+      return "openpcb-fast";
+    }
   }
 
   // ─── mentions ─────────────────────────────────────────────────────────

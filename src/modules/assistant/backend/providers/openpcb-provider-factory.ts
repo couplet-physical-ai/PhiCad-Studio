@@ -12,6 +12,7 @@ import type { InternalProviderConfig } from "../provider-store";
  */
 export function buildAiProviderClient(
   provider: InternalProviderConfig,
+  opts?: { extraHeaders?: Record<string, string> },
 ): AiProviderClient {
   if (!provider.baseUrl.trim()) {
     throw new ValidationError(
@@ -23,6 +24,9 @@ export function buildAiProviderClient(
     kind: provider.kind,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey ?? undefined,
+    // The OpenPCB Cloud metered proxy requires x-openpcb-workspace-id and
+    // stitches usage via x-openpcb-run-id; run-service resolves + passes them.
+    extraHeaders: opts?.extraHeaders,
   });
 }
 
