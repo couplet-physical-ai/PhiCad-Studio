@@ -27,6 +27,7 @@ import type {
   PlacementResultEnvelope,
 } from "../../../../sdks";
 import { nmToSceneMm } from "../../../../shared/frontend/canvas/coords";
+import type { OpenpcbCapturePcbApi } from "../capture-bridge";
 import { EdaCanvas } from "../../../../shared/frontend/canvas/interaction/EdaCanvas";
 import type {
   InteractionCoordinateTransform,
@@ -1167,6 +1168,26 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     },
     [mirrorActive],
   );
+
+  // Dev-only capture hooks (M0.2): expose the live world-nm → canvas-px
+  // projection on `window.__openpcbCapture.pcb`, gated on OPENPCB_CAPTURE=1.
+  useEffect(() => {
+    const captureMode =
+      (window as { electronAPI?: { captureMode?: boolean } }).electronAPI
+        ?.captureMode === true;
+    if (!captureMode) return;
+    const pcb: OpenpcbCapturePcbApi = {
+      project: (anchorNm, mirrorX) =>
+        commentProjection.project(anchorNm, mirrorX),
+      rect: () => commentProjection.rect,
+    };
+    const existing = window.__openpcbCapture ?? {};
+    window.__openpcbCapture = { ...existing, pcb };
+    return () => {
+      const current = window.__openpcbCapture;
+      if (current) delete current.pcb;
+    };
+  }, [commentProjection]);
 
   // Uncommitted session geometry as pseudo projection objects so snapping,
   // guides, rendering and the copper-finish hit-test treat accumulated runs

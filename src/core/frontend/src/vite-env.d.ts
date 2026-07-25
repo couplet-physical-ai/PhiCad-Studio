@@ -37,6 +37,8 @@ declare global {
   }
 
   interface ElectronAPI {
+    /** Dev-only marketing-capture flag (OPENPCB_CAPTURE=1); absent in normal runs. */
+    captureMode?: boolean;
     onBackendReady: (
       callback: (payload: ElectronBackendPayload) => void,
     ) => void;

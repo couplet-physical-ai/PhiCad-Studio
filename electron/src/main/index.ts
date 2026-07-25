@@ -116,14 +116,24 @@ function isAllowedAppUrl(url: string): boolean {
 
 const TITLEBAR_HEIGHT = 36;
 
+// Dev-only marketing-capture mode (M0.2). When OPENPCB_CAPTURE=1 the window is
+// opened at an exact content size, allowed to exceed the display, kept fully
+// awake, and has DevTools suppressed so captures are clean. Zero behaviour
+// change when the env var is unset.
+const CAPTURE = process.env.OPENPCB_CAPTURE === "1";
+const CAPTURE_WIDTH = Number(process.env.OPENPCB_CAPTURE_W) || 2560;
+const CAPTURE_HEIGHT = Number(process.env.OPENPCB_CAPTURE_H) || 1440;
+
 function createWindow(): void {
   const isMac = process.platform === "darwin";
 
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: CAPTURE ? CAPTURE_WIDTH : 1440,
+    height: CAPTURE ? CAPTURE_HEIGHT : 900,
     minWidth: 1100,
     minHeight: 720,
+    // Capture: size the web content exactly and allow off-screen-large windows.
+    ...(CAPTURE ? { useContentSize: true, enableLargerThanScreen: true } : {}),
     title: "OpenPCB",
     // Dark --surface-app: avoids a white flash before React paints (a brief
     // dark frame is far less jarring than white on a dark-default app).
@@ -149,6 +159,8 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: false,
       webSecurity: true,
+      // Capture: keep the renderer rendering when the window is backgrounded.
+      ...(CAPTURE ? { backgroundThrottling: false } : {}),
     },
   });
 
@@ -218,7 +230,8 @@ app.on("child-process-gone", (_event, details) => {
 
 function loadWindow(window: BrowserWindow, url: string): void {
   window.loadURL(url);
-  if (!app.isPackaged) {
+  // Capture mode suppresses the auto-opened DevTools so frames stay clean.
+  if (!app.isPackaged && !CAPTURE) {
     window.webContents.openDevTools();
   }
 }

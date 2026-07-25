@@ -31,6 +31,9 @@ interface AppVersions {
 }
 
 contextBridge.exposeInMainWorld("electronAPI", {
+  // Dev-only marketing-capture flag (M0.2). Renderer-side capture hooks mount
+  // only when this is true (OPENPCB_CAPTURE=1); false/absent in normal runs.
+  captureMode: process.env.OPENPCB_CAPTURE === "1",
   onBackendReady: (callback: (payload: BackendReadyPayload) => void) => {
     ipcRenderer.on("backend-ready", (_event, payload: BackendReadyPayload) => {
       callback(payload);

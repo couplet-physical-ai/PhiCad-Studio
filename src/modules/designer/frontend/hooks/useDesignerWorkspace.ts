@@ -592,6 +592,29 @@ export function useDesignerWorkspace(params: {
     }
   }, []);
 
+  // Dev-only capture hooks (M0.2): expose command dispatch + the active design
+  // on `window.__openpcbCapture`, gated on OPENPCB_CAPTURE=1. Merges into the
+  // shared namespace and removes only its own keys on cleanup.
+  useEffect(() => {
+    const captureMode =
+      (window as { electronAPI?: { captureMode?: boolean } }).electronAPI
+        ?.captureMode === true;
+    if (!captureMode) return;
+    const existing = window.__openpcbCapture ?? {};
+    window.__openpcbCapture = {
+      ...existing,
+      dispatch: (command) => dispatchCommand(command),
+      selectedDesignId,
+    };
+    return () => {
+      const current = window.__openpcbCapture;
+      if (current) {
+        delete current.dispatch;
+        delete current.selectedDesignId;
+      }
+    };
+  }, [dispatchCommand, selectedDesignId]);
+
   useEffect(() => {
     void refreshDesigns();
     void searchComponents();

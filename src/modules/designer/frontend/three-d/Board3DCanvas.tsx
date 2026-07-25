@@ -37,6 +37,7 @@ import {
 import { CanvasThemeProvider } from "../../../../shared/frontend/canvas/theme";
 import { createDesignerApi } from "../api";
 import { BoardGeometry } from "./BoardGeometry";
+import { CaptureBridge } from "./CaptureBridge";
 import { DEFAULT_BOARD_THICKNESS_MM } from "./primitives/geometry-utils";
 import { SOLDERMASK_GREEN, solderMaskOverCopper } from "./primitives/materials";
 import { ModelCacheProvider } from "./ModelCacheProvider";
@@ -589,6 +590,12 @@ function Board3DScene({
       <CameraController preset={cameraPreset} nonce={presetNonce} />
       <Board3DInvalidator sceneKeyValue={key} />
       <Board3DTrackpadControls />
+      {/* Dev-only capture hooks (M0.2): mounted only under OPENPCB_CAPTURE=1. */}
+      {typeof window !== "undefined" &&
+      (window as { electronAPI?: { captureMode?: boolean } }).electronAPI
+        ?.captureMode ? (
+        <CaptureBridge />
+      ) : null}
       <Board3DPostFX />
     </>
   );
