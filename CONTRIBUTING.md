@@ -2,6 +2,8 @@
 
 Thanks for your interest. OpenPCB is in `v0.1.0-beta` — public beta, expect rough edges and rapid change.
 
+See [`DEVELOPER.md`](DEVELOPER.md) for architecture, repo layout, and the full commands reference.
+
 ## Quick start
 
 ```bash
