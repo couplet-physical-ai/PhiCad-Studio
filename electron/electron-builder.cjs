@@ -209,7 +209,7 @@ module.exports = {
   // knows where to look.
   publish: {
     provider: "github",
-    owner: "andrejvysny",
+    owner: "OpenPCB-app",
     repo: "OpenPCB",
     vPrefixedTagName: true,
     releaseType: "prerelease",

@@ -371,6 +371,31 @@ jobs:
           console.log(`Merged ${feeds.length} latest-mac.yml feeds; ${base.files.length} files listed`);
           NODE
 
+      - name: Generate SHA256SUMS
+        # Users cannot verify an unsigned build without published hashes, and
+        # the landing page + electron/README-BETA-INSTALL.md both tell them to
+        # check against this file. Hash the installers only (not the latest*.yml
+        # update feeds) — those are what a user actually downloads. Written into
+        # release-artifacts/ so the publish step's find(1) uploads it too.
+        run: |
+          set -euo pipefail
+          mapfile -d '' installers < <(
+            find release-artifacts -type f \
+              \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
+                 -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+              -print0
+          )
+          if [ "${#installers[@]}" -eq 0 ]; then
+            echo "No installers found to checksum" >&2
+            exit 1
+          fi
+          # Basenames only: the nested artifact-download dirs are a CI detail and
+          # would not match what the user has on disk.
+          for f in "${installers[@]}"; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done | sort -k2 > release-artifacts/SHA256SUMS.txt
+          cat release-artifacts/SHA256SUMS.txt
+
       - name: Publish complete prerelease
         env:
           COREL_TAG: ${{ needs.build.outputs.corelib_tag }}
@@ -390,6 +415,8 @@ jobs:
           # Auto-append CoreLibrary bundle info so the release notes are
           # auditable without digging into workflow logs.
           notes="Unsigned beta builds (electron-builder). macOS arm64/x64 dmg+zip, Windows x64 NSIS+portable, Linux x64 AppImage/deb/rpm. Auto-update via electron-updater consumes the attached latest*.yml feeds.
+
+          macOS Gatekeeper and Windows SmartScreen will warn on first launch — these builds are not Developer ID signed or notarized. **Verify your download against \`SHA256SUMS.txt\`** (attached): \`sha256sum -c SHA256SUMS.txt --ignore-missing\` on Linux/Windows, \`shasum -a 256 -c SHA256SUMS.txt --ignore-missing\` on macOS.
 
           **Bundled CoreLibrary:** [${COREL_TAG}](https://github.com/OpenPCB-app/CoreLibrary/releases/tag/${COREL_TAG}) — v${COREL_VERSION} (${COREL_SYMBOLS} symbols, ${COREL_FOOTPRINTS} footprints, ${COREL_COMPONENTS} components)"
           gh release create "${GITHUB_REF_NAME}" \

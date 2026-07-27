@@ -3,7 +3,7 @@ import { autoUpdater, type UpdateInfo } from "electron-updater";
 import { log as electronLog } from "./logger.js";
 
 const log = electronLog.scope("updater");
-const REPO_OWNER = "andrejvysny";
+const REPO_OWNER = "OpenPCB-app";
 const REPO_NAME = "OpenPCB";
 const RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 const GITHUB_API_LATEST = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
