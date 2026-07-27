@@ -39,6 +39,12 @@ export interface OpenpcbCapturePcbApi {
 export interface OpenpcbCaptureApi {
   three?: OpenpcbCaptureThreeApi;
   pcb?: OpenpcbCapturePcbApi;
+  /**
+   * Same projection contract as `pcb`, for the schematic canvas. Read-only: it lets a capture aim a
+   * REAL click at a real pin (place a part, draw a wire), which is the only honest way to script the
+   * schematic — the canvas is WebGL, so a pin has no DOM node to target.
+   */
+  schematic?: OpenpcbCapturePcbApi;
   dispatch?: (command: DesignerCommand) => Promise<DesignerDispatchResult>;
   selectedDesignId?: string | null;
 }

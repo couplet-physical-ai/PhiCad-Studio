@@ -81,6 +81,7 @@ import {
   type CommentDraft,
 } from "./comments/CanvasCommentLayer";
 import { useCanvasProjection } from "./comments/useCanvasProjection";
+import type { OpenpcbCapturePcbApi } from "../capture-bridge";
 import {
   buildManhattanPathThroughAnchors,
   pointOnOrthogonalSegment,
@@ -983,6 +984,26 @@ export const SchematicCanvas = forwardRef<
     },
     [requestRender],
   );
+
+  // Dev-only capture hooks (M0.2): expose the live world-nm → canvas-px projection on
+  // `window.__openpcbCapture.schematic`, gated on OPENPCB_CAPTURE=1 — the same contract PcbCanvas
+  // publishes under `.pcb`. Read-only; it exists so a capture can aim a REAL click at a real pin.
+  useEffect(() => {
+    const captureMode =
+      (window as { electronAPI?: { captureMode?: boolean } }).electronAPI
+        ?.captureMode === true;
+    if (!captureMode) return;
+    const schematic: OpenpcbCapturePcbApi = {
+      project: (anchorNm, mirrorX) => projection2d.project(anchorNm, mirrorX),
+      rect: () => projection2d.rect,
+    };
+    const existing = window.__openpcbCapture ?? {};
+    window.__openpcbCapture = { ...existing, schematic };
+    return () => {
+      const current = window.__openpcbCapture;
+      if (current) delete current.schematic;
+    };
+  }, [projection2d]);
 
   useEffect(() => {
     actions.setSelectedPartId(firstSelectedId(selection.partIds));
