@@ -387,10 +387,15 @@ export function registerRoutes(
   router.get("/providers/:id/models", (ctx) =>
     json(getAssistantService().listProviderModels(ctx.params.getOrThrow("id"))),
   );
+  // B2: these three forward the request's cloud credentials so the
+  // `openpcb-cloud` provider can authenticate (bearer) and attribute (workspace
+  // header). Without them all three 401 against the metered proxy. The service
+  // ignores the credentials for every other provider kind.
   router.post("/providers/:id/models/refresh", async (ctx) =>
     json(
       await getAssistantService().refreshProviderModels(
         ctx.params.getOrThrow("id"),
+        cloudCredsFromHeaders(ctx.req),
       ),
     ),
   );
@@ -399,6 +404,7 @@ export function registerRoutes(
       await getAssistantService().testProvider(
         ctx.params.getOrThrow("id"),
         await body<{ includeCompletion?: boolean }>(ctx.req).catch(() => ({})),
+        cloudCredsFromHeaders(ctx.req),
       ),
     ),
   );
@@ -413,6 +419,7 @@ export function registerRoutes(
     json(
       await getAssistantService().refreshProviderCapabilities(
         ctx.params.getOrThrow("id"),
+        cloudCredsFromHeaders(ctx.req),
       ),
     ),
   );

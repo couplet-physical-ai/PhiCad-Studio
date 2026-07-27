@@ -42,6 +42,10 @@ import {
   type CloudCredentials,
 } from "./cloud/token-crypto";
 import {
+  cloudProxyHeaders,
+  resolveCloudWorkspace,
+} from "./cloud/cloud-context";
+import {
   ProviderStore,
   type InternalProviderConfig,
   type ToolCallingMode,
@@ -638,9 +642,37 @@ export class AssistantService {
   listProviderModels(id: string): AssistantProviderModel[] {
     return this.providers.listModels(id);
   }
-  async refreshProviderModels(id: string): Promise<AssistantProviderModel[]> {
+  /**
+   * B2: build a client for a one-off Settings call (models refresh / test /
+   * capability probe). For every BYO provider this is the plain path and the
+   * request's cloud credentials are deliberately ignored — they must never leak
+   * to a third-party endpoint. For `openpcb-cloud` the row stores no API key
+   * (the preset is `requiresApiKey: false`, so `requireUsableProvider` lets it
+   * through), and the proxy also demands a workspace header — without both, all
+   * three endpoints 401. That is why they used to be permanently broken.
+   */
+  private async buildRequestClient(
+    provider: InternalProviderConfig,
+    cloudCreds?: CloudCredentials | null,
+  ) {
+    if (provider.kind !== "openpcb-cloud") return buildAiProviderClient(provider);
+    if (!cloudCreds)
+      throw new ValidationError(
+        "OpenPCB Cloud requires a signed-in session (x-cloud-bearer / x-cloud-api-url).",
+      );
+    const cloud = await resolveCloudWorkspace(cloudCreds);
+    return buildAiProviderClient(
+      { ...provider, apiKey: cloud.bearer },
+      { extraHeaders: cloudProxyHeaders(cloud.workspaceId) },
+    );
+  }
+
+  async refreshProviderModels(
+    id: string,
+    cloudCreds?: CloudCredentials | null,
+  ): Promise<AssistantProviderModel[]> {
     const provider = this.requireUsableProvider(id);
-    const client = buildAiProviderClient(provider);
+    const client = await this.buildRequestClient(provider, cloudCreds);
     const models = await client.listModels();
     const ids = models.map((m) => m.modelId);
     if (ids.length > 0 && !ids.includes(provider.defaultModel)) {
@@ -651,9 +683,10 @@ export class AssistantService {
   async testProvider(
     id: string,
     input: { includeCompletion?: boolean } = {},
+    cloudCreds?: CloudCredentials | null,
   ): Promise<ProviderTestResult> {
     const provider = this.requireUsableProvider(id);
-    const client = buildAiProviderClient(provider);
+    const client = await this.buildRequestClient(provider, cloudCreds);
     const checkedAt = new Date().toISOString();
     let modelsAvailable = 0;
     let toolCallSupported = false;
@@ -703,9 +736,10 @@ export class AssistantService {
   }
   async refreshProviderCapabilities(
     id: string,
+    cloudCreds?: CloudCredentials | null,
   ): Promise<AiProviderCapabilities> {
     const provider = this.requireUsableProvider(id);
-    const client = buildAiProviderClient(provider);
+    const client = await this.buildRequestClient(provider, cloudCreds);
     const caps = await client.capabilities(undefined, provider.defaultModel);
     this.providers.saveCapabilities(provider.id, caps);
     return caps;

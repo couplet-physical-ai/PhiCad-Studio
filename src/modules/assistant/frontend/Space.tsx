@@ -44,6 +44,11 @@ import type {
   SubmitAssistantMessageResult,
 } from "../../../sdks/assistant";
 import { useCloudProviderSeed } from "./cloud/use-cloud-provider-seed";
+import {
+  classifyCloudFailure,
+  cloudFailureActionUrl,
+  type CloudFailure,
+} from "./cloud/classify-failure";
 import { useAuth } from "../../../core/frontend/src/cloud/AuthProvider";
 import { readCloudConfig } from "../../../core/frontend/src/cloud/config";
 import type { Task, TaskEvent } from "../../../sdks/tasks";
@@ -263,6 +268,8 @@ export function AssistantSpace({
   const cloudCfg = useMemo(() => readCloudConfig(), []);
   // One silent bearer-refresh retry per chat per run (see onAiEvent / submit).
   const cloudRetryRef = useRef<Set<string>>(new Set());
+  // B9: the cloud's typed refusal for the last run (out of credits / not Pro).
+  const [cloudFailure, setCloudFailure] = useState<CloudFailure | null>(null);
 
   useEffect(() => {
     if (!base) return;
@@ -602,6 +609,16 @@ export function AssistantSpace({
           })();
           return;
         }
+        // B9: surface the cloud's typed refusals (out of credits / not Pro)
+        // instead of a generic "stopped before completing". Gated to cloud runs
+        // — a 403 from a BYO endpoint means something else entirely.
+        if (isCloudRun) {
+          const failure = classifyCloudFailure(
+            event.data.errorCode,
+            event.data.errorMessage,
+          );
+          if (failure) setCloudFailure(failure);
+        }
         updateRun(ctx.chatId, {
           status: "failed",
           currentStage: "Assistant stopped before completing.",
@@ -912,6 +929,8 @@ export function AssistantSpace({
       const chatId = await ensureActiveChat();
       // A manual submit (no bearer override) opens a fresh retry budget.
       if (!bearerOverride) cloudRetryRef.current.delete(chatId);
+      // B9: a fresh attempt clears the previous refusal banner.
+      setCloudFailure(null);
       // The zero-config `openpcb-cloud` provider (R4) needs the per-request
       // bearer, but runs as a normal assistant.chat.
       const cloudProvider = selectedProvider?.kind === "openpcb-cloud";
@@ -1012,9 +1031,20 @@ export function AssistantSpace({
     if (!base || !providerId) return;
     setToolFixBusy(true);
     try {
+      // B2: the probe issues a real completion through the metered proxy, which
+      // needs the session bearer AND the workspace header the backend derives
+      // from these — without them this endpoint always 401'd for the cloud row.
+      const probeHeaders: Record<string, string> = {
+        "content-type": "application/json",
+      };
+      if (selectedProvider?.kind === "openpcb-cloud" && session?.access_token) {
+        probeHeaders["x-cloud-bearer"] = session.access_token;
+        probeHeaders["x-cloud-api-url"] = cloudCfg.apiUrl;
+        probeHeaders["x-cloud-copilot-url"] = cloudCfg.copilotUrl;
+      }
       await api(`${base}/providers/${providerId}/capabilities/refresh`, {
         method: "POST",
-        headers: headers(),
+        headers: probeHeaders,
       });
       await refreshConfig();
     } catch (err) {
@@ -1022,7 +1052,14 @@ export function AssistantSpace({
     } finally {
       setToolFixBusy(false);
     }
-  }, [base, providerId, refreshConfig]);
+  }, [
+    base,
+    providerId,
+    refreshConfig,
+    selectedProvider?.kind,
+    session,
+    cloudCfg,
+  ]);
 
   // Force tool calling on regardless of the probe result.
   const enableToolsAnyway = useCallback(async () => {
@@ -1540,6 +1577,31 @@ export function AssistantSpace({
                     Enable tools anyway
                   </button>
                 </div>
+              </div>
+            ) : null}
+            {cloudFailure ? (
+              <div
+                role="alert"
+                className="mx-4 mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+              >
+                <div className="font-medium">{cloudFailure.title}</div>
+                <div className="mt-1 opacity-90">{cloudFailure.detail}</div>
+                {cloudFailure.actionLabel &&
+                cloudFailureActionUrl(cloudFailure, cloudCfg.webUrl) ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <a
+                      href={
+                        cloudFailureActionUrl(cloudFailure, cloudCfg.webUrl) ??
+                        undefined
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-control border border-amber-400 px-2 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                    >
+                      {cloudFailure.actionLabel}
+                    </a>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {error ? (

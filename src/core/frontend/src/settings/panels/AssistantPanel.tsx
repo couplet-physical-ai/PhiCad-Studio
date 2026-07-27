@@ -17,6 +17,8 @@ import {
   Wifi,
 } from "lucide-react";
 import { useRuntime } from "../../providers/RuntimeProvider";
+import { useAuth } from "../../cloud/AuthProvider";
+import { cloudRequestHeaders } from "../../cloud/request-headers";
 import { cn } from "@/lib/utils";
 import { Pill } from "@shared/frontend/ui/pill";
 import { StackedCard } from "@shared/frontend/ui/stacked-card";
@@ -94,6 +96,7 @@ async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function AssistantPanel() {
   const { backendURL } = useRuntime();
+  const { session } = useAuth();
   const base = useMemo(
     () => (backendURL ? `${backendURL}/api/modules/assistant` : null),
     [backendURL],
@@ -273,7 +276,10 @@ export function AssistantPanel() {
     await saveProviderDraft();
     const nextModels = await readJson<AssistantProviderModel[]>(
       `${base}/providers/${expanded.id}/models/refresh`,
-      { method: "POST" },
+      // B2: the openpcb-cloud provider stores no API key — it authenticates
+      // with the live session and needs the workspace header the backend
+      // derives from these. Ignored server-side for BYO providers.
+      { method: "POST", headers: cloudRequestHeaders(session) },
     );
     setModels(nextModels);
     const nextModelIds = nextModels.map((entry) => entry.modelId);
@@ -293,7 +299,10 @@ export function AssistantPanel() {
         `${base}/providers/${provider.id}/test`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            ...cloudRequestHeaders(session),
+          },
           body: JSON.stringify({ includeCompletion }),
         },
       );

@@ -42,6 +42,11 @@ import type {
   SubmitAssistantMessageResult,
 } from "../../../sdks/assistant";
 import { useCloudProviderSeed } from "./cloud/use-cloud-provider-seed";
+import {
+  classifyCloudFailure,
+  cloudFailureActionUrl,
+  type CloudFailure,
+} from "./cloud/classify-failure";
 import type { Task, TaskEvent } from "../../../sdks/tasks";
 import { MessageCard } from "./components/MessageCard";
 import type {
@@ -194,6 +199,8 @@ export function DesignerChatDock({
   // Cleared on a fresh manual submit + on successful completion (see submit /
   // onTerminal) so a later legitimate expiry can refresh again.
   const cloudRetryRef = useRef<Set<string>>(new Set());
+  // B9: the cloud's typed refusal for the last run (out of credits / not Pro).
+  const [cloudFailure, setCloudFailure] = useState<CloudFailure | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
   const scroll = useScrollAnchor();
 
@@ -404,6 +411,15 @@ export function DesignerChatDock({
             }
           })();
           return;
+        }
+        // B9: surface the cloud's typed refusals. The dock had no banner of any
+        // kind before this — every cloud refusal looked like a generic stall.
+        if (isCloudRun) {
+          const failure = classifyCloudFailure(
+            event.data.errorCode,
+            event.data.errorMessage,
+          );
+          if (failure) setCloudFailure(failure);
         }
       }
       if (!assistantBase) return;
@@ -628,6 +644,8 @@ export function DesignerChatDock({
       const chatId = await ensureDesignChat();
       // A manual submit (no bearer override) opens a fresh retry budget.
       if (!bearerOverride) cloudRetryRef.current.delete(chatId);
+      // B9: a fresh attempt clears the previous refusal banner.
+      setCloudFailure(null);
       // The zero-config `openpcb-cloud` provider (R4) runs the LOCAL agent loop
       // against the metered proxy, so it needs the per-request bearer — but it's
       // a normal assistant.chat run.
@@ -876,6 +894,29 @@ export function DesignerChatDock({
         {messagesPage.loadingOlder ? (
           <div className="p-2 text-center text-xs text-slate-500">
             Loading older messages…
+          </div>
+        ) : null}
+        {cloudFailure ? (
+          <div
+            role="alert"
+            className="m-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+          >
+            <div className="font-medium">{cloudFailure.title}</div>
+            <div className="mt-1 opacity-90">{cloudFailure.detail}</div>
+            {cloudFailure.actionLabel &&
+            cloudFailureActionUrl(cloudFailure, cloudCfg.webUrl) ? (
+              <a
+                href={
+                  cloudFailureActionUrl(cloudFailure, cloudCfg.webUrl) ??
+                  undefined
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-block rounded-control border border-amber-400 px-2 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:text-amber-100 dark:hover:bg-amber-900/40"
+              >
+                {cloudFailure.actionLabel}
+              </a>
+            ) : null}
           </div>
         ) : null}
         {error ? (

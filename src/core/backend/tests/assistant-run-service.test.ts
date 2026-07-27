@@ -11,6 +11,7 @@ import {
 } from "@openpcb/ai-core";
 import {
   RunService,
+  looksLikeEmulatedToolCall,
   type RunServiceOptions,
 } from "../../../modules/assistant/backend/run-service";
 import { MODULE_SDK_TOKENS } from "../../../sdks";
@@ -58,6 +59,8 @@ class FakeClient implements AiProviderClient {
   readonly id = "fake";
   readonly kind = "openai-compatible" as const;
   readonly toolCounts: number[] = [];
+  /** B8: the runId each runChat invocation was given, in order. */
+  readonly runIds: (string | undefined)[] = [];
   private turns: FakeTurn[];
   private i = 0;
 
@@ -73,6 +76,7 @@ class FakeClient implements AiProviderClient {
   }
   async *streamChat(input: AiChatRequest): AsyncIterable<AiRunEvent> {
     this.toolCounts.push(input.tools?.length ?? 0);
+    this.runIds.push(input.runId);
     const turn = this.turns[this.i] ?? {};
     this.i++;
     const runId = input.runId;
@@ -177,6 +181,8 @@ interface Harness {
   contentOf: () => string;
   /** All persisted role:"tool" messages (model-facing content + name). */
   toolMessages: () => Array<{ content: string; toolName: string | null }>;
+  /** All persisted role:"system" messages (H4 renders warnings this way). */
+  systemMessages: () => string[];
   run: () => Promise<void>;
 }
 
@@ -351,6 +357,10 @@ function makeHarness(opts: {
           content: m.content as string,
           toolName: (m.toolName as string | null) ?? null,
         })),
+    systemMessages: () =>
+      [...messages.values()]
+        .filter((m) => m.role === "system")
+        .map((m) => m.content as string),
     run: async () => {
       if (!captured) throw new Error("executor not registered");
       await captured.execute(
@@ -567,5 +577,165 @@ describe("RunService DoD gating + tool-turn persistence", () => {
     expect(parsed).toHaveProperty("ok");
     expect(parsed).toHaveProperty("status");
     expect(parsed).toHaveProperty("data");
+  });
+});
+
+// B8: the run id used to be the CHAT id, so the cloud ledger grouped an entire
+// chat's spend under one key and per-run cost attribution was impossible. It is
+// now one freshly-minted id per submitted turn, shared by the main pass, both
+// fallback retries and every DoD correction pass — sharing it is what lets the
+// derived x-tool-call-id (B12) dedupe a re-issued tool call.
+describe("RunService run identity (B8)", () => {
+  test("mints a run_-prefixed id that is not the chat id", async () => {
+    const h = makeHarness({ turns: [{ content: "done" }] });
+    await h.run();
+
+    expect(h.client.runIds.length).toBe(1);
+    const runId = h.client.runIds[0]!;
+    expect(runId).toMatch(/^run_/);
+    expect(runId).not.toBe("chat1");
+  });
+
+  test("every invocation in one turn shares the same run id", async () => {
+    // Two empty turns → primary pass + the empty-response retry.
+    const h = makeHarness({ turns: [{}, {}] });
+    await h.run();
+
+    expect(h.client.runIds.length).toBe(2);
+    expect(new Set(h.client.runIds).size).toBe(1);
+  });
+
+  test("the synthetic empty_response warning carries the run id, not the chat id", async () => {
+    const h = makeHarness({ turns: [{}, {}] });
+    await h.run();
+
+    const warning = aiEvents(h.emitted).find(
+      (e) =>
+        e.type === "run.warning" &&
+        (e as { data: { code: string } }).data.code === "empty_response",
+    ) as { runId: string } | undefined;
+    expect(warning).toBeDefined();
+    expect(warning!.runId).toBe(h.client.runIds[0]!);
+    expect(warning!.runId).not.toBe("chat1");
+  });
+
+  test("a second turn in the same chat gets a different run id", async () => {
+    const a = makeHarness({ turns: [{ content: "one" }] });
+    await a.run();
+    const b = makeHarness({ turns: [{ content: "two" }] });
+    await b.run();
+
+    expect(a.client.runIds[0]).not.toBe(b.client.runIds[0]);
+  });
+});
+
+// H4: weak/distilled local models "call" tools by printing a fenced JSON block
+// into the answer instead of emitting real tool_calls. The run looks successful
+// — the model narrates progress — but nothing was built and DoD never runs.
+describe("emulated tool-call detection (H4)", () => {
+  const FAKE_CALL = [
+    "I'll place the components now.",
+    "",
+    "```json",
+    '{"name": "designer_place_components", "arguments": {"designId": "d1"}}',
+    "```",
+    "",
+    "Done — the parts are placed.",
+  ].join("\n");
+
+  test("flags a fenced JSON block shaped like a tool call", () => {
+    expect(looksLikeEmulatedToolCall(FAKE_CALL)).toBe(true);
+  });
+
+  test("accepts the tool_call fence label and the parameters/function spellings", () => {
+    expect(
+      looksLikeEmulatedToolCall(
+        '```tool_call\n{"function": "x", "parameters": {}}\n```',
+      ),
+    ).toBe(true);
+  });
+
+  test("flags an array of emulated calls", () => {
+    expect(
+      looksLikeEmulatedToolCall(
+        '```json\n[{"name": "a", "args": {}}, {"name": "b", "args": {}}]\n```',
+      ),
+    ).toBe(true);
+  });
+
+  test("does NOT flag a model legitimately showing JSON data", () => {
+    // A BOM, a config sample, an API response — no name+args pairing.
+    expect(
+      looksLikeEmulatedToolCall(
+        '```json\n{"parts": [{"ref": "R1", "value": "10k"}]}\n```',
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeEmulatedToolCall('```json\n{"name": "LM358", "pins": 8}\n```'),
+    ).toBe(false);
+  });
+
+  test("does not flag prose, non-JSON fences, or empty content", () => {
+    expect(looksLikeEmulatedToolCall("Just an explanation.")).toBe(false);
+    expect(
+      looksLikeEmulatedToolCall("```ts\nconst x = { name: 1, args: 2 };\n```"),
+    ).toBe(false);
+    expect(looksLikeEmulatedToolCall("")).toBe(false);
+  });
+
+  test("warns and posts a system message when the model fakes a tool call", async () => {
+    const h = makeHarness({ turns: [{ content: FAKE_CALL }] });
+    await h.run();
+
+    const warning = aiEvents(h.emitted).find(
+      (e) =>
+        e.type === "run.warning" &&
+        (e as { data: { code: string } }).data.code === "emulated_tool_call",
+    );
+    expect(warning).toBeDefined();
+    expect(h.systemMessages().length).toBe(1);
+    expect(h.systemMessages()[0]!).toMatch(/instead of calling the tools/i);
+  });
+
+  test("stays silent when the model really did call a tool", async () => {
+    const h = makeHarness({
+      turns: [
+        {
+          content: FAKE_CALL,
+          completedToolCalls: [
+            {
+              id: "c1",
+              name: "designer_get_design_summary",
+              argumentsJson: "{}",
+            },
+          ],
+          emitToolSucceeded: true,
+        },
+        { content: "all done" },
+      ],
+    });
+    await h.run();
+
+    expect(
+      aiEvents(h.emitted).some(
+        (e) =>
+          e.type === "run.warning" &&
+          (e as { data: { code: string } }).data.code === "emulated_tool_call",
+      ),
+    ).toBe(false);
+    expect(h.systemMessages().length).toBe(0);
+  });
+
+  test("stays silent for a chat-only provider that cannot call tools anyway", async () => {
+    const h = makeHarness({ turns: [{ content: FAKE_CALL }], toolCalling: false });
+    await h.run();
+
+    expect(
+      aiEvents(h.emitted).some(
+        (e) =>
+          e.type === "run.warning" &&
+          (e as { data: { code: string } }).data.code === "emulated_tool_call",
+      ),
+    ).toBe(false);
   });
 });

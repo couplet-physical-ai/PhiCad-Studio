@@ -701,3 +701,168 @@ describe("assistant module", () => {
     expect(service.listContextBindings(chatB.id)).toHaveLength(1);
   });
 });
+
+// B2: the openpcb-cloud provider stores no API key (its preset is
+// requiresApiKey:false), and the metered proxy also demands a workspace header.
+// Before B2 the provider endpoints built a client with neither, so "Refresh
+// models" / "Test connection" / "Re-probe capabilities" 401'd forever.
+describe("assistant module — cloud provider credential plumbing (B2)", () => {
+  const COPILOT_URL = "http://copilot.test";
+  const API_URL = "http://cloud-api.test";
+
+  const cloudHeaders = {
+    "x-cloud-bearer": "tok-live",
+    "x-cloud-copilot-url": COPILOT_URL,
+    "x-cloud-api-url": API_URL,
+  };
+
+  type Seen = { url: string; headers: Record<string, string> };
+
+  async function withCloudFetch<T>(
+    fn: (seen: Seen[]) => Promise<T>,
+  ): Promise<T> {
+    const seen: Seen[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = String(input);
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(
+        (init?.headers ?? {}) as Record<string, string>,
+      )) {
+        headers[k.toLowerCase()] = v;
+      }
+      seen.push({ url, headers });
+      if (url.includes("/v1/workspaces/me/personal")) {
+        return new Response(JSON.stringify({ id: "ws_test" }), { status: 200 });
+      }
+      if (url.includes("/v1/llm/models")) {
+        return new Response(
+          JSON.stringify({
+            object: "list",
+            data: [
+              { id: "openpcb-fast", object: "model", default: true },
+              { id: "openpcb-reasoning", object: "model", default: false },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("unexpected", { status: 500 });
+    }) as unknown as typeof fetch;
+    try {
+      return await fn(seen);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  }
+
+  async function seedCloudProvider(
+    server: ReturnType<typeof createHttpServer>,
+  ): Promise<void> {
+    const res = await withCloudFetch(() =>
+      server.fetch(
+        new Request(
+          "http://localhost/api/modules/assistant/providers/cloud/seed",
+          { method: "POST", headers: cloudHeaders },
+        ),
+      ),
+    );
+    expect(res.status).toBe(200);
+  }
+
+  test("models refresh sends the session bearer and the workspace header", async () => {
+    const { server } = await bootAssistantWorkspace();
+    await seedCloudProvider(server);
+
+    const seen = await withCloudFetch(async (captured) => {
+      const res = await server.fetch(
+        new Request(
+          "http://localhost/api/modules/assistant/providers/openpcb-cloud/models/refresh",
+          { method: "POST", headers: cloudHeaders },
+        ),
+      );
+      expect(res.status).toBe(200);
+      return captured;
+    });
+
+    // Workspace resolution happened against cloud-api with the bearer…
+    const wsCall = seen.find((c) =>
+      c.url.includes("/v1/workspaces/me/personal"),
+    );
+    expect(wsCall).toBeDefined();
+    expect(wsCall!.headers.authorization).toBe("Bearer tok-live");
+
+    // …and the proxy call carried BOTH the bearer and the resolved workspace.
+    const modelsCall = seen.find((c) => c.url.includes("/v1/llm/models"));
+    expect(modelsCall).toBeDefined();
+    expect(modelsCall!.headers.authorization).toBe("Bearer tok-live");
+    expect(modelsCall!.headers["x-openpcb-workspace-id"]).toBe("ws_test");
+  });
+
+  test("capability refresh resolves the workspace too", async () => {
+    const { server } = await bootAssistantWorkspace();
+    await seedCloudProvider(server);
+
+    const seen = await withCloudFetch(async (captured) => {
+      await server.fetch(
+        new Request(
+          "http://localhost/api/modules/assistant/providers/openpcb-cloud/capabilities/refresh",
+          { method: "POST", headers: cloudHeaders },
+        ),
+      );
+      return captured;
+    });
+
+    expect(
+      seen.some((c) => c.url.includes("/v1/workspaces/me/personal")),
+    ).toBe(true);
+  });
+
+  test("cloud provider endpoints reject a request with no session", async () => {
+    const { server } = await bootAssistantWorkspace();
+    await seedCloudProvider(server);
+
+    for (const path of [
+      "models/refresh",
+      "test",
+      "capabilities/refresh",
+    ]) {
+      const res = await withCloudFetch(() =>
+        server.fetch(
+          new Request(
+            `http://localhost/api/modules/assistant/providers/openpcb-cloud/${path}`,
+            { method: "POST" },
+          ),
+        ),
+      );
+      expect(res.status).toBe(400);
+      const problem = (await res.json()) as { detail?: string };
+      expect(problem.detail ?? "").toMatch(/signed-in session/i);
+    }
+  });
+
+  test("BYO providers never receive the cloud credentials", async () => {
+    const { server } = await bootAssistantWorkspace();
+
+    const seen = await withCloudFetch(async (captured) => {
+      // openai is seeded as a builtin with a test key; the request carries cloud
+      // headers, which must be ignored for a third-party endpoint.
+      await server.fetch(
+        new Request(
+          "http://localhost/api/modules/assistant/providers/openai/models/refresh",
+          { method: "POST", headers: cloudHeaders },
+        ),
+      );
+      return captured;
+    });
+
+    // No workspace resolution, and nothing sent to the copilot proxy.
+    expect(seen.some((c) => c.url.includes("/v1/workspaces/me/personal"))).toBe(
+      false,
+    );
+    expect(seen.some((c) => c.url.includes(COPILOT_URL))).toBe(false);
+  });
+});

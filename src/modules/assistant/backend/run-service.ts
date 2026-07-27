@@ -1,5 +1,6 @@
 import {
   runChat,
+  newRunId,
   resolveToolLimits,
   AiToolRegistry,
   type AiChatMessage,
@@ -34,6 +35,11 @@ import type { PromptService } from "./prompt-service";
 import type { ContextResolver } from "./context-resolver";
 import { buildAiProviderClient } from "./providers/openpcb-provider-factory";
 import { loadRemoteTools } from "./cloud/remote-tool";
+import {
+  cloudProxyHeaders,
+  resolveCloudWorkspace,
+  type CloudWorkspaceContext,
+} from "./cloud/cloud-context";
 import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { BuildIntentStore } from "./verification/build-intent-store";
 import { runDefinitionOfDone } from "./verification/run-dod";
@@ -148,6 +154,48 @@ function stageRegistryForBindings(
 
 function isBlank(text: string | null | undefined): boolean {
   return !text || text.trim().length === 0;
+}
+
+/** Keys a JSON object must carry to look like an attempted tool invocation. */
+const EMULATED_NAME_KEYS = ["name", "tool", "tool_name", "function"];
+const EMULATED_ARG_KEYS = ["arguments", "parameters", "args", "input"];
+
+/**
+ * H4 — does this answer contain a fenced JSON block shaped like a tool call?
+ *
+ * Weak/distilled local models (e.g. oMLX Qwen3.5-27B-Distilled) frequently
+ * "call" a tool by printing ```json {"name": "...", "arguments": {...}} ``` into
+ * the message body instead of emitting real `tool_calls`. The run then completes
+ * "successfully" while nothing was built, and the DoD gate never fires because
+ * there was no tool work to verify.
+ *
+ * Deliberately conservative — it only fires when BOTH a name-ish and an args-ish
+ * key are present, so a model legitimately *showing* a JSON snippet (a BOM, a
+ * config example) is not flagged. Callers additionally require that the run
+ * produced no real tool calls.
+ */
+export function looksLikeEmulatedToolCall(content: string): boolean {
+  if (!content) return false;
+  const fences = content.matchAll(/```(?:json|tool_call|json5)?\s*\n?([\s\S]*?)```/gi);
+  for (const match of fences) {
+    const block = match[1]?.trim();
+    if (!block) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(block);
+    } catch {
+      continue;
+    }
+    const candidates = Array.isArray(parsed) ? parsed : [parsed];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const keys = new Set(Object.keys(candidate as Record<string, unknown>));
+      const hasName = EMULATED_NAME_KEYS.some((k) => keys.has(k));
+      const hasArgs = EMULATED_ARG_KEYS.some((k) => keys.has(k));
+      if (hasName && hasArgs) return true;
+    }
+  }
+  return false;
 }
 
 /** Minimal shape of the library_resolve_bom result we read for BuildIntent. */
@@ -355,6 +403,7 @@ export class RunService {
     runProvider: InternalProviderConfig,
     remoteTools: AiTool[],
     cloudHeaders: Record<string, string> | undefined,
+    aiRunId: string,
   ): Promise<DeficiencyReport | null> {
     const designer = this.designerSdk();
     if (!designer) return null;
@@ -398,7 +447,10 @@ export class RunService {
         registry: passRegistry,
         // Stitch cloud LLM + tool usage under one run id (matches the
         // x-openpcb-run-id header + the desktop's own emitted-event runId).
-        runId: payload.chatId,
+        // B8/B12: sharing the turn's id across correction passes is what lets
+        // the derived x-tool-call-id dedupe a re-issued tool call — a per-pass
+        // id would bill the same logical call once per pass.
+        runId: aiRunId,
         model: payload.model,
         messages: correctionMessages,
         bindings: this.options.contextResolver.listBindings(payload.chatId),
@@ -484,48 +536,27 @@ export class RunService {
    */
   private async resolveCloudContext(
     creds: CloudCredentials | null,
-  ): Promise<{ bearer: string; workspaceId: string } | null> {
+  ): Promise<CloudWorkspaceContext | null> {
     if (!creds) return null;
-    const { bearer, apiUrl } = creds;
-    if (!apiUrl.trim())
-      throw new Error(
-        "OpenPCB Cloud run is missing the cloud API URL — sign out and back in, then retry.",
-      );
-    const base = apiUrl.replace(/\/$/, "");
-    let res: Response;
-    try {
-      res = await fetch(`${base}/v1/workspaces/me/personal`, {
-        headers: { authorization: `Bearer ${bearer}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch (err) {
-      throw new Error(
-        `OpenPCB Cloud workspace resolution failed (${err instanceof Error ? err.message : String(err)}).`,
-      );
-    }
-    if (!res.ok)
-      throw new Error(
-        `OpenPCB Cloud workspace resolution failed (HTTP ${res.status}).`,
-      );
-    const body = (await res.json()) as { id?: string };
-    if (!body.id)
-      throw new Error("OpenPCB Cloud workspace resolution returned no id.");
-    return { bearer, workspaceId: body.id };
+    return resolveCloudWorkspace(creds);
   }
 
   /**
    * Static headers the ai-core client must send on every metered-proxy call for
    * an `openpcb-cloud` run: workspace attribution (required) + run stitching.
+   *
+   * B8: `aiRunId` is the per-turn run id, NOT the chat id — the cloud ledger
+   * groups `usage_event` rows by it, so a chat id would make per-run cost
+   * attribution impossible. It is also the identity ingredient for the derived
+   * `x-tool-call-id` in remote-tool.ts, which is why one id must cover the whole
+   * turn including every correction pass.
    */
   private cloudHeaders(
-    payload: SubmitPayload,
-    cloud: { workspaceId: string } | null,
+    aiRunId: string,
+    cloud: CloudWorkspaceContext | null,
   ): Record<string, string> | undefined {
     if (!cloud) return undefined;
-    return {
-      "x-openpcb-workspace-id": cloud.workspaceId,
-      "x-openpcb-run-id": payload.chatId,
-    };
+    return cloudProxyHeaders(cloud.workspaceId, aiRunId);
   }
 
   /**
@@ -536,6 +567,7 @@ export class RunService {
   private async loadRemoteToolsFor(
     provider: InternalProviderConfig,
     workspaceId: string | undefined,
+    designId: string | undefined,
   ): Promise<AiTool[]> {
     if (provider.kind !== "openpcb-cloud") return [];
     if (!isFeatureEnabled("cloud.copilot")) return [];
@@ -548,6 +580,7 @@ export class RunService {
         copilotBase,
         getBearer: () => bearer,
         workspaceId,
+        designId,
       });
     } catch (err) {
       console.warn(
@@ -581,6 +614,14 @@ export class RunService {
     if (!provider.enabled)
       throw new Error(`Provider disabled: ${provider.label}`);
 
+    // B8: ONE run id for this whole submitted turn — the main pass, both
+    // fallback retries, and every DoD correction pass. It is not the chat id:
+    // grouping cloud spend per chat made per-run cost attribution impossible.
+    // Minted here because it must precede cloudHeaders below, which are baked
+    // into the client and captured by closure for every runChat call; minting
+    // per-invocation would desync the ledger from the emitted events.
+    const aiRunId = newRunId();
+
     const settings = this.options.settings.getSettings();
     const chat = this.options.conversation.getChat(payload.chatId);
     if (!chat) throw new Error(`Chat not found: ${payload.chatId}`);
@@ -591,21 +632,28 @@ export class RunService {
       settings.allowRawToolData,
     );
     const providerAllowsTools = provider.capabilities?.toolCalling !== false;
-    const hasBoundDesign = bindings.some(
+    // B1: the active design binding's refId IS the design id (context-resolver
+    // sets refId = design.id) — remote tools that own a registration need it.
+    const boundDesignId = bindings.find(
       (b) => b.kind === "design" && b.status === "active",
-    );
+    )?.refId;
+    const hasBoundDesign = boundDesignId !== undefined;
     const registry = providerAllowsTools
       ? stageRegistryForBindings(configuredRegistry, hasBoundDesign)
       : new AiToolRegistry();
     // R4: resolve the cloud workspace context once (throws with a clear message
     // if it can't) — the proxy requires x-openpcb-workspace-id on every call.
     const cloud = await this.resolveCloudContext(cloudCreds);
-    const cloudHeaders = this.cloudHeaders(payload, cloud);
+    const cloudHeaders = this.cloudHeaders(aiRunId, cloud);
     // R4.4: augment with the cloud tool plane for an openpcb-cloud Pro run.
     // Respect the provider-level tool-calling gate: a provider forced/probed to
     // chat-only must not advertise remote tools either.
     const remoteTools = providerAllowsTools
-      ? await this.loadRemoteToolsFor(provider, cloud?.workspaceId)
+      ? await this.loadRemoteToolsFor(
+          provider,
+          cloud?.workspaceId,
+          boundDesignId,
+        )
       : [];
     this.registerRemoteTools(registry, remoteTools);
     const client = (this.options.buildClient ?? buildAiProviderClient)(
@@ -691,7 +739,7 @@ export class RunService {
       for await (const event of runChat({
         client,
         registry,
-        runId: payload.chatId,
+        runId: aiRunId,
         model: payload.model,
         messages,
         bindings,
@@ -730,7 +778,7 @@ export class RunService {
         for await (const event of runChat({
           client,
           registry: new AiToolRegistry(),
-          runId: payload.chatId,
+          runId: aiRunId,
           model: payload.model,
           messages: messages.filter((m) => m.role !== "tool" && !m.toolCalls),
           bindings,
@@ -765,7 +813,7 @@ export class RunService {
         for await (const event of runChat({
           client,
           registry: new AiToolRegistry(),
-          runId: payload.chatId,
+          runId: aiRunId,
           model: payload.model,
           messages: initialMessages.filter(
             (m) => m.role !== "tool" && !m.toolCalls,
@@ -790,12 +838,45 @@ export class RunService {
       if (emptyResponse) {
         await this.emitAiEvent(taskCtx, {
           type: "run.warning",
-          runId: payload.chatId,
+          runId: aiRunId,
           timestamp: new Date().toISOString(),
           data: {
             code: "empty_response",
             message: "The model returned no answer.",
           },
+        });
+      }
+
+      // H4: weak/distilled local models often "call" tools by printing a fenced
+      // JSON block into the answer instead of emitting real tool_calls. The run
+      // then looks successful — the model narrates progress — but nothing was
+      // built and DoD never runs, which is far more confusing than an outright
+      // failure. Detect it and say so.
+      const emulatedToolCall =
+        providerAllowsTools &&
+        callSummaries.size === 0 &&
+        runState.hadWriteWork !== true &&
+        looksLikeEmulatedToolCall(
+          this.options.conversation.getMessage(payload.assistantMessageId)
+            ?.content ?? "",
+        );
+      if (emulatedToolCall) {
+        const message =
+          "This model wrote tool calls as text instead of calling the tools, so nothing was actually run. Pick a model with native tool-calling support, or check that your server has tool calling enabled.";
+        await this.emitAiEvent(taskCtx, {
+          type: "run.warning",
+          runId: aiRunId,
+          timestamp: new Date().toISOString(),
+          data: { code: "emulated_tool_call", message },
+        });
+        // Persist as a system message: MessageCard already renders role:"system"
+        // as an amber warning banner, so this surfaces in BOTH the full space
+        // and the designer dock with no frontend change.
+        this.options.conversation.createMessage({
+          chatId: payload.chatId,
+          role: "system",
+          content: message,
+          taskId: taskCtx.task.id,
         });
       }
 
@@ -816,6 +897,7 @@ export class RunService {
               provider,
               remoteTools,
               cloudHeaders,
+              aiRunId,
             )
           : null;
 
