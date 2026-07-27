@@ -15,14 +15,31 @@ interface SentryLike {
 let SentryAPI: SentryLike | null = null;
 let initialized = false;
 
-const DEFAULT_DSN =
-  "https://a30180048da6429c99b78ab406ec7cca@o4511388241887232.ingest.de.sentry.io/4511388243329104";
+/**
+ * B11 — crash reporting is OPT-IN, and the gate comes first.
+ *
+ * The desktop already owns one consent decision: `telemetryOptIn`, stored in
+ * userData `preferences.json` (default false), honoured by Electron main
+ * (`electron/src/main/sentry.ts`) and the renderer (`src/core/frontend/src/main.tsx`),
+ * with shipped UI in Settings → Privacy. The backend was the one process that
+ * ignored it — it initialised unconditionally against a hardcoded production
+ * DSN. Electron propagates the preference here as `OPENPCB_TELEMETRY_OPT_IN`;
+ * anything else (headless `bun main.ts`, tests, CI) must opt in explicitly.
+ *
+ * There is deliberately no hardcoded DSN fallback: no DSN configured means off.
+ */
+function telemetryOptedIn(): boolean {
+  const raw = process.env.OPENPCB_TELEMETRY_OPT_IN?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on";
+}
 
 export function initBackendSentry(): boolean {
   if (initialized) return SentryAPI !== null;
   initialized = true;
 
-  const dsn = process.env.OPENPCB_SENTRY_DSN ?? DEFAULT_DSN;
+  if (!telemetryOptedIn()) return false;
+
+  const dsn = process.env.OPENPCB_SENTRY_DSN;
   if (!dsn) return false;
 
   try {
@@ -49,12 +66,33 @@ export function initBackendSentry(): boolean {
   return true;
 }
 
+/**
+ * Context keys allowed onto a Sentry event. An allowlist, not a denylist: the
+ * caller-supplied bag is developer-facing and grows over time, and route paths
+ * in particular embed design/component ids (`/api/modules/designer/designs/<id>/…`).
+ * Anything not named here is dropped.
+ */
+const SAFE_CONTEXT_KEYS = new Set(["requestId", "method", "status", "phase"]);
+
+/** Exported for tests — the allowlist is security-relevant, so it is pinned. */
+export function scrubContext(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!context) return undefined;
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (SAFE_CONTEXT_KEYS.has(key)) safe[key] = value;
+  }
+  return Object.keys(safe).length > 0 ? safe : undefined;
+}
+
 export function captureBackendException(
   error: unknown,
   context?: Record<string, unknown>,
 ): void {
   if (!SentryAPI) return;
-  SentryAPI.captureException(error, context ? { extra: context } : undefined);
+  const safe = scrubContext(context);
+  SentryAPI.captureException(error, safe ? { extra: safe } : undefined);
 }
 
 export const Sentry = {

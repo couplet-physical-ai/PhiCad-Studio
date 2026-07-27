@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { log as electronLog } from "./logger.js";
 import { Sentry } from "./sentry.js";
+import { getTelemetryOptIn } from "./preferences.js";
 import { startBackendRuntime } from "../../../src/core/backend/runtime";
 import type { StartedBackendRuntime } from "../../../src/core/backend/runtime";
 import type { ModuleRegistryResponse } from "../../../src/core/contracts/modules/registry";
@@ -57,6 +58,10 @@ function configureBackendEnvironment(): void {
     ? "production"
     : "development";
   process.env.OPENPCB_SENTRY_RELEASE = `openpcb@${app.getVersion()}`;
+  // B11: the backend runs in-process here, so it must honour the same single
+  // consent decision as Electron main and the renderer. Without this it would
+  // fall back to "no opt-in recorded" and stay off, which is the safe default.
+  process.env.OPENPCB_TELEMETRY_OPT_IN = getTelemetryOptIn() ? "1" : "0";
 
   const staticDir = getStaticDir();
   if (staticDir) {
