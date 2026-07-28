@@ -229,11 +229,15 @@ describe("mirrorCommand", () => {
               number: "1",
               name: "A",
               localPositionMm: { x: 1.5, y: -2.5 },
+              electricalType: "output",
+              unit: 1,
             },
             {
               number: "2",
               name: "K",
               localPositionMm: { x: -1.5, y: 0 },
+              electricalType: "power_in",
+              unit: 2,
             },
           ],
         },
@@ -259,6 +263,8 @@ describe("mirrorCommand", () => {
             pins: Array<{
               id: string;
               localPositionNm: { x: number; y: number };
+              electricalType?: string;
+              unit?: number;
             }>;
           };
         };
@@ -270,6 +276,15 @@ describe("mirrorCommand", () => {
         x: 1_500_000,
         y: -2_500_000,
       });
+      // Without these cloud-api persists electricalType "passive", which every
+      // ERC rule skips — so a cloud-placed part becomes invisible to
+      // OUTPUT_OUTPUT_SHORT and friends. Mirrored by cloud-copilot's §11 pin
+      // parity gate (tests/unit/test_pin_parity.py).
+      expect(body.command.resolved.pins.map((p) => p.electricalType)).toEqual([
+        "output",
+        "power_in",
+      ]);
+      expect(body.command.resolved.pins.map((p) => p.unit)).toEqual([1, 2]);
     } finally {
       stub.restore();
     }

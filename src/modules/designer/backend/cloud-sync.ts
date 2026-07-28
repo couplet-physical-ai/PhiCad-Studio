@@ -87,6 +87,14 @@ function enrichCommand(
             x: Math.round(p.localPositionMm.x * 1_000_000),
             y: Math.round(p.localPositionMm.y * 1_000_000),
           },
+          // Without these the cloud place_part handler falls back to
+          // `electricalType: "passive"` and persists it. "passive" is in
+          // neither STRICT_INPUT_TYPES nor OUTPUT_DRIVER_TYPES, so every
+          // cloud-placed part became invisible to all three ERC rules — and
+          // unlike the proposal simulator, that path reports no degradation.
+          // Both are already optional on the receiving schema.
+          electricalType: p.electricalType,
+          unit: p.unit,
         })),
       },
     };
