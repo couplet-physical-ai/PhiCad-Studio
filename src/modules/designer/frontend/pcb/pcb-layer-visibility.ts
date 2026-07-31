@@ -1,6 +1,7 @@
 import type {
   PcbCopperLayerId,
   PcbLayerId,
+  PcbOverlayLayer,
   PcbPlacedPart,
   PcbTrace,
 } from "../../../../sdks";
@@ -58,6 +59,29 @@ export function isTraceVisible(
   trace: PcbTrace,
 ): boolean {
   return visibleLayers.has(trace.layer);
+}
+
+/**
+ * Free overlay primitives (silkscreen / fab text + shapes) carry their own
+ * layer, so the layers panel gates them per entity — the same rule placements
+ * and traces follow. Every `PcbOverlayLayer` is also a `PcbLayerId`, so this
+ * is a direct set lookup and stays correct as new overlay layers are added.
+ */
+export function isOverlayVisible(
+  visibleLayers: ReadonlySet<PcbLayerId>,
+  entity: { readonly layer: PcbOverlayLayer },
+): boolean {
+  return visibleLayers.has(entity.layer);
+}
+
+/** Narrow overlay entities to the layers the panel currently shows. */
+export function visibleOverlayEntities<
+  T extends { readonly layer: PcbOverlayLayer },
+>(
+  visibleLayers: ReadonlySet<PcbLayerId>,
+  entities: ReadonlyArray<T>,
+): ReadonlyArray<T> {
+  return entities.filter((entity) => isOverlayVisible(visibleLayers, entity));
 }
 
 /**

@@ -1,5 +1,14 @@
-import type { ReactElement } from "react";
-import { Box, Camera, Layers, Maximize2, Ruler, Video } from "lucide-react";
+import { useEffect, useState, type ReactElement } from "react";
+import {
+  Box,
+  Camera,
+  Layers,
+  Maximize2,
+  PanelRightClose,
+  PanelRightOpen,
+  Ruler,
+  Video,
+} from "lucide-react";
 
 export type CameraPreset = "iso" | "persp" | "top" | "front" | "side" | "back";
 
@@ -29,6 +38,35 @@ const PRESET_LABELS: { key: CameraPreset; label: string }[] = [
   { key: "side", label: "Side" },
   { key: "back", label: "Back" },
 ];
+
+/**
+ * Persisted open-state for the canvas-area MECHANICAL card. Mirrors the
+ * designer's `openpcb:designer:inspector-open` convention (default open) so the
+ * panel can be pushed out of the way on narrow viewports, where its fixed
+ * `w-48` card truncates the stat values.
+ */
+export const MECHANICAL_PANEL_OPEN_KEY = "openpcb:designer:mechanical-open";
+
+export function readMechanicalPanelOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const raw = window.localStorage.getItem(MECHANICAL_PANEL_OPEN_KEY);
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+  } catch {
+    // localStorage unavailable — fall through to the default.
+  }
+  return true;
+}
+
+export function writeMechanicalPanelOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(MECHANICAL_PANEL_OPEN_KEY, String(open));
+  } catch {
+    // Best-effort persistence; the panel still works for the session.
+  }
+}
 
 const BOARD_COLORS: { id: string; hex: string; label: string }[] = [
   { id: "green", hex: "#0D4D2C", label: "Matte green" },
@@ -221,61 +259,87 @@ export function Board3DSceneOverlay({
 }): ReactElement {
   const enclosureX = (board.widthMm + 2).toFixed(0);
   const enclosureY = (board.heightMm + 2).toFixed(0);
+  const [mechanicalOpen, setMechanicalOpen] = useState(readMechanicalPanelOpen);
+
+  useEffect(() => {
+    writeMechanicalPanelOpen(mechanicalOpen);
+  }, [mechanicalOpen]);
 
   return (
     <>
       {/* Right inspector */}
-      <div className="pointer-events-auto absolute right-3 top-3 w-48 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/90 text-slate-200 shadow-xl backdrop-blur">
-        <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
-            Mechanical
-          </span>
-          <button
-            type="button"
-            disabled
-            title="STEP / STL export — coming soon"
-            className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400 opacity-70"
-          >
-            Export STEP
-          </button>
+      {mechanicalOpen ? (
+        <div className="pointer-events-auto absolute right-3 top-3 w-48 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/90 text-slate-200 shadow-xl backdrop-blur">
+          <div className="flex items-center gap-1 border-b border-slate-800 px-3 py-2">
+            <span className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Mechanical
+            </span>
+            <button
+              type="button"
+              disabled
+              title="STEP / STL export — coming soon"
+              className="shrink-0 rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400 opacity-70"
+            >
+              Export STEP
+            </button>
+            <button
+              type="button"
+              onClick={() => setMechanicalOpen(false)}
+              title="Collapse mechanical panel"
+              aria-label="Collapse mechanical panel"
+              className="shrink-0 cursor-pointer rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            >
+              <PanelRightClose className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="space-y-1.5 px-3 py-2.5 text-[11px]">
+            <Stat
+              icon={<Maximize2 className="h-3 w-3" />}
+              label="Board"
+              value={`${board.widthMm.toFixed(1)} × ${board.heightMm.toFixed(1)} mm`}
+            />
+            <Stat
+              icon={<Layers className="h-3 w-3" />}
+              label="Stackup"
+              value={`${board.layerCount} layer · ${board.thicknessMm} mm`}
+            />
+            <Stat
+              icon={<Box className="h-3 w-3" />}
+              label="Parts"
+              value={`${board.parts} · ${board.traces} traces · ${board.vias} vias`}
+            />
+          </div>
+          <div className="border-t border-slate-800 px-3 py-2.5">
+            <div className="mb-1 text-[9px] font-medium uppercase tracking-wide text-slate-500">
+              Tallest parts
+            </div>
+            <div className="text-[11px] text-slate-500">
+              — needs component heights
+            </div>
+          </div>
+          <div className="border-t border-slate-800 bg-accent-soft px-3 py-2.5">
+            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-accent-text">
+              <Ruler className="h-3 w-3" /> Min enclosure
+            </div>
+            <div className="font-mono text-sm text-slate-100">
+              {enclosureX} × {enclosureY} × — mm
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              Board + 1 mm margin + tallest part + 1 mm air gap
+            </div>
+          </div>
         </div>
-        <div className="space-y-1.5 px-3 py-2.5 text-[11px]">
-          <Stat
-            icon={<Maximize2 className="h-3 w-3" />}
-            label="Board"
-            value={`${board.widthMm.toFixed(1)} × ${board.heightMm.toFixed(1)} mm`}
-          />
-          <Stat
-            icon={<Layers className="h-3 w-3" />}
-            label="Stackup"
-            value={`${board.layerCount} layer · ${board.thicknessMm} mm`}
-          />
-          <Stat
-            icon={<Box className="h-3 w-3" />}
-            label="Parts"
-            value={`${board.parts} · ${board.traces} traces · ${board.vias} vias`}
-          />
-        </div>
-        <div className="border-t border-slate-800 px-3 py-2.5">
-          <div className="mb-1 text-[9px] font-medium uppercase tracking-wide text-slate-500">
-            Tallest parts
-          </div>
-          <div className="text-[11px] text-slate-500">
-            — needs component heights
-          </div>
-        </div>
-        <div className="border-t border-slate-800 bg-accent-soft px-3 py-2.5">
-          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-accent-text">
-            <Ruler className="h-3 w-3" /> Min enclosure
-          </div>
-          <div className="font-mono text-sm text-slate-100">
-            {enclosureX} × {enclosureY} × — mm
-          </div>
-          <div className="mt-0.5 text-[10px] text-slate-500">
-            Board + 1 mm margin + tallest part + 1 mm air gap
-          </div>
-        </div>
-      </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setMechanicalOpen(true)}
+          title="Show mechanical panel"
+          aria-label="Show mechanical panel"
+          className="pointer-events-auto absolute right-3 top-3 cursor-pointer rounded-md border border-slate-800 bg-slate-900/90 p-1 text-slate-400 shadow-xl backdrop-blur hover:bg-slate-800 hover:text-slate-200"
+        >
+          <PanelRightOpen className="h-4 w-4" />
+        </button>
+      )}
 
       {/* Floating toolbar */}
       <div className="pointer-events-auto absolute bottom-9 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/90 px-1.5 py-1 shadow-xl backdrop-blur">

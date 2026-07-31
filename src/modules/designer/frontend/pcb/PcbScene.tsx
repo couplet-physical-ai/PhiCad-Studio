@@ -83,6 +83,7 @@ import {
   isPcbLayerVisible,
   isPlacementVisible,
   visibleLayerSet,
+  visibleOverlayEntities,
 } from "./pcb-layer-visibility";
 import type { PcbSelection } from "./pcb-selection";
 import type { ViewportState } from "../types";
@@ -1621,8 +1622,13 @@ export function PcbScene({
   const selectedOverlayTexts = useMemo(() => {
     const ids = selection?.overlayTextIds;
     if (!ids || ids.size === 0) return [];
-    return projection.overlayTexts.filter((t) => ids.has(t.id));
-  }, [projection.overlayTexts, selection?.overlayTextIds]);
+    // Same visibility gate `selectedPlacements` applies: a hidden layer must
+    // not leave an orphan selection outline behind.
+    return visibleOverlayEntities(
+      visibleLayers,
+      projection.overlayTexts.filter((t) => ids.has(t.id)),
+    );
+  }, [projection.overlayTexts, selection?.overlayTextIds, visibleLayers]);
 
   const renderFreeHoles = useMemo(() => {
     const overrides = freePrimitiveDragOverrides?.freeHoles;
@@ -1642,14 +1648,30 @@ export function PcbScene({
     });
   }, [projection.freePads, freePrimitiveDragOverrides?.freePads]);
 
+  // Overlay primitives are gated by their own layer before they reach
+  // `OverlayLayer` — it renders whatever it is handed, so hiding e.g. B.SilkS
+  // in the layers panel (the `top-side` preset) has to be applied here.
   const renderOverlayTexts = useMemo(() => {
+    const visible = visibleOverlayEntities(
+      visibleLayers,
+      projection.overlayTexts,
+    );
     const overrides = freePrimitiveDragOverrides?.overlayTexts;
-    if (!overrides || overrides.size === 0) return projection.overlayTexts;
-    return projection.overlayTexts.map((t) => {
+    if (!overrides || overrides.size === 0) return visible;
+    return visible.map((t) => {
       const override = overrides.get(t.id);
       return override ? { ...t, positionMm: override } : t;
     });
-  }, [projection.overlayTexts, freePrimitiveDragOverrides?.overlayTexts]);
+  }, [
+    projection.overlayTexts,
+    freePrimitiveDragOverrides?.overlayTexts,
+    visibleLayers,
+  ]);
+
+  const renderOverlayShapes = useMemo(
+    () => visibleOverlayEntities(visibleLayers, projection.overlayShapes),
+    [projection.overlayShapes, visibleLayers],
+  );
 
   // Bottom-view mirror: driven by the canvas's Top/Bottom layer switch.
   // Pointer events compensate via `interactionCoordinateTransform`.
@@ -2076,7 +2098,7 @@ export function PcbScene({
         )}
         <OverlayLayer
           texts={renderOverlayTexts}
-          shapes={projection.overlayShapes}
+          shapes={renderOverlayShapes}
           viewSide={viewSide}
           selectedOverlayTextIds={selection?.overlayTextIds}
         />
