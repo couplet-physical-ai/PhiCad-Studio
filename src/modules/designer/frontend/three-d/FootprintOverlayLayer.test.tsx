@@ -119,6 +119,28 @@ describe("FootprintOverlayLayer", () => {
     });
   });
 
+  test("rebinds a role-tagged refdes label to the placement's own designator", () => {
+    // `ref-by-role` carries "U9" — a literal baked in by whichever board
+    // instance the footprint was ingested from. It must render as this
+    // placement's reference ("U2"), not the shared footprint's leftover text.
+    renderLayerMock.mockClear();
+
+    renderToStaticMarkup(
+      <FootprintOverlayLayer placements={[fixturePlacement()]} boardThicknessMm={1.6} />,
+    );
+
+    expect(renderLayerMock.mock.calls[0]?.[0]).toMatchObject({
+      model: {
+        labels: [
+          // Untouched: the shared renderer substitutes the placeholder itself.
+          { id: "ref", text: "REF**" },
+          { id: "ref-by-role", text: "U2" },
+          { id: "value", text: "10k" },
+        ],
+      },
+    });
+  });
+
   test("drops refdes text — placeholder and role-tagged, both sides — when showLabels is false", () => {
     renderLayerMock.mockClear();
 

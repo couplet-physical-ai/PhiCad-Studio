@@ -24,6 +24,7 @@ import type {
 } from "../../../../sdks";
 import { copperLayersForCount } from "../../../../sdks";
 import { layerColor } from "./pcb-layer-colors";
+import { withPlacementReference } from "../lib/footprint-labels";
 import { nearestRatsnestPad } from "./tools/route-target";
 import { FootprintRenderLayer } from "../../../../shared/frontend/canvas/scene";
 import {
@@ -861,7 +862,16 @@ function PlacementRender({
   layerOpacity?: (layer: string) => number;
   viewSide?: "top" | "bottom";
 }): ReactElement | null {
-  const model = placement.footprint.preview;
+  // The preview model is shared by every placement of this library footprint,
+  // so its reference label may carry another instance's designator (board-
+  // ingested footprints bake a literal, e.g. "R6" on all seven resistors).
+  // Rebind it to THIS placement before the shared renderer sees it.
+  const preview = placement.footprint.preview;
+  const model = useMemo(
+    () =>
+      preview ? withPlacementReference(preview, placement.reference) : preview,
+    [preview, placement.reference],
+  );
   const position = positionOverrideMm ?? placement.positionMm;
   const rotationRad = (placement.rotationDeg * Math.PI) / 180;
   // Match the canonical 3D mirror formula (transform-helpers.ts:29-30): a
