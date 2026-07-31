@@ -53,6 +53,28 @@ function fixturePlacement(overrides: Partial<PcbPlacedPart> = {}): PcbPlacedPart
             anchorY: "middle",
             layer: "F.SilkS",
           },
+          {
+            id: "ref-by-role",
+            text: "U9",
+            at: { x: 0, y: 2 },
+            rotationDeg: 0,
+            fontSizeMm: 1,
+            anchorX: "center",
+            anchorY: "middle",
+            layer: "B.SilkS",
+            role: "reference",
+          },
+          {
+            id: "value",
+            text: "10k",
+            at: { x: 0, y: 3 },
+            rotationDeg: 0,
+            fontSizeMm: 1,
+            anchorX: "center",
+            anchorY: "middle",
+            layer: "F.SilkS",
+            role: "value",
+          },
         ],
         bounds: { minX: -2, minY: -2, maxX: 2, maxY: 2 },
         warnings: [],
@@ -80,6 +102,36 @@ describe("FootprintOverlayLayer", () => {
       // by component bodies / pads instead of drawing always-on-top.
       enableDepthTest: true,
       hidePadNumbers: true,
+    });
+  });
+
+  test("keeps every label when showLabels is not set", () => {
+    renderLayerMock.mockClear();
+
+    renderToStaticMarkup(
+      <FootprintOverlayLayer placements={[fixturePlacement()]} boardThicknessMm={1.6} />,
+    );
+
+    expect(renderLayerMock.mock.calls[0]?.[0]).toMatchObject({
+      model: {
+        labels: [{ id: "ref" }, { id: "ref-by-role" }, { id: "value" }],
+      },
+    });
+  });
+
+  test("drops refdes text — placeholder and role-tagged, both sides — when showLabels is false", () => {
+    renderLayerMock.mockClear();
+
+    renderToStaticMarkup(
+      <FootprintOverlayLayer
+        placements={[fixturePlacement()]}
+        boardThicknessMm={1.6}
+        showLabels={false}
+      />,
+    );
+
+    expect(renderLayerMock.mock.calls[0]?.[0]).toMatchObject({
+      model: { labels: [{ id: "value" }] },
     });
   });
 

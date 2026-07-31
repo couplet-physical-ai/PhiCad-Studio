@@ -510,6 +510,7 @@ function Board3DScene({
   showGrid,
   showComponents,
   showSilkscreen,
+  showLabels,
   maskColor,
   maskOpacity,
   fillColor,
@@ -521,6 +522,7 @@ function Board3DScene({
   showGrid: boolean;
   showComponents: boolean;
   showSilkscreen: boolean;
+  showLabels: boolean;
   maskColor: string;
   maskOpacity: number;
   fillColor: string;
@@ -569,6 +571,7 @@ function Board3DScene({
               projection={projection}
               showComponents={showComponents}
               showSilkscreen={showSilkscreen}
+              showLabels={showLabels}
               maskColor={maskColor}
               maskOpacity={maskOpacity}
               fillColor={fillColor}
@@ -789,12 +792,13 @@ export function Board3DCanvas({
           showGrid={display.grid}
           showComponents={display.components}
           showSilkscreen={display.silkscreen}
+          showLabels={display.labels}
           maskColor={maskColor}
           maskOpacity={maskOpacity}
           fillColor={fillColor}
         />
         <Board3DInvalidateOnChange
-          watch={`${boardColor}:${scene}:${transparency}:${display.components}:${display.silkscreen}`}
+          watch={`${boardColor}:${scene}:${transparency}:${display.components}:${display.silkscreen}:${display.labels}`}
         />
       </Canvas>
 

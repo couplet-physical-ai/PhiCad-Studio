@@ -36,6 +36,24 @@ export interface OpenpcbCapturePcbApi {
   rect(): { width: number; height: number };
 }
 
+/** Snapshot returned by `window.__openpcbCapture.sync()`. */
+export interface OpenpcbCaptureSync {
+  /**
+   * The projection revision the frontend currently holds — exactly the value
+   * the NEXT command envelope will send as `baseRevision`. Null before the
+   * first projection load.
+   */
+  mountedRevision: number | null;
+  /**
+   * Dispatch work in flight: the POST itself plus the projection/history
+   * refresh that follows it (that refresh REWRITES `mountedRevision`, so it
+   * counts). 0 means the frontend has settled.
+   */
+  pendingCommands: number;
+  /** `Date.now()` of the last dispatch rejected with REVISION_CONFLICT. */
+  lastConflictAt: number | null;
+}
+
 export interface OpenpcbCaptureApi {
   three?: OpenpcbCaptureThreeApi;
   pcb?: OpenpcbCapturePcbApi;
@@ -47,6 +65,12 @@ export interface OpenpcbCaptureApi {
   schematic?: OpenpcbCapturePcbApi;
   dispatch?: (command: DesignerCommand) => Promise<DesignerDispatchResult>;
   selectedDesignId?: string | null;
+  /**
+   * Read-only readiness probe. Poll it instead of using timing heuristics: a
+   * commit is safe to issue once `pendingCommands === 0` and `mountedRevision`
+   * matches the backend head.
+   */
+  sync?: () => OpenpcbCaptureSync;
 }
 
 declare global {

@@ -147,7 +147,6 @@ export function Board3DControls({
           label="Refdes labels"
           checked={display.labels}
           onChange={() => onToggleDisplay("labels")}
-          stub
         />
         <ToggleRow
           label="Height heatmap"

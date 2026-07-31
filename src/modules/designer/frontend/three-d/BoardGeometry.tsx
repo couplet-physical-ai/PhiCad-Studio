@@ -17,6 +17,7 @@ export function BoardGeometry({
   boardThicknessMm = DEFAULT_BOARD_THICKNESS_MM,
   showComponents = true,
   showSilkscreen = true,
+  showLabels = true,
   maskColor,
   fillColor = COPPER_FILL_GREEN,
 }: {
@@ -25,6 +26,8 @@ export function BoardGeometry({
   boardThicknessMm?: number;
   showComponents?: boolean;
   showSilkscreen?: boolean;
+  /** Reference-designator silk text; independent of `showSilkscreen`. */
+  showLabels?: boolean;
   maskColor?: string;
   /** Soldermask-over-copper shade for traces/pour/vias; tracks the board colour. */
   fillColor?: string;
@@ -65,6 +68,7 @@ export function BoardGeometry({
         <FootprintOverlayLayer
           placements={projection.placements}
           boardThicknessMm={boardThicknessMm}
+          showLabels={showLabels}
         />
       ) : null}
       {showComponents ? (

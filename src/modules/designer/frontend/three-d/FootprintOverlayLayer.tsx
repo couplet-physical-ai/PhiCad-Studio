@@ -31,15 +31,47 @@ const COPPER_LAYERS_3D: ReadonlySet<string> = new Set([
 const hideCopperPadOpacity = (layer: string): number =>
   COPPER_LAYERS_3D.has(layer) ? 0 : 1;
 
+type FootprintPreviewModel = NonNullable<
+  PcbPlacedPart["footprint"]["preview"]
+>;
+type FootprintPreviewLabel = FootprintPreviewModel["labels"][number];
+
+// KiCad reference placeholders. The parser normalizes `${REFERENCE}` → `REF**`,
+// but older/fallback parse paths keep the raw token, so match both. Needed
+// because the fallback path tags every text as role "footprint-text".
+const REFERENCE_PLACEHOLDER_RE = /\$\{REFERENCE\}|REF\*\*/;
+
+function isRefdesLabel(label: FootprintPreviewLabel): boolean {
+  if (label.role === "reference") return true;
+  return REFERENCE_PLACEHOLDER_RE.test(label.text);
+}
+
+/**
+ * Strip reference-designator text from a footprint preview. Used by the
+ * 3D board view's "Refdes labels" toggle — bottom-side silk renders the
+ * designator mirrored (real fab behaviour), so hiding it is the honest way
+ * to get a clean board shot. Value / user silk text is left alone.
+ */
+function withoutRefdesLabels(
+  model: FootprintPreviewModel,
+): FootprintPreviewModel {
+  const labels = model.labels.filter((label) => !isRefdesLabel(label));
+  if (labels.length === model.labels.length) return model;
+  return { ...model, labels };
+}
+
 function FootprintOverlay({
   placement,
   boardThicknessMm,
+  showLabels,
 }: {
   placement: PcbPlacedPart;
   boardThicknessMm: number;
+  showLabels: boolean;
 }): ReactElement | null {
-  const model = placement.footprint.preview;
-  if (!model) return null;
+  const preview = placement.footprint.preview;
+  if (!preview) return null;
+  const model = showLabels ? preview : withoutRefdesLabels(preview);
 
   const transform = getPlacementTransformProps(placement, boardThicknessMm);
   const zOffset =
@@ -75,9 +107,12 @@ function FootprintOverlay({
 export function FootprintOverlayLayer({
   placements,
   boardThicknessMm,
+  showLabels = true,
 }: {
   placements: readonly PcbPlacedPart[];
   boardThicknessMm: number;
+  /** When false, reference-designator text is omitted on BOTH board sides. */
+  showLabels?: boolean;
 }): ReactElement | null {
   if (placements.length === 0) return null;
 
@@ -88,6 +123,7 @@ export function FootprintOverlayLayer({
           key={placement.id}
           placement={placement}
           boardThicknessMm={boardThicknessMm}
+          showLabels={showLabels}
         />
       ))}
     </group>

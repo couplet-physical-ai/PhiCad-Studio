@@ -196,6 +196,10 @@ export function useDesignerWorkspace(params: {
   const ensureDesignPromiseRef = useRef<Promise<string> | null>(null);
   const projectionRef = useRef<DesignerSchematicProjection | null>(null);
   const selectedDesignIdRef = useRef<string | null>(null);
+  // Capture-bridge sync counters, read by `window.__openpcbCapture.sync()`.
+  // Plain refs — never rendered, so they cost nothing when capture is off.
+  const pendingCommandsRef = useRef(0);
+  const lastConflictAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     projectionRef.current = projection;
@@ -503,8 +507,17 @@ export function useDesignerWorkspace(params: {
         command,
       };
 
-      const result = await api.dispatch(designId, envelope);
+      pendingCommandsRef.current += 1;
+      let result: DesignerDispatchResult;
+      try {
+        result = await api.dispatch(designId, envelope);
+      } finally {
+        pendingCommandsRef.current -= 1;
+      }
       if (!result.ok) {
+        if (result.code === "REVISION_CONFLICT") {
+          lastConflictAtRef.current = Date.now();
+        }
         throw new Error(commandErrorMessage(result));
       }
 
@@ -527,8 +540,16 @@ export function useDesignerWorkspace(params: {
       const { designId, result, isPcbCommand } =
         await dispatchEnvelope(command);
       if (!isPcbCommand) {
-        await refreshProjectionForDesign(designId);
-        await refreshHistoryForDesign(designId);
+        // Counted as pending too: the refresh REWRITES the mounted revision, so
+        // a capture harness waiting on `pendingCommands === 0` must not resume
+        // while it is still in flight.
+        pendingCommandsRef.current += 1;
+        try {
+          await refreshProjectionForDesign(designId);
+          await refreshHistoryForDesign(designId);
+        } finally {
+          pendingCommandsRef.current -= 1;
+        }
       }
       return result;
     },
@@ -548,8 +569,13 @@ export function useDesignerWorkspace(params: {
         // Refresh even after a mid-batch failure — earlier commands already
         // applied and the UI must converge on the persisted state.
         if (refreshDesignId) {
-          await refreshProjectionForDesign(refreshDesignId);
-          await refreshHistoryForDesign(refreshDesignId);
+          pendingCommandsRef.current += 1;
+          try {
+            await refreshProjectionForDesign(refreshDesignId);
+            await refreshHistoryForDesign(refreshDesignId);
+          } finally {
+            pendingCommandsRef.current -= 1;
+          }
         }
       }
     },
@@ -595,6 +621,11 @@ export function useDesignerWorkspace(params: {
   // Dev-only capture hooks (M0.2): expose command dispatch + the active design
   // on `window.__openpcbCapture`, gated on OPENPCB_CAPTURE=1. Merges into the
   // shared namespace and removes only its own keys on cleanup.
+  //
+  // `sync()` is the read-only readiness signal: a capture harness polls it to
+  // wait for the frontend to settle instead of guessing with tab bounces. It
+  // reports the revision the NEXT envelope would send as `baseRevision`, so a
+  // harness can compare it against the backend head before committing.
   useEffect(() => {
     const captureMode =
       (window as { electronAPI?: { captureMode?: boolean } }).electronAPI
@@ -605,12 +636,18 @@ export function useDesignerWorkspace(params: {
       ...existing,
       dispatch: (command) => dispatchCommand(command),
       selectedDesignId,
+      sync: () => ({
+        mountedRevision: projectionRef.current?.revision ?? null,
+        pendingCommands: pendingCommandsRef.current,
+        lastConflictAt: lastConflictAtRef.current,
+      }),
     };
     return () => {
       const current = window.__openpcbCapture;
       if (current) {
         delete current.dispatch;
         delete current.selectedDesignId;
+        delete current.sync;
       }
     };
   }, [dispatchCommand, selectedDesignId]);
