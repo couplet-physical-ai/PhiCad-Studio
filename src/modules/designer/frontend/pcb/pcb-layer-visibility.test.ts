@@ -4,6 +4,7 @@ import type {
   PcbOverlayShape,
   PcbOverlayText,
 } from "../../../../sdks";
+import { hitOverlayText } from "./pcb-hit";
 import {
   isOverlayVisible,
   visibleLayerSet,
@@ -98,5 +99,48 @@ describe("visibleOverlayEntities", () => {
     const texts = [text("front", "F.SilkS"), text("back", "B.SilkS")];
 
     expect(visibleOverlayEntities(visible, texts)).toHaveLength(0);
+  });
+});
+
+/**
+ * `PcbCanvas` has no unit-testable seam of its own (one 6k-line component), so
+ * this pins the composition it performs: the overlay-text hit test is fed
+ * `visibleOverlayEntities(visibleLayers, projection.overlayTexts)` — the SAME
+ * gate `PcbScene.renderOverlayTexts` applies — instead of the raw projection
+ * list. Without it, text hidden by the layers panel stayed click-selectable.
+ */
+describe("overlay-text hit-testing is gated by layer visibility", () => {
+  const cursor = { x: 0, y: 0 };
+
+  test("hidden bottom-silk text is not selectable under the top-side preset", () => {
+    const visible = visibleLayerSet(TOP_SIDE_LAYERS);
+    const texts = [text("back", "B.SilkS")];
+
+    // Ungated (the pre-fix behaviour) the cursor DOES land on it…
+    expect(hitOverlayText(texts, cursor)?.id).toBe("back");
+    // …but the gated list the canvas now hit-tests is empty.
+    expect(
+      hitOverlayText(visibleOverlayEntities(visible, texts), cursor),
+    ).toBeNull();
+  });
+
+  test("visible text on the same spot is still selectable", () => {
+    const visible = visibleLayerSet(TOP_SIDE_LAYERS);
+    const texts = [text("front", "F.SilkS")];
+
+    expect(
+      hitOverlayText(visibleOverlayEntities(visible, texts), cursor)?.id,
+    ).toBe("front");
+  });
+
+  test("a hidden item stacked over a visible one does not shadow it", () => {
+    const visible = visibleLayerSet(TOP_SIDE_LAYERS);
+    // Paint order puts the bottom-silk text first; ungated it wins the hit.
+    const texts = [text("back", "B.SilkS"), text("front", "F.SilkS")];
+
+    expect(hitOverlayText(texts, cursor)?.id).toBe("back");
+    expect(
+      hitOverlayText(visibleOverlayEntities(visible, texts), cursor)?.id,
+    ).toBe("front");
   });
 });

@@ -19,6 +19,7 @@ import type {
   PcbBoardContour,
   PcbBoardOutline,
   PcbCopperLayerId,
+  PcbOverlayText,
   PcbPlacedPart,
   PcbPointMm,
   PcbTrace,
@@ -255,6 +256,7 @@ import {
   isPlacementVisible,
   isTraceVisible,
   visibleLayerSet,
+  visibleOverlayEntities,
 } from "./pcb-layer-visibility";
 
 const NM_PER_MM = 1_000_000;
@@ -1014,8 +1016,6 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
   freeHolesRef.current = workspace.projection?.freeHoles ?? [];
   const freePadsRef = useRef(workspace.projection?.freePads ?? []);
   freePadsRef.current = workspace.projection?.freePads ?? [];
-  const overlayTextsRef = useRef(workspace.projection?.overlayTexts ?? []);
-  overlayTextsRef.current = workspace.projection?.overlayTexts ?? [];
   // DRC markers for hover/click hit-testing — positions only (selected/hovered
   // flags irrelevant here), waived excluded by the shared builder. A ref keeps
   // the pointer handlers' closure current without re-creating the handler memo.
@@ -1053,6 +1053,23 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
       ),
     [effectivePlacements, visibleLayers],
   );
+
+  // Overlay text is hit-tested against the SAME set `PcbScene` renders
+  // (`renderOverlayTexts`, gated by `visibleOverlayEntities` off the identical
+  // `projection.board.visibleLayers` state). Without this, silk text hidden by
+  // the top-side preset stayed invisibly click-selectable and draggable.
+  // Declared after `visibleLayers` because the ref is filled during render.
+  const visibleOverlayTexts = useMemo(
+    () =>
+      visibleOverlayEntities(
+        visibleLayers,
+        workspace.projection?.overlayTexts ?? [],
+      ),
+    [workspace.projection?.overlayTexts, visibleLayers],
+  );
+  const overlayTextsRef =
+    useRef<ReadonlyArray<PcbOverlayText>>(visibleOverlayTexts);
+  overlayTextsRef.current = visibleOverlayTexts;
 
   const viasVisible = areViasVisible(visibleLayers);
 
