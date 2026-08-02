@@ -199,7 +199,7 @@ function ingestSinglePair(
   input: IngestSinglePairInput,
 ): string {
   const symbolContent = serializeSexpr(input.symbolNode);
-  const footprintContent = serializeSexpr(input.footprintNode);
+  const footprintContent = synthesizeFootprintContent(input.footprintNode);
   const symbolFileName = sanitizeFileName(input.symbolLibId) + ".kicad_sym";
   const footprintFileName =
     sanitizeFileName(input.footprintLibId) + ".kicad_mod";
@@ -242,6 +242,60 @@ function ingestSinglePair(
 
 function sanitizeFileName(libId: string): string {
   return libId.replace(/[^a-zA-Z0-9_-]+/g, "_");
+}
+
+/** KiCad's library placeholder for a not-yet-instantiated designator. */
+const REFERENCE_PLACEHOLDER = "REF**";
+
+/**
+ * Serialize a *board* `(footprint …)` block as a *library* `.kicad_mod`.
+ *
+ * The node we synthesize from is a board instance, so its Reference carries
+ * that instance's literal designator (e.g. "R6"). Stored verbatim it becomes
+ * the shared library footprint's reference text for every consumer — library
+ * tiles, the footprint editor, the import wizard — so all seven resistors read
+ * "R6". Real KiCad library footprints ship the `REF**` placeholder instead,
+ * which every downstream renderer already resolves per placement via
+ * `placeholderSubstitutions`. Normalize to that here.
+ *
+ * This fixes newly imported projects only; the placement-level rebind in
+ * `designer/frontend/lib/footprint-labels.ts` stays the render authority and
+ * still repairs boards imported before this normalization existed.
+ */
+export function synthesizeFootprintContent(footprintNode: SExpr[]): string {
+  return serializeSexpr(withPlaceholderReference(footprintNode));
+}
+
+/** Copy `node` with every reference-designator child rewritten to `REF**`. */
+function withPlaceholderReference(node: SExpr[]): SExpr[] {
+  let changed = false;
+  const next = node.map((child) => {
+    if (!Array.isArray(child)) return child;
+    const rewritten = withPlaceholderReferenceText(child);
+    if (rewritten !== child) changed = true;
+    return rewritten;
+  });
+  return changed ? next : node;
+}
+
+/**
+ * Rewrite the text value of a reference-designator node, covering both KiCad
+ * spellings — value sits at index 2 in each:
+ *   KiCad 8+ : `(property "Reference" "R6" (at …) (layer …) (effects …))`
+ *   legacy   : `(fp_text reference "R6" (at …) (layer …) (effects …))`
+ * Position / layer / uuid / effects are preserved verbatim; only the literal
+ * changes. Returns the input untouched when it is not a reference node.
+ */
+function withPlaceholderReferenceText(node: SExpr[]): SExpr[] {
+  const isProperty = node[0] === "property" && node[1] === "Reference";
+  const isFpText = node[0] === "fp_text" && node[1] === "reference";
+  if (!isProperty && !isFpText) return node;
+  if (typeof node[2] !== "string" || node[2] === REFERENCE_PLACEHOLDER) {
+    return node;
+  }
+  const next = [...node];
+  next[2] = REFERENCE_PLACEHOLDER;
+  return next;
 }
 
 /**
