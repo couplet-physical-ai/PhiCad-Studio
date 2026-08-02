@@ -157,6 +157,89 @@ describe("FootprintOverlayLayer", () => {
     });
   });
 
+  test("keeps refdes silk upright on a 180°-rotated placement", () => {
+    // The label transform composes the same way here as in 2D PcbScene, so a
+    // 180° placement would silkscreen its designator upside-down without the
+    // keep-upright pass. Value text has no such flag and must stay put.
+    renderLayerMock.mockClear();
+
+    renderToStaticMarkup(
+      <FootprintOverlayLayer
+        placements={[fixturePlacement({ rotationDeg: 180 })]}
+        boardThicknessMm={1.6}
+      />,
+    );
+
+    expect(renderLayerMock.mock.calls[0]?.[0]).toMatchObject({
+      model: {
+        labels: [
+          { id: "ref", rotationDeg: 180 },
+          { id: "ref-by-role", rotationDeg: 180 },
+          { id: "value", rotationDeg: 0 },
+        ],
+      },
+    });
+  });
+
+  test("leaves an unrotated placement's labels untouched", () => {
+    renderLayerMock.mockClear();
+
+    renderToStaticMarkup(
+      <FootprintOverlayLayer
+        placements={[fixturePlacement({ rotationDeg: 0 })]}
+        boardThicknessMm={1.6}
+      />,
+    );
+
+    expect(renderLayerMock.mock.calls[0]?.[0]).toMatchObject({
+      model: {
+        labels: [
+          { id: "ref", rotationDeg: 0 },
+          { id: "ref-by-role", rotationDeg: 0 },
+          { id: "value", rotationDeg: 0 },
+        ],
+      },
+    });
+  });
+
+  test("mirrored placements flip the label's contribution, not the rule", () => {
+    // B.Cu negates X, so the glyph angle is placementRot − labelRot. With both
+    // at 180 the text already reads upright and must NOT be flipped again.
+    renderLayerMock.mockClear();
+
+    const base = fixturePlacement();
+    const preview = base.footprint.preview!;
+    renderToStaticMarkup(
+      <FootprintOverlayLayer
+        placements={[
+          {
+            ...base,
+            layer: "B.Cu",
+            rotationDeg: 180,
+            footprint: {
+              ...base.footprint,
+              preview: {
+                ...preview,
+                labels: preview.labels.map((l) => ({ ...l, rotationDeg: 180 })),
+              },
+            },
+          },
+        ]}
+        boardThicknessMm={1.6}
+      />,
+    );
+
+    expect(renderLayerMock.mock.calls[0]?.[0]).toMatchObject({
+      model: {
+        labels: [
+          { id: "ref", rotationDeg: 180 },
+          { id: "ref-by-role", rotationDeg: 180 },
+          { id: "value", rotationDeg: 180 },
+        ],
+      },
+    });
+  });
+
   test("skips placements without footprint preview data", () => {
     renderLayerMock.mockClear();
     const placement = fixturePlacement({

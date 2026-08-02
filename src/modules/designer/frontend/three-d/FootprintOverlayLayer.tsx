@@ -3,6 +3,7 @@ import type { PcbPlacedPart } from "../../../../sdks";
 import { FootprintRenderLayer } from "../../../../shared/frontend/canvas/scene";
 import {
   withPlacementReference,
+  withUprightRefdesLabels,
   withoutRefdesLabels,
 } from "../lib/footprint-labels";
 import { getPlacementTransformProps } from "./transform-helpers";
@@ -46,11 +47,23 @@ function FootprintOverlay({
 }): ReactElement | null {
   const preview = placement.footprint.preview;
   if (!preview) return null;
-  const model = showLabels
-    ? withPlacementReference(preview, placement.reference)
-    : withoutRefdesLabels(preview);
 
   const transform = getPlacementTransformProps(placement, boardThicknessMm);
+  // Keep-upright applies here too: `getPlacementTransformProps` produces the
+  // SAME label-affecting math as the 2D `PlacementRender` group — Z-rotation
+  // of `placement.rotationDeg` plus an X scale of −1 for mirrored/B.Cu — and
+  // the shared `FootprintRenderLayer` nests each label's own Z-rotation inside
+  // it identically. Only the Z translation differs (board thickness), which
+  // cannot change a glyph's orientation. Diverging here would reintroduce the
+  // 2D/3D refdes mismatch f8cb114 closed.
+  const model = showLabels
+    ? withUprightRefdesLabels(
+        withPlacementReference(preview, placement.reference),
+        placement.rotationDeg,
+        transform.scale[0] === -1,
+      )
+    : withoutRefdesLabels(preview);
+
   const zOffset =
     placement.layer === "B.Cu"
       ? -FOOTPRINT_OVERLAY_Z_OFFSET_MM

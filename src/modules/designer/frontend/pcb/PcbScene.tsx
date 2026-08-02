@@ -24,7 +24,10 @@ import type {
 } from "../../../../sdks";
 import { copperLayersForCount } from "../../../../sdks";
 import { layerColor } from "./pcb-layer-colors";
-import { withPlacementReference } from "../lib/footprint-labels";
+import {
+  withPlacementReference,
+  withUprightRefdesLabels,
+} from "../lib/footprint-labels";
 import { nearestRatsnestPad } from "./tools/route-target";
 import { FootprintRenderLayer } from "../../../../shared/frontend/canvas/scene";
 import {
@@ -862,16 +865,6 @@ function PlacementRender({
   layerOpacity?: (layer: string) => number;
   viewSide?: "top" | "bottom";
 }): ReactElement | null {
-  // The preview model is shared by every placement of this library footprint,
-  // so its reference label may carry another instance's designator (board-
-  // ingested footprints bake a literal, e.g. "R6" on all seven resistors).
-  // Rebind it to THIS placement before the shared renderer sees it.
-  const preview = placement.footprint.preview;
-  const model = useMemo(
-    () =>
-      preview ? withPlacementReference(preview, placement.reference) : preview,
-    [preview, placement.reference],
-  );
   const position = positionOverrideMm ?? placement.positionMm;
   const rotationRad = (placement.rotationDeg * Math.PI) / 180;
   // Match the canonical 3D mirror formula (transform-helpers.ts:29-30): a
@@ -881,6 +874,23 @@ function PlacementRender({
   // looks right.
   const isBackLayer = placement.layer === "B.Cu";
   const scaleX = placement.mirrored || isBackLayer ? -1 : 1;
+
+  // The preview model is shared by every placement of this library footprint,
+  // so its reference label may carry another instance's designator (board-
+  // ingested footprints bake a literal, e.g. "R6" on all seven resistors).
+  // Rebind it to THIS placement, then apply KiCad keep-upright so a rotated
+  // placement doesn't silkscreen its refdes upside-down. Both passes copy the
+  // shared model and return it unchanged when there is nothing to do.
+  const preview = placement.footprint.preview;
+  const model = useMemo(() => {
+    if (!preview) return preview;
+    const rebound = withPlacementReference(preview, placement.reference);
+    return withUprightRefdesLabels(
+      rebound,
+      placement.rotationDeg,
+      scaleX === -1,
+    );
+  }, [preview, placement.reference, placement.rotationDeg, scaleX]);
 
   // No footprint preview at all, or footprint with zero pads AND zero graphics:
   // render a placeholder so the user can see the part exists and where it sits.

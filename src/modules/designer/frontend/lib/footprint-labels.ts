@@ -68,3 +68,74 @@ export function withPlacementReference(
   });
   return changed ? { ...model, labels } : model;
 }
+
+/**
+ * KiCad "keep upright" for refdes silk, ported to our transform composition.
+ *
+ * Both renderers nest the label inside the placement group exactly the same
+ * way (`PcbScene.PlacementRender`, 3D `FootprintOverlayLayer`):
+ *
+ *   groupMatrix = T(position) · Rz(placement.rotationDeg) · S(mirrorX, 1, 1)
+ *   labelMatrix = T(label.at)  · Rz(label.rotationDeg)
+ *
+ * so the glyph's world up-vector angle is
+ *   unmirrored: placementRot + labelRot + 90
+ *   mirrored:   placementRot − labelRot + 90     (S(−1,1,1)·Rz(θ) = Rz(−θ)·S)
+ *
+ * Text reads upright while that up-vector points into the upper half-plane,
+ * i.e. while the *effective* angle below sits in (−90, 90]. Outside it, add
+ * 180° to the label's OWN rotation — which is what KiCad stores and what keeps
+ * the fix inside the model copy. The result is KiCad's `GetDrawRotation()`
+ * normalization: every refdes ends up in (−90, 90].
+ *
+ * Mirrored placements (B.Cu, or an explicit `mirrored` flag — the two the 2D
+ * and 3D transforms both fold into one X scale) flip the sign of the label's
+ * contribution, hence the branch. The *correction* is unchanged: ±180 on the
+ * label's rotation shifts the effective angle by 180 either way. The 2D scene's
+ * bottom-view mirror (`sceneScaleX = -1`) is deliberately NOT considered: an
+ * outer X-mirror maps up-vector angle a → 180 − a, which preserves sin(a), so
+ * it flips reading direction but never uprightness.
+ *
+ * Rotating about the label anchor keeps center/middle-justified text (KiCad's
+ * default for footprint refdes, and the parser's fallback) on the same point.
+ * Left/right-justified text shifts across its anchor — same as KiCad, which
+ * also rotates about the text position.
+ *
+ * Scoped to refdes labels (`isRefdesLabel`): value/user silk is authored text
+ * we have no keep-upright flag for, so we leave it exactly as imported.
+ */
+export function withUprightRefdesLabels(
+  model: FootprintPreviewModel,
+  placementRotationDeg: number,
+  mirrored: boolean,
+): FootprintPreviewModel {
+  let changed = false;
+  const labels = model.labels.map((label) => {
+    if (!isRefdesLabel(label)) return label;
+    const next = uprightLabelRotationDeg(
+      label.rotationDeg,
+      placementRotationDeg,
+      mirrored,
+    );
+    if (next === label.rotationDeg) return label;
+    changed = true;
+    return { ...label, rotationDeg: next };
+  });
+  return changed ? { ...model, labels } : model;
+}
+
+/** The label rotation that leaves the glyphs reading upright. Exported for tests. */
+export function uprightLabelRotationDeg(
+  labelRotationDeg: number,
+  placementRotationDeg: number,
+  mirrored: boolean,
+): number {
+  const effective =
+    placementRotationDeg + (mirrored ? -labelRotationDeg : labelRotationDeg);
+  const normalized = ((effective % 360) + 360) % 360;
+  // (90, 270] is the upside-down band. 90 and 270 are the two vertical cases;
+  // KiCad keeps 90 (reads bottom-to-top) and flips 270, matching (−90, 90].
+  return normalized > 90 && normalized <= 270
+    ? labelRotationDeg + 180
+    : labelRotationDeg;
+}
