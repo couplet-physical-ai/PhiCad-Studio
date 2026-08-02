@@ -1,33 +1,62 @@
 # ELECTRON SHELL
 
-**Purpose:** Thin OS shell — window management, IPC, spawns backend Bun process.
+**Purpose:** OS shell — window management, IPC, updater, crash/telemetry, and
+**hosting the backend runtime in-process**.
+
+> The backend is NOT a child process. `backend-server.ts` statically imports
+> `startBackendRuntime` from `src/core/backend/runtime` and calls it on
+> Electron's own Node. There is no `backend-manager.ts` and no Bun at runtime —
+> Bun is a dev-only tool. A long-running request therefore shares the main
+> process event loop with the UI.
 
 ## STRUCTURE
 
 ```
 electron/
-├── main.ts              # Main process entry
-├── preload.ts           # contextBridge (IPC)
-├── backend-manager.ts   # Spawn + monitor Bun process
-├── package.json         # Electron workspace
-└── (build configs)
+├── src/main/
+│   ├── index.ts            # Main entry: boot order, window, app lifecycle
+│   ├── backend-server.ts   # Starts the backend runtime IN-PROCESS; env setup
+│   ├── mcp-portfile.ts     # MCP token + <APP_DATA_DIR>/mcp.json (0600)
+│   ├── deep-link.ts        # openpcb:// scheme + single-instance lock
+│   ├── diagnostics-ipc.ts  # diagnostics:* / app:get-versions / mcp:config
+│   ├── secure-storage.ts   # safeStorage-backed secure-store.json
+│   ├── preferences.ts      # preferences.json (telemetry opt-in)
+│   ├── updater.ts, logger.ts, crash.ts, sentry.ts
+├── src/preload/index.ts    # contextBridge: window.electronAPI + window.updater
+├── src/mcp-shim/index.ts   # stdio ⇄ Streamable HTTP bridge (own tsup entry)
+├── build/mcp/              # openpcb-mcp launcher scripts (extraResources)
+├── tsup.config.ts          # 3 CJS bundles: main, mcp/shim, preload
+└── electron-builder.cjs    # Packaging (NOT Electron Forge)
 ```
 
 ## WHERE TO LOOK
 
-| Task          | Location           |
-| ------------- | ------------------ |
-| Backend spawn | backend-manager.ts |
-| IPC handlers  | preload.ts         |
-| Window config | main.ts            |
+| Task                        | Location                                    |
+| --------------------------- | ------------------------------------------- |
+| Backend startup / env vars  | `src/main/backend-server.ts`                |
+| IPC handlers                | `src/main/diagnostics-ipc.ts`, `index.ts`   |
+| Renderer-facing API surface | `src/preload/index.ts`                      |
+| Window config / security    | `src/main/index.ts`                         |
+| Packaging, extraResources   | `electron-builder.cjs`                      |
+| MCP discovery for clients   | `src/main/mcp-portfile.ts`, `src/mcp-shim/` |
 
 ## CONVENTIONS
 
-- Separate workspace in package.json workspaces
-- Waits on `http-get://127.0.0.1:1420` before launching
-- Spawns Bun backend as child process
+- Separate npm workspace; built by `tsup` to CJS (Electron main is CommonJS).
+- Dev: waits on `http-get://127.0.0.1:1420` before launching the window.
+- Backend binds `127.0.0.1` on an **ephemeral port** (`PORT=0`). The real port
+  reaches the renderer over the `backend-ready` IPC, and external MCP clients
+  through `mcp.json`. Never assume 3000 — that is the standalone dev backend.
+- `OPENPCB_ALLOW_UNAUTHENTICATED_API=true` is set unconditionally; loopback is
+  the security boundary for everything except `/api/modules/assistant/mcp`,
+  which additionally requires the `OPENPCB_MCP_TOKEN` bearer.
+- Only true natives stay external to the bundle (`electron`, `better-sqlite3`,
+  `electron-updater`); everything else is inlined.
 
 ## ANTI-PATTERNS
 
-- Must NOT import from src/ (spawns backend instead)
-- Pure shell — no business logic
+- Do NOT reintroduce a spawned backend or a `backend-manager.ts`.
+- Do NOT put business logic here — it belongs in `src/modules/*`.
+- Do NOT ship an executable inside `app.asar` (it cannot be spawned); use
+  `extraResources`, as the MCP shim does.
+- Do NOT hardcode the backend port.

@@ -1,70 +1,128 @@
 <div align="center">
   <img src="electron/icon.png" alt="OpenPCB" width="120" />
   <h1>OpenPCB</h1>
-  <p><strong>Modular, open desktop PCB design suite — schematic capture, PCB layout, and a unified component library in one app.</strong></p>
+  <p><strong>Modular, open desktop PCB design suite — schematic capture, PCB layout, design rule checking, manufacturing output and a unified component library in one app.</strong></p>
 
   <p>
-    <img alt="version" src="https://img.shields.io/badge/version-0.1.0--beta-blue" />
+    <a href="https://github.com/OpenPCB-app/OpenPCB/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/OpenPCB-app/OpenPCB?include_prereleases&label=release" /></a>
     <img alt="license" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" />
-    <img alt="electron" src="https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white" />
-    <img alt="bun" src="https://img.shields.io/badge/Bun-runtime-black?logo=bun&logoColor=white" />
-    <img alt="react" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" />
-    <img alt="vite" src="https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white" />
-    <img alt="tailwind" src="https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white" />
-    <img alt="typescript" src="https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white" />
+    <img alt="platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" />
   </p>
 </div>
 
 ---
 
-OpenPCB is a desktop app that takes you from idea → schematic → PCB → fabrication-ready output, in one workspace. No separate tools for schematic capture, layout, and library management — it's all here, and it's free and open.
+OpenPCB takes a board from idea to fabrication in one workspace: draw the schematic, lay out the
+PCB, check it against real manufacturing rules, and export the files your fab house asks for. No
+separate tools for capture, layout and library management, no account, no cloud service in the
+loop — it runs on your machine and your designs stay there.
 
-> Status: pre-1.0, active development. Schematic capture and component library are stable; PCB layout is partially shipped (trace routing, vias, layer switching, live DRC, ratsnest).
+It is free and open source, dual-licensed AGPL-3.0-or-later and commercially.
+
+> **Status: public beta.** The schematic editor, the component library and the
+> manufacturing export path are usable for real boards. PCB layout and DRC are shipped and actively
+> hardening. Expect rough edges, and read the [known issues](#known-issues-on-first-launch) before
+> your first launch.
 
 ## Download
 
-Grab the latest build from [**Releases**](https://github.com/OpenPCB-app/OpenPCB/releases/latest):
+Grab the latest build from [**Releases**](https://github.com/OpenPCB-app/OpenPCB/releases/latest).
 
-| Platform | File                          |
-| -------- | ----------------------------- |
-| macOS    | `.dmg` / `.zip` (arm64 + x64) |
-| Windows  | `Setup.exe`                   |
-| Linux    | `.deb` / `.rpm` / `.AppImage` |
+| Platform | File                          | Notes                                    |
+| -------- | ----------------------------- | ---------------------------------------- |
+| macOS    | `.dmg` / `.zip` (arm64 + x64) | Unsigned — see the install guide          |
+| Windows  | `Setup.exe` (NSIS installer)  | Unsigned — SmartScreen warns on first run |
+| Linux    | `.AppImage` / `.deb` / `.rpm` | AppImage needs `chmod +x`                 |
 
-Every release ships `SHA256SUMS.txt` — verify your download with `shasum -a 256 -c SHA256SUMS.txt`.
+Every release attaches `SHA256SUMS.txt`. Verify your download before running it:
 
-> Builds are currently **unsigned** (beta). macOS Gatekeeper and Windows SmartScreen will warn on first launch — see [Known issues](#known-issues-on-first-launch) below and [`electron/README-BETA-INSTALL.md`](electron/README-BETA-INSTALL.md) for the fix.
+```bash
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+```
 
-## Highlights
+Beta builds are **not code-signed**, so macOS Gatekeeper and Windows SmartScreen will both object
+the first time. [`electron/README-BETA-INSTALL.md`](electron/README-BETA-INSTALL.md) has the
+per-platform steps, including checksum verification.
 
-- **Schematic capture** — symbol placement, Manhattan wire routing, net labels, junctions, net extraction, ERC scaffolding, full undo/redo.
-- **PCB layout** — trace routing (Manhattan + 45°), via placement with layer switch, pad rendering, MST ratsnest, board outline, component placement, live DRC, IPC-2221B-aware net classes.
-- **Component library** — symbols, footprints (IPC-7351B preset generator + drawn editor), variants, KiCad `.kicad_sym` / `.kicad_mod` import, built-in seeded components.
-- **Fast, modern canvas** — single React Three Fiber renderer shared by every editor, smooth pan/zoom, no lag on large boards.
-- **AI Assistant** _(dev preview)_ — OpenAI / Ollama / LM Studio providers, read-only tools today, write-tool scaffolding behind confirm/reject.
-- **Cross-platform desktop** — macOS (arm64/x64), Windows x64, Linux x64. Auto-update is live on Windows and Linux; macOS auto-update lands with Developer ID signing.
+## What it does
 
-## Screenshots
+**Schematic capture.** Place symbols, route wires on a Manhattan grid, add net labels and
+junctions. Nets are extracted from geometry rather than hand-maintained, ERC runs over the result,
+and everything is undoable — every edit goes through a command with an inverse patch, so undo and
+redo survive an app restart.
 
-> _Screenshots are intentionally omitted in this repo — open the app to see the schematic editor, PCB canvas, and library palette._
->
-> _(Placeholder — real screenshots/GIFs of the schematic editor, PCB canvas, and library palette should go here to help new visitors evaluate the app at a glance.)_
+**PCB layout.** Route traces in Manhattan and 45° modes with live snapping, place vias with a
+layer switch, see an MST ratsnest of what is still unconnected, and draw a board outline —
+including custom board shapes with dimensioned sketching. Placements sync automatically from the
+schematic, so the layout always reflects the current netlist. Length tuning, bundle routing and
+walkaround are present but still behind development flags while they finish manual QA.
+
+**Design rule checking.** DRC runs live while you work and as a batch check, with fabricator
+profiles, net-class-aware clearance resolution, IPC-2221B-derived electrical checks, signal
+integrity checks for differential pairs, length matching, and stable violation identities so a
+waiver you grant stays granted. Violations carry the geometry that produced them, not just a
+message.
+
+**Manufacturing export.** Gerber X2, Excellon drill, bill of materials and pick-and-place, bundled
+into a single ZIP ready to upload. Silkscreen text is rasterized into the Gerber output rather than
+dropped, and the export path handles 2- and 4-layer stackups.
+
+**Component library.** A bundled library of more than two hundred parts ships with the app —
+symbols, footprints and 3D models, signed and integrity-checked at build time. You can add your
+own: import KiCad `.kicad_sym` and `.kicad_mod` files, generate footprints from IPC-7351B presets,
+draw them by hand in the built-in editors, or upload STEP models that are converted to GLB for the
+3D board preview. Parts carry the metadata you actually need downstream — subcategory, datasheet
+links, keywords and manufacturer part numbers.
+
+**Documentation alongside your designs.** The Knowledge module keeps project notes, datasheets and
+reference material in the same app as the board: a page tree with a rich-text editor, PDFs stored
+as pages, and text or markdown import.
+
+**AI assistant.** Optional, and pointed at whichever provider you choose — OpenAI, or a local
+Ollama or LM Studio endpoint. It can read your design and it can change it: non-destructive edits
+apply directly, while destructive ones are held for your explicit approval. It is off until you
+configure a provider, and no design data leaves your machine unless you point it at a hosted model.
+
+**A fast canvas.** One React Three Fiber renderer is shared by every editor, with demand rendering
+and integer-nanometre geometry throughout — pan and zoom stay smooth on large boards, and the same
+coordinates that draw the screen drive DRC and export.
+
+**Cross-platform desktop.** macOS (arm64 and x64), Windows x64, Linux x64. Auto-update is live on
+Windows and Linux.
 
 ## Known issues on first launch
 
-- Binaries in `v0.1.x-beta` are **unsigned**. macOS Gatekeeper and Windows SmartScreen will warn — see [`electron/README-BETA-INSTALL.md`](electron/README-BETA-INSTALL.md).
-- Linux AppImage needs `chmod +x` after download.
-- `electron-updater` auto-update is not live on macOS yet; install new versions manually there.
+- **Builds are unsigned.** macOS reports that the developer cannot be verified; Windows SmartScreen
+  shows a blue warning. Both are expected for this beta and both have a documented workaround in
+  the [install guide](electron/README-BETA-INSTALL.md). Verify `SHA256SUMS.txt` — that is the real
+  integrity check while signing is deferred.
+- **macOS does not auto-update.** Squirrel.Mac rejects an ad-hoc signature, so the app falls back
+  to a notify-only check that links to the latest release. Windows and Linux update in place.
+- **The Linux AppImage needs `chmod +x`** before it will run, and its desktop and protocol
+  integration depends on your desktop environment. The `.deb` and `.rpm` packages use the system
+  registration and are more reliable there.
+- **The board panel still shows a fixed "2-layer" label.** The export path handles 4-layer boards
+  and the underlying model goes further, but the layer-count picker is not built yet.
 
 ## License
 
-OpenPCB is **dual-licensed**:
+OpenPCB is dual-licensed:
 
-- **AGPL-3.0-or-later** for community / open-source use. See [`LICENSE`](LICENSE) for the full text.
-- **Commercial license** available for organizations that cannot meet AGPL's source-disclosure obligations or who want a license without copyleft requirements. See [`LICENSE-COMMERCIAL.md`](LICENSE-COMMERCIAL.md) — contact `licensing@openpcb.app`.
+- **AGPL-3.0-or-later** for community and open-source use. See [`LICENSE`](LICENSE) for the full
+  text.
+- **A commercial license** for organizations that cannot meet AGPL's source-disclosure obligations.
+  Contact `licensing@openpcb.app`.
 
-## For developers
+## Documentation
 
-Want to run OpenPCB from source, understand its architecture, or add a module? See [`DEVELOPER.md`](DEVELOPER.md). Want to open a PR? See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, conventions, and the pre-PR checklist. By contributing you agree to license your contributions under AGPL-3.0-or-later.
+| Document                             | For                                                             |
+| ------------------------------------ | --------------------------------------------------------------- |
+| [`ROADMAP.md`](ROADMAP.md)           | What is shipped, what is next, what is out of scope              |
+| [`DEVELOPER.md`](DEVELOPER.md)       | Architecture, running from source, commands, module system       |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Quick start, pre-PR checklist, conventions                       |
+| [`SECURITY.md`](SECURITY.md)         | Reporting a vulnerability                                        |
 
-For architecture-shaping changes, open an issue first.
+Bug reports and feature requests go to
+[GitHub issues](https://github.com/OpenPCB-app/OpenPCB/issues). For architecture-shaping changes,
+open an issue before the pull request. By contributing you agree to license your contributions
+under AGPL-3.0-or-later.
