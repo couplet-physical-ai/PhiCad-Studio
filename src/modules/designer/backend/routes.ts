@@ -113,6 +113,7 @@ import { buildDesignerSdk } from "./sdk";
 import { createDesignerStore } from "./store";
 import { createCommentStore } from "./comments/comment-store";
 import { runDrc } from "./drc/drc-engine";
+import { registerAutolayoutRoutes } from "./autolayout/register-routes";
 import { runErc } from "./erc/erc-engine";
 import { buildBoardSnapshot } from "./pcb/board-snapshot";
 import { cancelRoute, getRouteStatus, submitRoute } from "./autoroute/client";
@@ -3094,6 +3095,31 @@ export function registerRoutes(
       },
     );
   } // end cloud.autolayout gate (place)
+
+  // ── Cloud Auto Layout: ONE composite job (/v1/layout) → ranked candidates → atomic apply ──
+  // Lives in its own subsystem rather than inline here: this file is a known hotspot, and
+  // the layout surface (typed client, capability gate, staleness digest, SSE proxy, atomic
+  // apply) is cohesive. Route Board (/autoroute) and Auto Place (/autoplace) above are
+  // deliberately untouched — they remain separate first-class workflows.
+  if (isFeatureEnabled("cloud.autolayout")) {
+    registerAutolayoutRoutes(router, {
+      requireCloudBearer,
+      parseJsonBody,
+      loadProjection: (designId) => store.getPcbProjection(designId),
+      dispatch: (designId, envelope) =>
+        store.dispatchCommand(designId, envelope, {}, { actor: "autolayout_apply" }),
+      runDrc: (projection) => {
+        const view = projection.board.viewState;
+        return runDrc(projection, {
+          ignoredRuleClasses: view?.drcIgnoredRuleClasses ?? [],
+          waivedIds: view?.drcWaivedViolationIds ?? [],
+          severityOverrides: projection.board.drcSeverityOverrides,
+        });
+      },
+      notFound: (message) => new NotFoundError(message),
+      success: (data, status) => success(data, status),
+    });
+  }
 
   // Project cloud sync: link / status-read / unlink. Gated dev-only via the
   // `cloud.sync` feature flag — these routes 404 in release builds.
