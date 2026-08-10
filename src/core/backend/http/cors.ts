@@ -13,14 +13,16 @@ export interface CorsConfig {
 
 export const BASE_CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+  // Mcp-Session-Id / MCP-Protocol-Version / Last-Event-ID carry the MCP
+  // Streamable HTTP session and resumption state.
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-OpenPCB-Token, If-Unmodified-Since, X-Request-Id, X-Cloud-Bearer, X-Cloud-Api-Url, X-Cloud-Copilot-Url",
+    "Content-Type, Authorization, X-OpenPCB-Token, If-Unmodified-Since, X-Request-Id, X-Cloud-Bearer, X-Cloud-Api-Url, X-Cloud-Copilot-Url, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID",
   // Without this, the browser hides non-CORS-safelisted response headers from
   // fetch().headers.get(...). Required so the manufacturing-export route's
   // bundle-name and warning-count metadata are readable from packaged
   // Electron (cross-origin to backend localhost).
   "Access-Control-Expose-Headers":
-    "Content-Disposition, X-OpenPCB-Bundle-Name, X-OpenPCB-Warnings, X-Request-Id",
+    "Content-Disposition, X-OpenPCB-Bundle-Name, X-OpenPCB-Warnings, X-Request-Id, Mcp-Session-Id",
   Vary: "Origin",
 };
 

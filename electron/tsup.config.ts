@@ -60,6 +60,24 @@ export default defineConfig([
     define,
   },
   {
+    // stdio MCP bridge. Shipped via extraResources (outside app.asar, which
+    // cannot be spawned from) and launched by build/mcp/openpcb-mcp{,.cmd}
+    // with ELECTRON_RUN_AS_NODE, so it runs on the app's own Electron binary
+    // and needs no system Node.
+    entry: { "mcp/shim": "src/mcp-shim/index.ts" },
+    format: "cjs",
+    platform: "node",
+    target: "node24",
+    outDir: "dist",
+    sourcemap: true,
+    clean: false,
+    splitting: false,
+    bundle: true,
+    // No electron import here — it must run as plain Node.
+    external: [],
+    define,
+  },
+  {
     entry: { "preload/index": "src/preload/index.ts" },
     format: "cjs",
     platform: "node",

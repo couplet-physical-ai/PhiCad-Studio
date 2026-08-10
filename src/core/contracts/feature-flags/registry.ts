@@ -118,6 +118,11 @@ export const FEATURE_FLAGS = {
     description:
       "Bundle routing: collect same-side pads, route one centerline, commit N parallel lanes atomically (diff pairs auto-detected by _P/_N and +/- net-name suffixes).",
   },
+  "mcp.server": {
+    availability: "dev",
+    description:
+      "MCP server (Streamable HTTP at /api/modules/assistant/mcp + bundled stdio shim) exposing the assistant tool registry to external agents. Graduate to 'all' after a bake cycle — it opens a scripted write path into designs.",
+  },
   "dataset.capture": {
     availability: "prod",
     description:

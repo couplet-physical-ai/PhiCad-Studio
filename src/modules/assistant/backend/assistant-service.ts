@@ -55,6 +55,10 @@ import { PromptService } from "./prompt-service";
 import { ContextResolver } from "./context-resolver";
 import { RunService } from "./run-service";
 import { buildOpenpcbToolRegistry } from "./tools/openpcb-tool-registry";
+import { registerExtendedReadTools } from "./tools/read-tools";
+import { McpEndpoint } from "./mcp/handler";
+import { McpSessionRegistry } from "./mcp/session";
+import type { AiToolRegistry } from "@openpcb/ai-core";
 import {
   applyAssistantWriteProposal,
   applyFailureResult,
@@ -80,6 +84,8 @@ export class AssistantService {
   readonly runService: RunService;
   readonly writeSessionPolicy = new AssistantWriteSessionPolicy();
   private readonly tasks: TasksSDK;
+  private mcpEndpoint: McpEndpoint | null = null;
+  private readonly mcpRegistries = new Map<boolean, AiToolRegistry>();
 
   constructor(private readonly ctx: CoreBackendModuleContext) {
     this.providers = new ProviderStore(ctx);
@@ -621,6 +627,58 @@ export class AssistantService {
   }
   updateSettings(input: Partial<AssistantSettings>): AssistantSettings {
     return this.settings.updateSettings(input);
+  }
+
+  // ─── MCP ──────────────────────────────────────────────────────────────
+  /**
+   * Streamable HTTP MCP endpoint, built on first use. Held on the service so
+   * the SDK handler keeps its session state across requests.
+   */
+  get mcp(): McpEndpoint {
+    if (!this.mcpEndpoint) {
+      this.mcpEndpoint = new McpEndpoint({
+        ctx: this.ctx,
+        appVersion: this.ctx.manifest.version,
+        contextResolver: this.contextResolver,
+        sessions: new McpSessionRegistry({
+          ctx: this.ctx,
+          conversation: this.conversation,
+          contextResolver: this.contextResolver,
+          createChat: (input) => this.createChat({ title: input.title }),
+        }),
+        getSettings: () => this.settings.getSettings(),
+        getRegistry: (allowWrites) => this.mcpRegistry(allowWrites),
+      });
+    }
+    return this.mcpEndpoint;
+  }
+
+  /**
+   * MCP tool registry, cached per write-mode so Ajv does not recompile every
+   * tool schema on each request. Separate from the in-app assistant registry:
+   * MCP additionally gets the extended read tools, and its auto-apply policy
+   * is gated on the `mcpAllowWrites` setting on top of the usual risk check.
+   */
+  private mcpRegistry(allowWrites: boolean): AiToolRegistry {
+    const cached = this.mcpRegistries.get(allowWrites);
+    if (cached) return cached;
+    const registry = buildOpenpcbToolRegistry(
+      this.ctx,
+      this.contextResolver,
+      this.conversation,
+      {
+        allowRawToolData: this.settings.getSettings().allowRawToolData,
+        designerTools: {
+          isSessionAutoApplyAllowed: (input) =>
+            allowWrites &&
+            (input.riskLevel !== "destructive" ||
+              this.writeSessionPolicy.isAllowed(input)),
+        },
+      },
+    );
+    registerExtendedReadTools(registry, this.ctx);
+    this.mcpRegistries.set(allowWrites, registry);
+    return registry;
   }
 
   // ─── providers ────────────────────────────────────────────────────────

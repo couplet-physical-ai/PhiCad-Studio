@@ -3,6 +3,7 @@ import type {
   AiSourceRef,
   AssistantPlacementApplyResult,
   AssistantSDK as ContractsAssistantSDK,
+  AssistantSettings as ContractsAssistantSettings,
   AssistantWriteProposalDto as ContractsAssistantWriteProposalDto,
 } from "@openpcb/contracts";
 
@@ -29,7 +30,6 @@ export type {
   AssistantProviderKind,
   AssistantProviderModel,
   AssistantRole,
-  AssistantSettings,
   AssistantToolCallSummary,
   AssistantToolEventDto,
   AssistantToolExecutionPolicy,
@@ -43,6 +43,19 @@ export type {
   SubmitAssistantMessageInput,
   SubmitAssistantMessageResult,
 } from "@openpcb/contracts";
+
+/**
+ * Local extension of the contracts settings shape. The MCP server's two
+ * switches live here rather than in `@openpcb/contracts` so the desktop can
+ * ship them without a shared-package tag release; fold them upstream on the
+ * next contracts bump.
+ */
+export type AssistantSettings = ContractsAssistantSettings & {
+  /** Serve the MCP endpoint to external clients (Claude Code/Desktop, Codex). */
+  mcpEnabled: boolean;
+  /** Advertise write tools to MCP clients. Independent of `mcpEnabled`. */
+  mcpAllowWrites: boolean;
+};
 
 export type AssistantWriteProposalStatus =
   | "pending"

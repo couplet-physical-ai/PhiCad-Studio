@@ -50,6 +50,7 @@ declare global {
       appVersion: string;
     }>;
     getAppVersions?: () => Promise<AppVersions>;
+    getMcpConfig?: () => Promise<McpConfig>;
     openLogsFolder?: () => Promise<FolderOpenResult>;
     openCrashDumpsFolder?: () => Promise<FolderOpenResult>;
     openUserDataFolder?: () => Promise<FolderOpenResult>;
@@ -62,6 +63,17 @@ declare global {
         symbolColor: string;
       }) => Promise<void>;
     };
+  }
+
+  /** Mirrors the `mcp:config` IPC payload in electron/src/main/diagnostics-ipc.ts. */
+  interface McpConfig {
+    /** Absolute path to the bundled stdio launcher; null when unpackaged. */
+    shimPath: string | null;
+    shimAvailable: boolean;
+    portfilePath: string;
+    /** Streamable HTTP endpoint; null until the backend is listening. */
+    url: string | null;
+    token: string;
   }
 
   // Mirrors UpdaterState in electron/src/main/updater.ts.

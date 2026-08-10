@@ -20,6 +20,7 @@ import { useRuntime } from "../../providers/RuntimeProvider";
 import { useAuth } from "../../cloud/AuthProvider";
 import { cloudRequestHeaders } from "../../cloud/request-headers";
 import { cn } from "@/lib/utils";
+import { McpSection } from "./McpSection";
 import { Pill } from "@shared/frontend/ui/pill";
 import { StackedCard } from "@shared/frontend/ui/stacked-card";
 import type {
@@ -426,6 +427,11 @@ export function AssistantPanel() {
           </span>
         </label>
       </section>
+
+      <McpSection
+        settings={settings}
+        onSave={(patch) => void saveSettings(patch).catch(reportError)}
+      />
 
       {/* Providers — stacked accordion */}
       <section>

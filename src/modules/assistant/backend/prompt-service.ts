@@ -7,7 +7,7 @@ import type {
 // Always-on guidance: grounding, search/library heuristics, output format. Kept lean
 // so per-call payload stays small for reasoning models (write-workflow rules are added
 // only when write tools are staged — see WRITE_TOOL_INSTRUCTIONS).
-const CORE_TOOL_INSTRUCTIONS = `
+export const CORE_TOOL_INSTRUCTIONS = `
 - Use tools for OpenPCB project/library facts; prefer compact targeted tools, and say so if a result is truncated. Ask for clarification when a design/part/component is ambiguous.
 - Search by generic component family first; treat colors, values, packages, tolerances, and ratings as requirements, not literal names (search \`LED\` color=red, not \`LED red\`). Browse the whole library by calling \`library_search_components\` with an empty query.
 - Never declare a component missing until broad/local fallback search has been tried. Prefer adequate installed generics, then optionally suggest exact-variant imports.
@@ -20,7 +20,7 @@ const CORE_TOOL_INSTRUCTIONS = `
 
 // Added only when write/propose tools are available (a design is bound). These rules
 // are dead weight — and payload bloat — when the chat has no design context.
-const WRITE_TOOL_INSTRUCTIONS = `
+export const WRITE_TOOL_INSTRUCTIONS = `
 - Work on the SCHEMATIC only unless the user explicitly asks for PCB/layout/routing — do not touch the board or place footprints on your own initiative.
 - PREFER \`compile_circuit\` for standard block-expressible circuits (e.g. indicator LEDs): emit a circuit-spec IR (block instances + port-level nets, connect ports by "<blockId>.<PORT>", name vcc/gnd rails in \`power\`) in ONE call — it resolves INSTALLED parts, computes values, places, wires, adds power rails, and ERC-checks atomically as one undoable batch. If it reports a missing role, offer to import that part — never hand-substitute. Fall back to the manual place+wire flow below only for circuits no block recipe covers.
 - When the user asks you to build/place/wire a circuit, you are EXPECTED to finish it in this one run: actually CALL the write tools — do NOT just describe the plan, draw a diagram, or end your turn with "would you like me to…". Canonical flow, all in one run: \`library_resolve_bom\` → \`designer_create_design\` (if no design yet) → \`designer_propose_schematic_edits\` (place) → \`designer_get_schematic_connectivity\` → ONE \`designer_propose_schematic_wires\` call (the sheet auto-arranges). Keep calling tools across iterations until the circuit is both PLACED and WIRED — only then write your summary. Non-destructive edits (place/wire/move/update) auto-apply immediately and are undoable, so chain them freely; only deletions need a separate explicit confirmation. Report what the tool/apply results say — do not assume.

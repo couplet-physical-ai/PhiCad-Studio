@@ -32,6 +32,8 @@ function rowToSettings(row: Record<string, unknown>): AssistantSettings {
     toolExecutionPolicy: String(
       row.tool_execution_policy,
     ) as AssistantToolExecutionPolicy,
+    mcpEnabled: Number(row.mcp_enabled) === 1,
+    mcpAllowWrites: Number(row.mcp_allow_writes) === 1,
   };
 }
 
@@ -112,14 +114,21 @@ export class SettingsStore {
       throw new ValidationError(`Invalid tool execution policy: ${policy}`);
     }
     const allowRaw = input.allowRawToolData ?? current.allowRawToolData;
+    const mcpEnabled = input.mcpEnabled ?? current.mcpEnabled;
+    // Writes stay off whenever the server is off, so re-enabling the server
+    // never silently restores a write grant the user last set months ago.
+    const mcpAllowWrites =
+      mcpEnabled && (input.mcpAllowWrites ?? current.mcpAllowWrites);
     this.rawSql(
-      "UPDATE assistant_settings SET default_provider_id=?, default_prompt_preset_id=?, context_size_preference=?, allow_raw_tool_data=?, tool_execution_policy=?, updated_at=? WHERE id='default'",
+      "UPDATE assistant_settings SET default_provider_id=?, default_prompt_preset_id=?, context_size_preference=?, allow_raw_tool_data=?, tool_execution_policy=?, mcp_enabled=?, mcp_allow_writes=?, updated_at=? WHERE id='default'",
       [
         defaultProviderId,
         promptPreset,
         contextSize,
         allowRaw ? 1 : 0,
         policy,
+        mcpEnabled ? 1 : 0,
+        mcpAllowWrites ? 1 : 0,
         now(),
       ],
     );

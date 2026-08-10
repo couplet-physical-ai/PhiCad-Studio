@@ -114,6 +114,18 @@ module.exports = {
       to: "keys",
       filter: ["*.pub"],
     },
+    // stdio MCP bridge. Must live OUTSIDE app.asar — an MCP client spawns the
+    // launcher as a process, and nothing inside the archive is executable.
+    {
+      from: "dist/mcp",
+      to: "mcp",
+      filter: ["shim.js"],
+    },
+    {
+      from: "build/mcp",
+      to: "mcp",
+      filter: ["openpcb-mcp", "openpcb-mcp.cmd"],
+    },
     {
       from: path.relative(__dirname, path.join(repoRoot, "src")),
       to: "src",

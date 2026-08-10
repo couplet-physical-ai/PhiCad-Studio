@@ -10,6 +10,7 @@ import type {
   CreateAssistantChatInput,
   SubmitAssistantMessageInput,
 } from "../../../sdks/assistant";
+import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
 import { getAssistantService } from "./assistant-service";
 import { CopilotHttpError } from "./cloud/copilot-client";
 
@@ -459,6 +460,18 @@ export function registerRoutes(
       })),
     );
   });
+
+  // MCP — Streamable HTTP. The transport uses POST for requests, GET for the
+  // server→client stream and DELETE to end a session; ModuleRouterHandle has no
+  // `all()`, so register the three and delegate to one handler. OPTIONS is
+  // short-circuited upstream by the CORS middleware.
+  if (isFeatureEnabled("mcp.server")) {
+    const mcp = (ctx: { req: Request }) =>
+      getAssistantService().mcp.fetch(ctx.req);
+    router.post("/mcp", mcp);
+    router.get("/mcp", mcp);
+    router.delete("/mcp", mcp);
+  }
 
   // Settings
   router.get("/settings", () => json(getAssistantService().getSettings()));

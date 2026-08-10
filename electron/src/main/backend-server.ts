@@ -8,6 +8,12 @@ import { startBackendRuntime } from "../../../src/core/backend/runtime";
 import type { StartedBackendRuntime } from "../../../src/core/backend/runtime";
 import type { ModuleRegistryResponse } from "../../../src/core/contracts/modules/registry";
 import { resetSharedSqlite } from "../../../src/core/backend/db/sqlite-client";
+import {
+  clearStaleMcpPortfile,
+  ensureMcpToken,
+  removeMcpPortfile,
+  writeMcpPortfile,
+} from "./mcp-portfile.js";
 
 const log = electronLog.scope("backend");
 
@@ -62,6 +68,10 @@ function configureBackendEnvironment(): void {
   // consent decision as Electron main and the renderer. Without this it would
   // fall back to "no opt-in recorded" and stay off, which is the safe default.
   process.env.OPENPCB_TELEMETRY_OPT_IN = getTelemetryOptIn() ? "1" : "0";
+  // Bearer for the MCP endpoint. Generated per launch and handed to the
+  // backend here; the matching value reaches external clients only through the
+  // 0600 portfile written after the server is listening.
+  process.env.OPENPCB_MCP_TOKEN = ensureMcpToken();
 
   const staticDir = getStaticDir();
   if (staticDir) {
@@ -168,6 +178,14 @@ export async function startBackendServer(): Promise<BackendReadyPayload> {
       win.webContents.send("backend-ready", backendPayload);
     }
 
+    const appDataDir = getAppDataDir();
+    clearStaleMcpPortfile(appDataDir);
+    writeMcpPortfile({
+      appDataDir,
+      url: startedRuntime.url,
+      port: startedRuntime.port,
+    });
+
     log.info(`Backend ready at ${runtime.url}`);
     return backendPayload;
   } catch (error) {
@@ -179,9 +197,16 @@ export async function startBackendServer(): Promise<BackendReadyPayload> {
 }
 
 export async function stopBackendServer(): Promise<void> {
+  // Drop the portfile even if the runtime is already gone, so a stale URL is
+  // never left pointing at a dead port.
+  removeMcpPortfile(getAppDataDir());
   if (!runtime) return;
   const current = runtime;
   runtime = null;
   backendPayload = null;
   await current.close();
+}
+
+export function getMcpPortfilePath(): string {
+  return join(getAppDataDir(), "mcp.json");
 }

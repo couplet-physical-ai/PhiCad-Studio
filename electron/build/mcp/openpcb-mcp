@@ -1,0 +1,39 @@
+#!/bin/sh
+# openpcb-mcp — stdio MCP bridge into the running OpenPCB app.
+#
+# Runs on the Electron binary shipped inside the app rather than a system
+# Node: ELECTRON_RUN_AS_NODE makes Electron behave as a plain Node runtime, so
+# users who have never installed Node can still add this to Claude Desktop.
+#
+# Layout at runtime:
+#   macOS: OpenPCB.app/Contents/Resources/mcp/openpcb-mcp
+#          OpenPCB.app/Contents/MacOS/OpenPCB              <- ../../MacOS
+#   Linux: <install>/resources/mcp/openpcb-mcp
+#          <install>/openpcb                               <- ../../openpcb
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+shim="$here/shim.js"
+
+if [ ! -f "$shim" ]; then
+  echo "openpcb-mcp: bridge not found at $shim (broken install?)" >&2
+  exit 1
+fi
+
+for candidate in \
+  "$here/../../MacOS/OpenPCB" \
+  "$here/../../openpcb" \
+  "$here/../../OpenPCB"
+do
+  if [ -x "$candidate" ]; then
+    exec env ELECTRON_RUN_AS_NODE=1 "$candidate" "$shim" "$@"
+  fi
+done
+
+# Last resort: a system Node, if the layout ever changes.
+if command -v node >/dev/null 2>&1; then
+  exec node "$shim" "$@"
+fi
+
+echo "openpcb-mcp: could not locate the OpenPCB runtime next to $here" >&2
+exit 1

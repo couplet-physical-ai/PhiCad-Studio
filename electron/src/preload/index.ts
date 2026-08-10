@@ -30,6 +30,16 @@ interface AppVersions {
   osRelease: string;
 }
 
+interface McpConfig {
+  /** Absolute path to the bundled stdio launcher; null when unpackaged. */
+  shimPath: string | null;
+  shimAvailable: boolean;
+  portfilePath: string;
+  /** Streamable HTTP endpoint; null until the backend is listening. */
+  url: string | null;
+  token: string;
+}
+
 contextBridge.exposeInMainWorld("electronAPI", {
   // Dev-only marketing-capture flag (M0.2). Renderer-side capture hooks mount
   // only when this is true (OPENPCB_CAPTURE=1); false/absent in normal runs.
@@ -53,6 +63,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   getAppVersions: (): Promise<AppVersions> => {
     return ipcRenderer.invoke("app:get-versions");
+  },
+  getMcpConfig: (): Promise<McpConfig> => {
+    return ipcRenderer.invoke("mcp:config");
   },
   openUserDataFolder: (): Promise<{ dir: string; error: string | null }> => {
     return ipcRenderer.invoke("diagnostics:open-user-data");
