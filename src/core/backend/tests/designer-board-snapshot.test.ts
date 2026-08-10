@@ -244,7 +244,7 @@ describe("buildBoardSnapshot", () => {
     // Copied, not aliased: the builder strips desktop-only routing hints
     // (diffPairGapMm) to keep the cloud wire schema byte-stable.
     expect(snapshot.netClasses).toEqual(proj.board.netClasses);
-    expect(snapshot.netClasses.every((c) => !("diffPairGapMm" in c))).toBe(
+    expect(snapshot.netClasses!.every((c) => !("diffPairGapMm" in c))).toBe(
       true,
     );
     expect(snapshot.ratsnest).toHaveLength(1);
@@ -390,7 +390,7 @@ describe("buildBoardSnapshot", () => {
       routableNetClassIds: ["default"],
     });
     expect(snapshot.ratsnest).toHaveLength(1);
-    expect(snapshot.ratsnest[0]!.netClassId).toBe("default");
+    expect(snapshot.ratsnest![0]!.netClassId).toBe("default");
   });
 
   test("defaults options.portfolio to the production default (4)", () => {

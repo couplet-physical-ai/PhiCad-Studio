@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "Capabilities": {
+      "properties": {
+        "async": {
+          "default": true,
+          "title": "Async",
+          "type": "boolean"
+        },
+        "progressStream": {
+          "default": "sse",
+          "title": "Progressstream",
+          "type": "string"
+        },
+        "cancel": {
+          "default": true,
+          "title": "Cancel",
+          "type": "boolean"
+        },
+        "endpoints": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Endpoints",
+          "type": "array"
+        },
+        "viaSpans": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Viaspans",
+          "type": "array"
+        },
+        "engineImplemented": {
+          "default": true,
+          "title": "Engineimplemented",
+          "type": "boolean"
+        },
+        "schemaMajor": {
+          "title": "Schemamajor",
+          "type": "integer"
+        },
+        "schemaMinor": {
+          "title": "Schemaminor",
+          "type": "integer"
+        },
+        "schemaVersion": {
+          "title": "Schemaversion",
+          "type": "string"
+        },
+        "engines": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EngineCapabilities"
+          },
+          "default": {},
+          "title": "Engines",
+          "type": "object"
+        },
+        "layout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayoutCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pours": {
+          "$ref": "#/$defs/PoursCapability"
+        }
+      },
+      "required": [
+        "schemaMajor",
+        "schemaMinor",
+        "schemaVersion",
+        "pours"
+      ],
+      "title": "Capabilities",
+      "type": "object"
+    },
+    "EngineCapabilities": {
+      "description": "Per-engine field-usage catalog + negotiable feature switches.\n\n``features`` is the field a producer should branch on; it lists only levers that are\nconsumed TODAY (an accepted-but-unwired field appears in ``reserved`` instead). Values\nare booleans except numeric ceilings such as ``ripQuotaMax``. Never gate behaviour on\n``version`` string comparisons.",
+      "properties": {
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "consumesTop": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumestop",
+          "type": "array"
+        },
+        "consumesConditional": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumesconditional",
+          "type": "array"
+        },
+        "ignoresTop": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Ignorestop",
+          "type": "array"
+        },
+        "reserved": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Reserved",
+          "type": "array"
+        },
+        "budgetModes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Budgetmodes",
+          "type": "array"
+        },
+        "features": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Features",
+          "type": "object"
+        }
+      },
+      "title": "EngineCapabilities",
+      "type": "object"
+    },
+    "LayoutCapabilities": {
+      "description": "Present only when the deployment mounts ``/v1/layout``. ``maxCandidates`` is a\nceiling, not the K a job will produce \u2014 K is service-side policy and has no request\nfield; read the actual count off the result.",
+      "properties": {
+        "maxCandidates": {
+          "title": "Maxcandidates",
+          "type": "integer"
+        },
+        "objectiveVersion": {
+          "title": "Objectiveversion",
+          "type": "string"
+        },
+        "budgetModes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Budgetmodes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "maxCandidates",
+        "objectiveVersion"
+      ],
+      "title": "LayoutCapabilities",
+      "type": "object"
+    },
+    "PoursCapability": {
+      "description": "``accepted`` = the route engine consumes ``pours``; ``routeAware`` describes how\n(same-net islands as goals, diff-net as obstacles); ``producerDefault`` is the\nrecommended desktop default when the user has not chosen.",
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "routeAware": {
+          "title": "Routeaware",
+          "type": "boolean"
+        },
+        "producerDefault": {
+          "title": "Producerdefault",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "routeAware",
+        "producerDefault"
+      ],
+      "title": "PoursCapability",
+      "type": "object"
+    }
+  },
+  "description": "``GET /v1/version`` \u2014 unauthenticated, so a signed-out desktop can still decide\nwhether the deployment supports Auto Layout. ``layoutEngineVersion`` and the\n``capabilities.engines.layout`` / ``capabilities.layout`` blocks are absent when the\ndeployment runs with ``LAYOUT_ENABLED=false``.",
+  "properties": {
+    "service": {
+      "title": "Service",
+      "type": "string"
+    },
+    "engineVersion": {
+      "title": "Engineversion",
+      "type": "string"
+    },
+    "routeEngineVersion": {
+      "title": "Routeengineversion",
+      "type": "string"
+    },
+    "placeEngineVersion": {
+      "title": "Placeengineversion",
+      "type": "string"
+    },
+    "layoutEngineVersion": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layoutengineversion"
+    },
+    "contractVersion": {
+      "title": "Contractversion",
+      "type": "string"
+    },
+    "schemaMajor": {
+      "title": "Schemamajor",
+      "type": "integer"
+    },
+    "schemaMinor": {
+      "title": "Schemaminor",
+      "type": "integer"
+    },
+    "schemaVersion": {
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/Capabilities"
+    }
+  },
+  "required": [
+    "service",
+    "engineVersion",
+    "routeEngineVersion",
+    "placeEngineVersion",
+    "contractVersion",
+    "schemaMajor",
+    "schemaMinor",
+    "schemaVersion",
+    "capabilities"
+  ],
+  "title": "VersionResponse",
+  "type": "object"
+}

@@ -74,7 +74,7 @@
       "type": "object"
     },
     "ConstraintGroup": {
-      "description": "A relational/electrical placement constraint (0D). All cost terms it drives default to\nweight 0 and the engine only activates a positive default when the matching group is present\n(see ``app/place/engine.py::_weights``) \u2014 so a snapshot without ``constraintGroups`` is\nunaffected.\n\n* ``decap`` \u2014 ``members`` are decoupling caps, ``anchorId`` their host IC (cap \u2192 IC proximity).\n* ``crystal`` \u2014 ``members`` are the crystal(s), ``anchorId`` the MCU (crystal \u2192 MCU proximity).\n* ``diff_pair`` \u2014 ``members`` are the two components carrying the P/N nets (symmetry/proximity).\n* ``matched`` \u2014 components to co-locate / keep symmetric (e.g. matched passives); inferred from\n  refdes/net-name is FORBIDDEN \u2014 matched groups exist ONLY when explicitly supplied here.\n* ``room`` \u2014 a named placement region (reserved; not yet consumed by a cost term).\n\n``netId``/``padNumber`` are optional power-pin targeting hints (e.g. the IC's VCC pad a decap\nshould hug); v1 targets component origins and treats them as advisory.",
+      "description": "A relational/electrical placement constraint (0D). All cost terms it drives default to\nweight 0 and the engine only activates a positive default when the matching group is present\n(see ``app/place/engine.py::_weights``) \u2014 so a snapshot without ``constraintGroups`` is\nunaffected.\n\n* ``decap`` \u2014 ``members`` are decoupling caps, ``anchorId`` their host IC (cap \u2192 IC proximity).\n* ``crystal`` \u2014 ``members`` are the crystal(s), ``anchorId`` the MCU (crystal \u2192 MCU proximity).\n* ``diff_pair`` \u2014 ``members`` are the two components carrying the P/N nets (symmetry/proximity).\n* ``matched`` \u2014 components to co-locate / keep symmetric (e.g. matched passives); inferred from\n  refdes/net-name is FORBIDDEN \u2014 matched groups exist ONLY when explicitly supplied here.\n* ``room`` \u2014 a named placement region (reserved; not yet consumed by a cost term).\n\n``netId``/``padNumber`` are optional power-pin targeting hints (e.g. the IC's VCC pad a decap\nshould hug); v1 targets component origins and treats them as advisory.\n\n[DP1] ``netIdP``/``netIdN`` + the three mm rules below are the ROUTE-side differential-pair\nDECLARATION \u2014 the only part of this model the router reads, and only on ``kind=\"diff_pair\"``\nentries that carry BOTH net ids. The PLACEMENT semantics of a ``ConstraintGroup`` are\nunchanged: ``members``/``anchorId`` still drive the placer's symmetry/proximity terms, and a\ndiff-pair group that names only components (no net ids) behaves exactly as before in both\nengines \u2014 including its hash contribution (the ROUTE view drops such entries entirely).",
       "properties": {
         "kind": {
           "enum": [
@@ -129,6 +129,66 @@
           ],
           "default": null,
           "title": "Padnumber"
+        },
+        "netIdP": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Netidp"
+        },
+        "netIdN": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Netidn"
+        },
+        "targetGapMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetgapmm"
+        },
+        "maxUncoupledMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxuncoupledmm"
+        },
+        "skewToleranceMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skewtolerancemm"
         }
       },
       "required": [
@@ -192,6 +252,34 @@
             "F.Cu",
             "In1.Cu",
             "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
             "B.Cu"
           ],
           "title": "Layer",
@@ -336,6 +424,18 @@
           ],
           "title": "Defaultviaprotection",
           "type": "string"
+        },
+        "diffPairGapMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diffpairgapmm"
         }
       },
       "required": [
@@ -378,6 +478,34 @@
             "F.Cu",
             "In1.Cu",
             "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
             "B.Cu"
           ],
           "title": "Layer",
@@ -603,8 +731,6 @@
         "layer": {
           "enum": [
             "F.Cu",
-            "In1.Cu",
-            "In2.Cu",
             "B.Cu"
           ],
           "title": "Layer",
@@ -761,6 +887,34 @@
             "F.Cu",
             "In1.Cu",
             "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
             "B.Cu"
           ],
           "title": "Layer",
@@ -1080,6 +1234,104 @@
           ],
           "default": null,
           "title": "Escapeprecheck"
+        },
+        "conflictSchedule": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conflictschedule"
+        },
+        "historyOwnership": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Historyownership"
+        },
+        "ripQuota": {
+          "anyOf": [
+            {
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ripquota"
+        },
+        "diffPairs": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diffpairs"
+        },
+        "inferDiffPairs": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inferdiffpairs"
+        },
+        "viaInPad": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Viainpad"
+        },
+        "layerAwareHeuristic": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layerawareheuristic"
+        },
+        "adviseRelaxations": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adviserelaxations"
         }
       },
       "title": "RouteOptions",
@@ -1088,10 +1340,8 @@
     "Stackup": {
       "properties": {
         "layerCount": {
-          "enum": [
-            2,
-            4
-          ],
+          "maximum": 32,
+          "minimum": 2,
           "title": "Layercount",
           "type": "integer"
         },
@@ -1101,6 +1351,34 @@
               "F.Cu",
               "In1.Cu",
               "In2.Cu",
+              "In3.Cu",
+              "In4.Cu",
+              "In5.Cu",
+              "In6.Cu",
+              "In7.Cu",
+              "In8.Cu",
+              "In9.Cu",
+              "In10.Cu",
+              "In11.Cu",
+              "In12.Cu",
+              "In13.Cu",
+              "In14.Cu",
+              "In15.Cu",
+              "In16.Cu",
+              "In17.Cu",
+              "In18.Cu",
+              "In19.Cu",
+              "In20.Cu",
+              "In21.Cu",
+              "In22.Cu",
+              "In23.Cu",
+              "In24.Cu",
+              "In25.Cu",
+              "In26.Cu",
+              "In27.Cu",
+              "In28.Cu",
+              "In29.Cu",
+              "In30.Cu",
               "B.Cu"
             ],
             "type": "string"
@@ -1155,6 +1433,34 @@
             "F.Cu",
             "In1.Cu",
             "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
             "B.Cu"
           ],
           "title": "Fromlayer",
@@ -1165,6 +1471,34 @@
             "F.Cu",
             "In1.Cu",
             "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
             "B.Cu"
           ],
           "title": "Tolayer",

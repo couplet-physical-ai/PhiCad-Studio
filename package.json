@@ -35,7 +35,7 @@
     "scripts:build": "bun run --bun tsc -p tsconfig.scripts.json",
     "sdk:generate": "npm run scripts:build && bun scripts/module-cli.ts --codegen-sdk",
     "gen": "npm run module:codegen",
-    "gen:check": "npm run gen && git diff --quiet -- src/core/frontend/src/generated/modules.ts src/core/frontend/src/generated/sdk || (echo 'Codegen not committed. Run npm run gen and commit generated files.' && git --no-pager diff -- src/core/frontend/src/generated/modules.ts src/core/frontend/src/generated/sdk && exit 1) && npm run gen:copilot-schemas:check",
+    "gen:check": "npm run gen && git diff --quiet -- src/core/frontend/src/generated/modules.ts src/core/frontend/src/generated/sdk || (echo 'Codegen not committed. Run npm run gen and commit generated files.' && git --no-pager diff -- src/core/frontend/src/generated/modules.ts src/core/frontend/src/generated/sdk && exit 1) && npm run gen:copilot-schemas:check && npm run gen:contracts:check",
     "gen:contracts": "bun scripts/gen-contract-types.ts",
     "gen:copilot-schemas": "bun scripts/gen-copilot-tool-schemas.ts",
     "gen:copilot-schemas:check": "bun scripts/gen-copilot-tool-schemas.ts --check",
@@ -53,7 +53,9 @@
     "release:sourcemaps": "node scripts/upload-sourcemaps.mjs",
     "shared:link": "bash scripts/shared-link.sh",
     "shared:unlink": "bash scripts/shared-unlink.sh",
-    "shared:status": "bash scripts/shared-status.sh"
+    "shared:status": "bash scripts/shared-status.sh",
+    "gen:contracts:check": "bun scripts/gen-contract-types.ts --check",
+    "parity:snapshot": "bun scripts/board-snapshot-parity-harness.ts"
   },
   "devDependencies": {
     "@inquirer/prompts": "^8.0.2",
@@ -70,6 +72,8 @@
   "version": "0.1.1-beta",
   "packageManager": "npm@10.9.2",
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@openpcb/ai-core": "github:OpenPCB-app/shared#ai-core-v0.3.0",
     "@openpcb/command-pattern": "github:OpenPCB-app/shared#command-pattern-v0.1.0",
     "@openpcb/contracts": "github:OpenPCB-app/shared#contracts-v0.2.6",

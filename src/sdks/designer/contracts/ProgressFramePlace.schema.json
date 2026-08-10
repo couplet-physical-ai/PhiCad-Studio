@@ -1,0 +1,42 @@
+{
+  "properties": {
+    "type": {
+      "enum": [
+        "place.started",
+        "place.seed.ready",
+        "place.restart.started",
+        "place.progress",
+        "place.restart.completed",
+        "place.ils",
+        "place.ils.improved",
+        "place.legalized",
+        "place.completed",
+        "place.failed",
+        "place.cancelled"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "jobId": {
+      "title": "Jobid",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "data": {
+      "additionalProperties": true,
+      "default": {},
+      "title": "Data",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "jobId",
+    "seq"
+  ],
+  "title": "ProgressFrame",
+  "type": "object"
+}

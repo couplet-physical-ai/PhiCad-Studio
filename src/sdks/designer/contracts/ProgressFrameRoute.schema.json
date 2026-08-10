@@ -1,0 +1,39 @@
+{
+  "properties": {
+    "type": {
+      "enum": [
+        "route.started",
+        "route.progress",
+        "route.net.routed",
+        "route.net.failed",
+        "route.warning",
+        "route.completed",
+        "route.failed",
+        "route.cancelled"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "jobId": {
+      "title": "Jobid",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "data": {
+      "additionalProperties": true,
+      "default": {},
+      "title": "Data",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "jobId",
+    "seq"
+  ],
+  "title": "ProgressFrame",
+  "type": "object"
+}

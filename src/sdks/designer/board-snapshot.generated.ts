@@ -1,17 +1,14 @@
 // GENERATED FILE — DO NOT EDIT.
 //
-// Source: src/sdks/designer/contracts/BoardSnapshot.schema.json (vendored from
-// cloud-auto-layout's `contracts/BoardSnapshot.schema.json` — see that dir's
-// README.md for provenance + sync instructions).
+// Source: src/sdks/designer/contracts/BoardSnapshot.schema.json (vendored from cloud-auto-layout's
+// `contracts/BoardSnapshot.schema.json` — see that dir's README.md for provenance + sync instructions).
 //
-// Regenerate with `bun scripts/gen-contract-types.ts` (or `npm run gen:contracts`)
-// after re-vendoring the schema. `npm run gen:contracts -- --check` fails CI on drift.
+// Regenerate with `npm run gen:contracts` after re-vendoring the schema.
+// `npm run gen:contracts -- --check` fails CI on drift.
 //
-// These interfaces are the schema-literal mirror, generated independently of
-// the hand-written wire types in ./autoroute.ts — names intentionally collide
-// with those (e.g. `Placement`, `Stackup`) since both describe the same
-// service contract, so this module is NOT re-exported from ./index.ts. Compare
-// the two via ./board-snapshot.assert.ts, importing this file under a namespace.
+// Names intentionally collide with the hand-written wire types in ./autoroute.ts
+// (e.g. `Placement`, `Stackup`) since both describe the same service contract, so
+// this module is NOT re-exported from ./index.ts. Compare via ./board-snapshot.assert.ts.
 
 export interface BoardGeometry {
   outline: PointMm[][];
@@ -43,6 +40,13 @@ export interface ClearanceRules {
  * 
  * ``netId``/``padNumber`` are optional power-pin targeting hints (e.g. the IC's VCC pad a decap
  * should hug); v1 targets component origins and treats them as advisory.
+ * 
+ * [DP1] ``netIdP``/``netIdN`` + the three mm rules below are the ROUTE-side differential-pair
+ * DECLARATION — the only part of this model the router reads, and only on ``kind="diff_pair"``
+ * entries that carry BOTH net ids. The PLACEMENT semantics of a ``ConstraintGroup`` are
+ * unchanged: ``members``/``anchorId`` still drive the placer's symmetry/proximity terms, and a
+ * diff-pair group that names only components (no net ids) behaves exactly as before in both
+ * engines — including its hash contribution (the ROUTE view drops such entries entirely).
  */
 export interface ConstraintGroup {
   kind: "decap" | "crystal" | "diff_pair" | "matched" | "room";
@@ -50,6 +54,11 @@ export interface ConstraintGroup {
   anchorId?: string | null;
   netId?: string | null;
   padNumber?: string | null;
+  netIdP?: string | null;
+  netIdN?: string | null;
+  targetGapMm?: number | null;
+  maxUncoupledMm?: number | null;
+  skewToleranceMm?: number | null;
 }
 
 export interface DesignRules {
@@ -62,7 +71,7 @@ export interface ExistingTrace {
   id: string;
   netId: string | null;
   netClassId: string;
-  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu" | "B.Cu";
   widthMm: number;
   pointsNm: PointNm[];
   segmentMode: "manhattan-90" | "manhattan-45";
@@ -92,6 +101,7 @@ export interface NetClass {
   viaDrillMm: number;
   color: string;
   defaultViaProtection: "none" | "tented" | "plugged" | "filled" | "capped";
+  diffPairGapMm?: number | null;
 }
 
 /**
@@ -101,7 +111,7 @@ export interface PadOutline {
   placementId: string;
   padNumber: string;
   netId: string | null;
-  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu" | "B.Cu";
   ring: PointMm[];
   isConnectable: boolean;
 }
@@ -151,7 +161,7 @@ export interface PlaceWeights {
 export interface Placement {
   id: string;
   reference: string;
-  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+  layer: "F.Cu" | "B.Cu";
   positionMm?: PointMm | null;
   rotationDeg?: number;
   mirrored?: boolean;
@@ -179,7 +189,7 @@ export interface PointNm {
  */
 export interface PourIsland {
   islandId: string;
-  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+  layer: "F.Cu" | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu" | "B.Cu";
   pourNetId: string | null;
   rings: PointMm[][];
 }
@@ -220,11 +230,19 @@ export interface RouteOptions {
   wMin?: number | null;
   wMax?: number | null;
   escapePrecheck?: boolean | null;
+  conflictSchedule?: boolean | null;
+  historyOwnership?: boolean | null;
+  ripQuota?: number | null;
+  diffPairs?: boolean | null;
+  inferDiffPairs?: boolean | null;
+  viaInPad?: boolean | null;
+  layerAwareHeuristic?: boolean | null;
+  adviseRelaxations?: boolean | null;
 }
 
 export interface Stackup {
-  layerCount: 2 | 4;
-  copperLayers: ("F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu")[];
+  layerCount: number;
+  copperLayers: ("F.Cu" | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu" | "B.Cu")[];
   boardThicknessMm?: number;
 }
 
@@ -237,8 +255,8 @@ export interface ViaObstacle {
   centerMm: PointMm;
   diameterMm: number;
   drillMm: number;
-  fromLayer: "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
-  toLayer: "F.Cu" | "In1.Cu" | "In2.Cu" | "B.Cu";
+  fromLayer: "F.Cu" | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu" | "B.Cu";
+  toLayer: "F.Cu" | "In1.Cu" | "In2.Cu" | "In3.Cu" | "In4.Cu" | "In5.Cu" | "In6.Cu" | "In7.Cu" | "In8.Cu" | "In9.Cu" | "In10.Cu" | "In11.Cu" | "In12.Cu" | "In13.Cu" | "In14.Cu" | "In15.Cu" | "In16.Cu" | "In17.Cu" | "In18.Cu" | "In19.Cu" | "In20.Cu" | "In21.Cu" | "In22.Cu" | "In23.Cu" | "In24.Cu" | "In25.Cu" | "In26.Cu" | "In27.Cu" | "In28.Cu" | "In29.Cu" | "In30.Cu" | "B.Cu";
   isHoleOnly?: boolean;
 }
 

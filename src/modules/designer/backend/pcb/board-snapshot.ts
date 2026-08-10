@@ -67,6 +67,16 @@ function copperLayerOf(layer: string): SnapshotCopperLayerId | null {
 }
 
 /**
+ * A component sits on an OUTER layer — the contract's `Placement.layer` is `F.Cu | B.Cu`,
+ * narrower than the copper-layer vocabulary used for pads, traces and vias. Anything else
+ * (a corrupt projection, an inner-layer value) resolves to the front side rather than
+ * emitting a value the service would reject at submit.
+ */
+function placementSideOf(layer: string): "F.Cu" | "B.Cu" {
+  return layer === "B.Cu" ? "B.Cu" : "F.Cu";
+}
+
+/**
  * Round free holes / NPTH free pads that carry an oblong `drillSlot` degrade to a
  * round keepout sized to the slot's long axis, never the plain round `drillMm` —
  * a keepout at the round diameter would under-cover the slot's extended ends and
@@ -294,7 +304,7 @@ export function buildBoardSnapshot(
     return {
       id: p.id,
       reference: p.reference,
-      layer: copperLayerOf(p.layer) ?? "F.Cu",
+      layer: placementSideOf(p.layer),
       // Pass through the current transform for cloud-auto-place (the autorouter ignores
       // these). positionMm is the footprint origin; rotationDeg may be non-cardinal.
       positionMm: p.positionMm,

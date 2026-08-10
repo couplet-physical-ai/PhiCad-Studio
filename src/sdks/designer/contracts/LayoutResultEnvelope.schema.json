@@ -1,0 +1,2070 @@
+{
+  "$defs": {
+    "AiSourceRef": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "refId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refid"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "excerpt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Excerpt"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metadata"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label"
+      ],
+      "title": "AiSourceRef",
+      "type": "object"
+    },
+    "Completion": {
+      "properties": {
+        "routedNets": {
+          "title": "Routednets",
+          "type": "integer"
+        },
+        "totalNets": {
+          "title": "Totalnets",
+          "type": "integer"
+        },
+        "percent": {
+          "title": "Percent",
+          "type": "number"
+        }
+      },
+      "required": [
+        "routedNets",
+        "totalNets",
+        "percent"
+      ],
+      "title": "Completion",
+      "type": "object"
+    },
+    "DesignerPcbAddTraceCommand": {
+      "properties": {
+        "type": {
+          "const": "pcb_add_trace",
+          "default": "pcb_add_trace",
+          "title": "Type",
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
+            "B.Cu"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "pointsNm": {
+          "items": {
+            "$ref": "#/$defs/PointNm"
+          },
+          "title": "Pointsnm",
+          "type": "array"
+        },
+        "widthMm": {
+          "title": "Widthmm",
+          "type": "number"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "netClassId": {
+          "title": "Netclassid",
+          "type": "string"
+        },
+        "segmentMode": {
+          "enum": [
+            "manhattan-90",
+            "manhattan-45"
+          ],
+          "title": "Segmentmode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "pointsNm",
+        "widthMm",
+        "netId",
+        "netClassId",
+        "segmentMode"
+      ],
+      "title": "DesignerPcbAddTraceCommand",
+      "type": "object"
+    },
+    "DesignerPcbAddTraceViaCommand": {
+      "description": "Atomic trace+via for a layer change (keeps the pair dependency-closed).",
+      "properties": {
+        "type": {
+          "const": "pcb_add_trace_via",
+          "default": "pcb_add_trace_via",
+          "title": "Type",
+          "type": "string"
+        },
+        "trace": {
+          "$ref": "#/$defs/_AddTraceBody"
+        },
+        "via": {
+          "$ref": "#/$defs/_AddViaBody"
+        }
+      },
+      "required": [
+        "trace",
+        "via"
+      ],
+      "title": "DesignerPcbAddTraceViaCommand",
+      "type": "object"
+    },
+    "DesignerPcbAddViaCommand": {
+      "properties": {
+        "type": {
+          "const": "pcb_add_via",
+          "default": "pcb_add_via",
+          "title": "Type",
+          "type": "string"
+        },
+        "centerMm": {
+          "$ref": "#/$defs/PointMm"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "netClassId": {
+          "title": "Netclassid",
+          "type": "string"
+        },
+        "diameterMmOverride": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diametermmoverride"
+        },
+        "drillMmOverride": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Drillmmoverride"
+        }
+      },
+      "required": [
+        "centerMm",
+        "netId",
+        "netClassId"
+      ],
+      "title": "DesignerPcbAddViaCommand",
+      "type": "object"
+    },
+    "DesignerPcbFlipPlacementCommand": {
+      "properties": {
+        "type": {
+          "const": "pcb_flip_placement",
+          "default": "pcb_flip_placement",
+          "title": "Type",
+          "type": "string"
+        },
+        "placementId": {
+          "title": "Placementid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "placementId"
+      ],
+      "title": "DesignerPcbFlipPlacementCommand",
+      "type": "object"
+    },
+    "DesignerPcbMovePlacementCommand": {
+      "properties": {
+        "type": {
+          "const": "pcb_move_placement",
+          "default": "pcb_move_placement",
+          "title": "Type",
+          "type": "string"
+        },
+        "placementId": {
+          "title": "Placementid",
+          "type": "string"
+        },
+        "positionMm": {
+          "$ref": "#/$defs/PointMm"
+        }
+      },
+      "required": [
+        "placementId",
+        "positionMm"
+      ],
+      "title": "DesignerPcbMovePlacementCommand",
+      "type": "object"
+    },
+    "DesignerPcbRotatePlacementCommand": {
+      "properties": {
+        "type": {
+          "const": "pcb_rotate_placement",
+          "default": "pcb_rotate_placement",
+          "title": "Type",
+          "type": "string"
+        },
+        "placementId": {
+          "title": "Placementid",
+          "type": "string"
+        },
+        "rotationDeg": {
+          "enum": [
+            0,
+            90,
+            180,
+            270
+          ],
+          "title": "Rotationdeg",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "placementId",
+        "rotationDeg"
+      ],
+      "title": "DesignerPcbRotatePlacementCommand",
+      "type": "object"
+    },
+    "Determinism": {
+      "properties": {
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
+        },
+        "snapshotHash": {
+          "title": "Snapshothash",
+          "type": "string"
+        },
+        "engineVersion": {
+          "title": "Engineversion",
+          "type": "string"
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budget"
+        }
+      },
+      "required": [
+        "seed",
+        "snapshotHash",
+        "engineVersion"
+      ],
+      "title": "Determinism",
+      "type": "object"
+    },
+    "LayoutCandidate": {
+      "properties": {
+        "candidateId": {
+          "title": "Candidateid",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "title": "Rank",
+          "type": "integer"
+        },
+        "recommended": {
+          "title": "Recommended",
+          "type": "boolean"
+        },
+        "scorecard": {
+          "$ref": "#/$defs/LayoutScorecard"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "placeEnvelope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlacementResultEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "routeEnvelope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteResultEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayoutCandidateFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "candidateId",
+        "kind",
+        "rank",
+        "recommended",
+        "scorecard",
+        "explanation"
+      ],
+      "title": "LayoutCandidate",
+      "type": "object"
+    },
+    "LayoutCandidateFailure": {
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "sourceReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sourcereason"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        }
+      },
+      "required": [
+        "code",
+        "stage"
+      ],
+      "title": "LayoutCandidateFailure",
+      "type": "object"
+    },
+    "LayoutManifest": {
+      "properties": {
+        "candidateSpecs": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Candidatespecs",
+          "type": "array"
+        },
+        "seeds": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Seeds",
+          "type": "object"
+        },
+        "W": {
+          "title": "W",
+          "type": "integer"
+        },
+        "budgetMode": {
+          "title": "Budgetmode",
+          "type": "string"
+        },
+        "engineVersions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Engineversions",
+          "type": "object"
+        },
+        "objectiveVersion": {
+          "title": "Objectiveversion",
+          "type": "string"
+        },
+        "placementDigests": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Placementdigests",
+          "type": "object"
+        }
+      },
+      "required": [
+        "candidateSpecs",
+        "seeds",
+        "W",
+        "budgetMode",
+        "engineVersions",
+        "objectiveVersion",
+        "placementDigests"
+      ],
+      "title": "LayoutManifest",
+      "type": "object"
+    },
+    "LayoutScorecard": {
+      "properties": {
+        "objectiveKey": {
+          "default": [],
+          "items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Objectivekey",
+          "type": "array"
+        },
+        "completionRatio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completionratio"
+        },
+        "unroutedNetsIndependent": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unroutednetsindependent"
+        },
+        "unconnectedTerminals": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unconnectedterminals"
+        },
+        "addedIllegality": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Addedillegality"
+        },
+        "routedLengthNm": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routedlengthnm"
+        },
+        "viaCount": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Viacount"
+        },
+        "bendCount": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bendcount"
+        },
+        "layerTransitions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layertransitions"
+        },
+        "rmstAfterMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rmstaftermm"
+        },
+        "hpwlAfterMm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hpwlaftermm"
+        },
+        "work": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Work"
+        },
+        "placementDigest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Placementdigest"
+        }
+      },
+      "title": "LayoutScorecard",
+      "type": "object"
+    },
+    "Metrics": {
+      "properties": {
+        "totalLengthNm": {
+          "default": 0,
+          "title": "Totallengthnm",
+          "type": "integer"
+        },
+        "viaCount": {
+          "default": 0,
+          "title": "Viacount",
+          "type": "integer"
+        },
+        "layerTransitions": {
+          "default": 0,
+          "title": "Layertransitions",
+          "type": "integer"
+        },
+        "traceCount": {
+          "default": 0,
+          "title": "Tracecount",
+          "type": "integer"
+        },
+        "ripupPasses": {
+          "default": 0,
+          "title": "Ripuppasses",
+          "type": "integer"
+        },
+        "bendCount": {
+          "default": 0,
+          "title": "Bendcount",
+          "type": "integer"
+        },
+        "totalLengthA": {
+          "default": 0,
+          "title": "Totallengtha",
+          "type": "integer"
+        },
+        "totalLengthB": {
+          "default": 0,
+          "title": "Totallengthb",
+          "type": "integer"
+        }
+      },
+      "title": "Metrics",
+      "type": "object"
+    },
+    "NetProbeStats": {
+      "description": "[W1] Search-box widening probe, present ONLY on offline bench runs with the probe enabled\n(``ROUTE_BOUNDS_PROBE``). Diagnostic: it never influenced the emitted route.\n\n``minLevel`` = smallest widening level at which a natively-exhausted leg found a path (1-based;\nthe board-outline domain is the last level), -1 if none did. ``legsBudgetBound`` legs ran out\nof PROBE budget at a wider box \u2014 the box is implicated, but recoverability is unresolved, so\nthey must never be counted as recoveries. ``legsProbed`` counts LEGS; ``levelSearches`` counts\nthe widening searches those legs cost.",
+      "properties": {
+        "legsProbed": {
+          "default": 0,
+          "title": "Legsprobed",
+          "type": "integer"
+        },
+        "levelSearches": {
+          "default": 0,
+          "title": "Levelsearches",
+          "type": "integer"
+        },
+        "legsRecovered": {
+          "default": 0,
+          "title": "Legsrecovered",
+          "type": "integer"
+        },
+        "legsBudgetBound": {
+          "default": 0,
+          "title": "Legsbudgetbound",
+          "type": "integer"
+        },
+        "minLevel": {
+          "default": -1,
+          "title": "Minlevel",
+          "type": "integer"
+        },
+        "expansions": {
+          "default": 0,
+          "title": "Expansions",
+          "type": "integer"
+        }
+      },
+      "title": "NetProbeStats",
+      "type": "object"
+    },
+    "NetRouteStats": {
+      "description": "[M-ML] Per-net features (first attempt) + labels (emit-best) \u2014 first-class ML training\ndata riding the payload (not the envelope id). Integers only (no 2^53 JSON overflow:\nbbox is W/H, not area). The existing 2-proc determinism suite gates these because they ride\nthe envelope \u2014 do NOT move them out of it.",
+      "properties": {
+        "netId": {
+          "title": "Netid",
+          "type": "string"
+        },
+        "pinCount": {
+          "title": "Pincount",
+          "type": "integer"
+        },
+        "bboxWNm": {
+          "title": "Bboxwnm",
+          "type": "integer"
+        },
+        "bboxHNm": {
+          "title": "Bboxhnm",
+          "type": "integer"
+        },
+        "bboxOverlapCount": {
+          "title": "Bboxoverlapcount",
+          "type": "integer"
+        },
+        "congestionInBbox": {
+          "title": "Congestioninbbox",
+          "type": "integer"
+        },
+        "attemptOrder": {
+          "title": "Attemptorder",
+          "type": "integer"
+        },
+        "blockedEscapes": {
+          "title": "Blockedescapes",
+          "type": "integer"
+        },
+        "routed": {
+          "title": "Routed",
+          "type": "boolean"
+        },
+        "lengthA": {
+          "title": "Lengtha",
+          "type": "integer"
+        },
+        "lengthB": {
+          "title": "Lengthb",
+          "type": "integer"
+        },
+        "viaCount": {
+          "title": "Viacount",
+          "type": "integer"
+        },
+        "bendCount": {
+          "title": "Bendcount",
+          "type": "integer"
+        },
+        "ripCount": {
+          "title": "Ripcount",
+          "type": "integer"
+        },
+        "passFirstRouted": {
+          "title": "Passfirstrouted",
+          "type": "integer"
+        },
+        "expansionsSpent": {
+          "default": 0,
+          "title": "Expansionsspent",
+          "type": "integer"
+        },
+        "failureReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failurereason"
+        },
+        "boundaryBlockedNodes": {
+          "default": 0,
+          "title": "Boundaryblockednodes",
+          "type": "integer"
+        },
+        "rejectedFixed": {
+          "default": 0,
+          "title": "Rejectedfixed",
+          "type": "integer"
+        },
+        "rejectedRouter": {
+          "default": 0,
+          "title": "Rejectedrouter",
+          "type": "integer"
+        },
+        "firstContactExpansion": {
+          "default": -1,
+          "title": "Firstcontactexpansion",
+          "type": "integer"
+        },
+        "topBlockers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TopBlocker"
+          },
+          "title": "Topblockers",
+          "type": "array"
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NetProbeStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "netId",
+        "pinCount",
+        "bboxWNm",
+        "bboxHNm",
+        "bboxOverlapCount",
+        "congestionInBbox",
+        "attemptOrder",
+        "blockedEscapes",
+        "routed",
+        "lengthA",
+        "lengthB",
+        "viaCount",
+        "bendCount",
+        "ripCount",
+        "passFirstRouted"
+      ],
+      "title": "NetRouteStats",
+      "type": "object"
+    },
+    "PairRouteStats": {
+      "description": "[DP1] Per differential-pair length + skew REPORT. Present only when the compiled pair\nregistry is non-empty (an explicit ``constraintGroups[kind=diff_pair]`` declaration, or\n``options.inferDiffPairs``); the whole list is OMITTED from the serialized envelope\notherwise \u2014 see ``RoutePayloadSummary``.\n\nReporting only: no routing decision reads these numbers. Lengths are exact integer nm (axis\ntotal + ``isqrt(2\u00b7D\u00b2)``, ``app/router/pairs.py::net_length_nm``); ``routedP``/``routedN`` say\nwhether that side COMPLETED (all terminals connected), so a 0 length with ``routed*`` false is\n\"not routed\", not \"zero-length\".\n\n[DP2] ``coupled`` says whether the two members were routed TOGETHER as one fat centerline\nexpanded into an offset pair holding the declared gap (``app/router/pair_route.py``), or\nindependently. It is a plain ``bool`` defaulting to False, NOT an ``Optional`` three-state:\n``false`` has to mean the same thing for \"``diffPairs`` was never armed\" and \"coupling was\nattempted and fell back\", because the never-worse gate requires an infeasible pair's envelope\nto be BYTE-IDENTICAL to the same board routed with ``diffPairs`` absent \u2014 a ``null`` vs\n``false`` split would break exactly that comparison. ``skewNm`` remains a measurement, not a\ntolerance the router honoured: DP2 couples the gap, not the length.",
+      "properties": {
+        "pairId": {
+          "title": "Pairid",
+          "type": "string"
+        },
+        "tier": {
+          "title": "Tier",
+          "type": "string"
+        },
+        "netIdP": {
+          "title": "Netidp",
+          "type": "string"
+        },
+        "netIdN": {
+          "title": "Netidn",
+          "type": "string"
+        },
+        "lengthPNm": {
+          "title": "Lengthpnm",
+          "type": "integer"
+        },
+        "lengthNNm": {
+          "title": "Lengthnnm",
+          "type": "integer"
+        },
+        "skewNm": {
+          "title": "Skewnm",
+          "type": "integer"
+        },
+        "routedP": {
+          "title": "Routedp",
+          "type": "boolean"
+        },
+        "routedN": {
+          "title": "Routedn",
+          "type": "boolean"
+        },
+        "coupled": {
+          "default": false,
+          "title": "Coupled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pairId",
+        "tier",
+        "netIdP",
+        "netIdN",
+        "lengthPNm",
+        "lengthNNm",
+        "skewNm",
+        "routedP",
+        "routedN"
+      ],
+      "title": "PairRouteStats",
+      "type": "object"
+    },
+    "PlaceMetrics": {
+      "properties": {
+        "ratsnestLengthBeforeMm": {
+          "default": 0.0,
+          "title": "Ratsnestlengthbeforemm",
+          "type": "number"
+        },
+        "ratsnestLengthAfterMm": {
+          "default": 0.0,
+          "title": "Ratsnestlengthaftermm",
+          "type": "number"
+        },
+        "ratsnestImprovementPct": {
+          "default": 0.0,
+          "title": "Ratsnestimprovementpct",
+          "type": "number"
+        },
+        "hpwlBeforeMm": {
+          "default": 0.0,
+          "title": "Hpwlbeforemm",
+          "type": "number"
+        },
+        "hpwlAfterMm": {
+          "default": 0.0,
+          "title": "Hpwlaftermm",
+          "type": "number"
+        },
+        "crossingsBefore": {
+          "default": 0,
+          "title": "Crossingsbefore",
+          "type": "integer"
+        },
+        "crossingsAfter": {
+          "default": 0,
+          "title": "Crossingsafter",
+          "type": "integer"
+        },
+        "congestionBefore": {
+          "default": 0.0,
+          "title": "Congestionbefore",
+          "type": "number"
+        },
+        "congestionAfter": {
+          "default": 0.0,
+          "title": "Congestionafter",
+          "type": "number"
+        },
+        "overlapPairsAfter": {
+          "default": 0,
+          "title": "Overlappairsafter",
+          "type": "integer"
+        },
+        "overlapAreaAfterMm2": {
+          "default": 0.0,
+          "title": "Overlapareaaftermm2",
+          "type": "number"
+        },
+        "edgeViolations": {
+          "default": 0,
+          "title": "Edgeviolations",
+          "type": "integer"
+        },
+        "diffPairSkewBeforeMm": {
+          "default": 0.0,
+          "title": "Diffpairskewbeforemm",
+          "type": "number"
+        },
+        "diffPairSkewAfterMm": {
+          "default": 0.0,
+          "title": "Diffpairskewaftermm",
+          "type": "number"
+        }
+      },
+      "title": "PlaceMetrics",
+      "type": "object"
+    },
+    "PlaceOperation": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "pcb_move_placement",
+            "pcb_rotate_placement",
+            "pcb_flip_placement"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "riskLevel": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "destructive"
+          ],
+          "title": "Risklevel",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "pcb_flip_placement": "#/$defs/DesignerPcbFlipPlacementCommand",
+              "pcb_move_placement": "#/$defs/DesignerPcbMovePlacementCommand",
+              "pcb_rotate_placement": "#/$defs/DesignerPcbRotatePlacementCommand"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DesignerPcbMovePlacementCommand"
+            },
+            {
+              "$ref": "#/$defs/DesignerPcbRotatePlacementCommand"
+            },
+            {
+              "$ref": "#/$defs/DesignerPcbFlipPlacementCommand"
+            }
+          ],
+          "title": "Payload"
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AiSourceRef"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "summary",
+        "riskLevel",
+        "payload"
+      ],
+      "title": "PlaceOperation",
+      "type": "object"
+    },
+    "PlacePayloadSummary": {
+      "properties": {
+        "placedCount": {
+          "title": "Placedcount",
+          "type": "integer"
+        },
+        "totalComponents": {
+          "title": "Totalcomponents",
+          "type": "integer"
+        },
+        "locked": {
+          "title": "Locked",
+          "type": "integer"
+        },
+        "metrics": {
+          "$ref": "#/$defs/PlaceMetrics"
+        },
+        "determinism": {
+          "$ref": "#/$defs/Determinism"
+        },
+        "restartStats": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RestartStat"
+          },
+          "title": "Restartstats",
+          "type": "array"
+        },
+        "unplaced": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UnplacedComponent"
+          },
+          "title": "Unplaced",
+          "type": "array"
+        },
+        "diagnostics": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "placedCount",
+        "totalComponents",
+        "locked",
+        "metrics",
+        "determinism"
+      ],
+      "title": "PlacePayloadSummary",
+      "type": "object"
+    },
+    "PlacementResultEnvelope": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "designer_pcb_autoplace",
+          "default": "designer_pcb_autoplace",
+          "title": "Kind",
+          "type": "string"
+        },
+        "toolName": {
+          "default": "cloud_auto_place",
+          "title": "Toolname",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "riskLevel": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "destructive"
+          ],
+          "title": "Risklevel",
+          "type": "string"
+        },
+        "designId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Designid"
+        },
+        "baseRevision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baserevision"
+        },
+        "operations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlaceOperation"
+          },
+          "title": "Operations",
+          "type": "array"
+        },
+        "payload": {
+          "$ref": "#/$defs/PlacePayloadSummary"
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AiSourceRef"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "summary",
+        "payload"
+      ],
+      "title": "PlacementResultEnvelope",
+      "type": "object"
+    },
+    "PointMm": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "PointMm",
+      "type": "object"
+    },
+    "PointNm": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "PointNm",
+      "type": "object"
+    },
+    "RelaxationAdvisory": {
+      "description": "[C3] \"Which single rule would have opened this pad?\" \u2014 one row per terminal the flag-gated\nescape precheck retired at DECLARED rules, present only under ``options.adviseRelaxations``.\n\nADVISORY, never applied. The router does not relax a rule, does not re-search under one, and\nemits no copper a relaxed rule would have allowed; every operation in this envelope is legal\nat the rules the snapshot declared. The row says what the DESIGNER could change.\n\n``rule`` is the single knob the candidate moved: ``clearance`` (the whole copper-clearance\nfamily scaled together, ``valueNm`` reporting the net's governing value after the scale) or\n``traceWidth`` (this net's trace width, ``valueNm`` the relaxed width \u2014 the minimum-width rule\nmoves with it). ``factor`` is the ladder step that unblocked it (0.9 \u2192 0.5, least aggressive\nfirst, clearance before width at equal aggressiveness). ``rule == \"none_within_ladder\"`` means\nno candidate on the ladder unsealed the terminal \u2014 ``factor``/``valueNm`` are then null and the\nterminal is not a rules problem the desktop can dial away (board-edge clearance, drill/annular\nfab minimums and pure geometry are deliberately outside the ladder).",
+      "properties": {
+        "netId": {
+          "title": "Netid",
+          "type": "string"
+        },
+        "placementId": {
+          "title": "Placementid",
+          "type": "string"
+        },
+        "padNumber": {
+          "title": "Padnumber",
+          "type": "string"
+        },
+        "rule": {
+          "enum": [
+            "clearance",
+            "traceWidth",
+            "none_within_ladder"
+          ],
+          "title": "Rule",
+          "type": "string"
+        },
+        "factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor"
+        },
+        "valueNm": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valuenm"
+        }
+      },
+      "required": [
+        "netId",
+        "placementId",
+        "padNumber",
+        "rule"
+      ],
+      "title": "RelaxationAdvisory",
+      "type": "object"
+    },
+    "RestartStat": {
+      "description": "One SA restart's outcome (the winner flagged ``selected``).",
+      "properties": {
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "seedKind": {
+          "title": "Seedkind",
+          "type": "string"
+        },
+        "hpwlMm": {
+          "title": "Hpwlmm",
+          "type": "number"
+        },
+        "ratsnestMm": {
+          "title": "Ratsnestmm",
+          "type": "number"
+        },
+        "overlapPairs": {
+          "title": "Overlappairs",
+          "type": "integer"
+        },
+        "crossings": {
+          "title": "Crossings",
+          "type": "integer"
+        },
+        "selected": {
+          "default": false,
+          "title": "Selected",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "index",
+        "seedKind",
+        "hpwlMm",
+        "ratsnestMm",
+        "overlapPairs",
+        "crossings"
+      ],
+      "title": "RestartStat",
+      "type": "object"
+    },
+    "RouteOperation": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "pcb_add_trace",
+            "pcb_add_via",
+            "pcb_add_trace_via"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "riskLevel": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "destructive"
+          ],
+          "title": "Risklevel",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "pcb_add_trace": "#/$defs/DesignerPcbAddTraceCommand",
+              "pcb_add_trace_via": "#/$defs/DesignerPcbAddTraceViaCommand",
+              "pcb_add_via": "#/$defs/DesignerPcbAddViaCommand"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DesignerPcbAddTraceCommand"
+            },
+            {
+              "$ref": "#/$defs/DesignerPcbAddViaCommand"
+            },
+            {
+              "$ref": "#/$defs/DesignerPcbAddTraceViaCommand"
+            }
+          ],
+          "title": "Payload"
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AiSourceRef"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "summary",
+        "riskLevel",
+        "payload"
+      ],
+      "title": "RouteOperation",
+      "type": "object"
+    },
+    "RoutePayloadSummary": {
+      "properties": {
+        "completion": {
+          "$ref": "#/$defs/Completion"
+        },
+        "unroutedNets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UnroutedNet"
+          },
+          "title": "Unroutednets",
+          "type": "array"
+        },
+        "metrics": {
+          "$ref": "#/$defs/Metrics"
+        },
+        "determinism": {
+          "$ref": "#/$defs/Determinism"
+        },
+        "diagnostics": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "netStats": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NetRouteStats"
+          },
+          "title": "Netstats",
+          "type": "array"
+        },
+        "portfolio": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/VariantStats"
+          },
+          "title": "Portfolio",
+          "type": "array"
+        },
+        "pairStats": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PairRouteStats"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pairstats"
+        },
+        "relaxationAdvisories": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/RelaxationAdvisory"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relaxationadvisories"
+        }
+      },
+      "required": [
+        "completion",
+        "metrics",
+        "determinism"
+      ],
+      "title": "RoutePayloadSummary",
+      "type": "object"
+    },
+    "RouteResultEnvelope": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "designer_pcb_autoroute",
+          "default": "designer_pcb_autoroute",
+          "title": "Kind",
+          "type": "string"
+        },
+        "toolName": {
+          "default": "cloud_auto_router",
+          "title": "Toolname",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "riskLevel": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "destructive"
+          ],
+          "title": "Risklevel",
+          "type": "string"
+        },
+        "designId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Designid"
+        },
+        "baseRevision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baserevision"
+        },
+        "operations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RouteOperation"
+          },
+          "title": "Operations",
+          "type": "array"
+        },
+        "payload": {
+          "$ref": "#/$defs/RoutePayloadSummary"
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AiSourceRef"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "summary",
+        "riskLevel",
+        "payload"
+      ],
+      "title": "RouteResultEnvelope",
+      "type": "object"
+    },
+    "TopBlocker": {
+      "description": "[S0] One obstacle and how many of the net's A* candidate edges it rejected.\n\n``obstacleId`` is engine-internal (compiled-board ids for snapshot geometry, ``State``-minted\nids for copper this run committed): stable WITHIN one job, meaningless across jobs. Use it to\ntell \"one wall rejected everything\" from \"a thousand obstacles each rejected once\", not as a\ndurable handle on a board feature.",
+      "properties": {
+        "obstacleId": {
+          "title": "Obstacleid",
+          "type": "string"
+        },
+        "rejectedEdges": {
+          "title": "Rejectededges",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "obstacleId",
+        "rejectedEdges"
+      ],
+      "title": "TopBlocker",
+      "type": "object"
+    },
+    "UnplacedComponent": {
+      "properties": {
+        "placementId": {
+          "title": "Placementid",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "no_legal_position",
+            "locked",
+            "oversized_for_board",
+            "non_cardinal_rotation",
+            "cancelled"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "placementId",
+        "reason"
+      ],
+      "title": "UnplacedComponent",
+      "type": "object"
+    },
+    "UnroutedNet": {
+      "properties": {
+        "netId": {
+          "title": "Netid",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "no_path_proven",
+            "search_incomplete",
+            "budget_exceeded",
+            "geometry_degenerate",
+            "policy_excluded",
+            "escape_blocked_by_rules",
+            "cancelled"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "targetsRemaining": {
+          "title": "Targetsremaining",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "netId",
+        "reason",
+        "targetsRemaining"
+      ],
+      "title": "UnroutedNet",
+      "type": "object"
+    },
+    "VariantStats": {
+      "description": "[M7] One portfolio variant's outcome summary (the winner flagged ``selected``). First-class\nML training data: which net-ordering won, per board.",
+      "properties": {
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "routedNets": {
+          "title": "Routednets",
+          "type": "integer"
+        },
+        "totalNets": {
+          "title": "Totalnets",
+          "type": "integer"
+        },
+        "connectedTerminals": {
+          "title": "Connectedterminals",
+          "type": "integer"
+        },
+        "totalLengthA": {
+          "title": "Totallengtha",
+          "type": "integer"
+        },
+        "totalLengthB": {
+          "title": "Totallengthb",
+          "type": "integer"
+        },
+        "viaCount": {
+          "title": "Viacount",
+          "type": "integer"
+        },
+        "bendCount": {
+          "title": "Bendcount",
+          "type": "integer"
+        },
+        "selected": {
+          "default": false,
+          "title": "Selected",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "index",
+        "routedNets",
+        "totalNets",
+        "connectedTerminals",
+        "totalLengthA",
+        "totalLengthB",
+        "viaCount",
+        "bendCount"
+      ],
+      "title": "VariantStats",
+      "type": "object"
+    },
+    "_AddTraceBody": {
+      "description": "``pcb_add_trace`` payload without the discriminator (TS ``Omit<\u2026,\"type\">``).",
+      "properties": {
+        "layer": {
+          "enum": [
+            "F.Cu",
+            "In1.Cu",
+            "In2.Cu",
+            "In3.Cu",
+            "In4.Cu",
+            "In5.Cu",
+            "In6.Cu",
+            "In7.Cu",
+            "In8.Cu",
+            "In9.Cu",
+            "In10.Cu",
+            "In11.Cu",
+            "In12.Cu",
+            "In13.Cu",
+            "In14.Cu",
+            "In15.Cu",
+            "In16.Cu",
+            "In17.Cu",
+            "In18.Cu",
+            "In19.Cu",
+            "In20.Cu",
+            "In21.Cu",
+            "In22.Cu",
+            "In23.Cu",
+            "In24.Cu",
+            "In25.Cu",
+            "In26.Cu",
+            "In27.Cu",
+            "In28.Cu",
+            "In29.Cu",
+            "In30.Cu",
+            "B.Cu"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "pointsNm": {
+          "items": {
+            "$ref": "#/$defs/PointNm"
+          },
+          "title": "Pointsnm",
+          "type": "array"
+        },
+        "widthMm": {
+          "title": "Widthmm",
+          "type": "number"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "netClassId": {
+          "title": "Netclassid",
+          "type": "string"
+        },
+        "segmentMode": {
+          "enum": [
+            "manhattan-90",
+            "manhattan-45"
+          ],
+          "title": "Segmentmode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "pointsNm",
+        "widthMm",
+        "netId",
+        "netClassId",
+        "segmentMode"
+      ],
+      "title": "_AddTraceBody",
+      "type": "object"
+    },
+    "_AddViaBody": {
+      "description": "``pcb_add_via`` payload without the discriminator.",
+      "properties": {
+        "centerMm": {
+          "$ref": "#/$defs/PointMm"
+        },
+        "netId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Netid"
+        },
+        "netClassId": {
+          "title": "Netclassid",
+          "type": "string"
+        },
+        "diameterMmOverride": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diametermmoverride"
+        },
+        "drillMmOverride": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Drillmmoverride"
+        }
+      },
+      "required": [
+        "centerMm",
+        "netId",
+        "netClassId"
+      ],
+      "title": "_AddViaBody",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "kind": {
+      "const": "designer_pcb_autolayout",
+      "default": "designer_pcb_autolayout",
+      "title": "Kind",
+      "type": "string"
+    },
+    "envelopeId": {
+      "title": "Envelopeid",
+      "type": "string"
+    },
+    "snapshotHash": {
+      "title": "Snapshothash",
+      "type": "string"
+    },
+    "engineVersions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Engineversions",
+      "type": "object"
+    },
+    "objectiveVersion": {
+      "title": "Objectiveversion",
+      "type": "string"
+    },
+    "recommendedCandidateId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Recommendedcandidateid"
+    },
+    "candidates": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/LayoutCandidate"
+      },
+      "title": "Candidates",
+      "type": "array"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "determinism": {
+      "$ref": "#/$defs/Determinism"
+    },
+    "manifest": {
+      "$ref": "#/$defs/LayoutManifest"
+    }
+  },
+  "required": [
+    "envelopeId",
+    "snapshotHash",
+    "engineVersions",
+    "objectiveVersion",
+    "determinism",
+    "manifest"
+  ],
+  "title": "LayoutResultEnvelope",
+  "type": "object"
+}

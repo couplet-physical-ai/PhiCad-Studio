@@ -1,0 +1,19 @@
+{
+  "description": "202 body of ``POST /v1/{engine}/{jobId}/cancel``. Cancellation is cooperative:\n``cancelRequested`` acknowledges the flag, it does not mean the job has stopped.",
+  "properties": {
+    "jobId": {
+      "title": "Jobid",
+      "type": "string"
+    },
+    "cancelRequested": {
+      "title": "Cancelrequested",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "jobId",
+    "cancelRequested"
+  ],
+  "title": "CancelJobResponse",
+  "type": "object"
+}

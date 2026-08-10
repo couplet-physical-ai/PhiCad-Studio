@@ -1,0 +1,29 @@
+{
+  "description": "202 body of ``POST /v1/{route,place,layout}``.\n\n``statusUrl``/``streamUrl`` are service-absolute paths (no origin) \u2014 the caller joins\nthem onto the base URL it already used. ``snapshotHash`` is the engine's canonical hash\nof the accepted snapshot (route projects out the place-only fields; place and layout\nkeep them), usable as job provenance.",
+  "properties": {
+    "jobId": {
+      "title": "Jobid",
+      "type": "string"
+    },
+    "statusUrl": {
+      "title": "Statusurl",
+      "type": "string"
+    },
+    "streamUrl": {
+      "title": "Streamurl",
+      "type": "string"
+    },
+    "snapshotHash": {
+      "title": "Snapshothash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "jobId",
+    "statusUrl",
+    "streamUrl",
+    "snapshotHash"
+  ],
+  "title": "SubmitJobResponse",
+  "type": "object"
+}

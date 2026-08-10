@@ -10,17 +10,32 @@ import type { VersionResponse } from "../../../sdks/designer";
 
 function versionWithPours(accepted: boolean | undefined): VersionResponse {
   return {
+    service: "cloud-auto-layout",
     engineVersion: "v0.8.0",
+    routeEngineVersion: "v0.8.0",
+    placeEngineVersion: "v0.5.0",
     contractVersion: "1.0",
     schemaMajor: 1,
+    schemaMinor: 0,
+    schemaVersion: "1.0",
     capabilities: {
       async: true,
       progressStream: "sse",
       cancel: true,
+      endpoints: ["/v1/route", "/v1/place"],
       viaSpans: ["through"],
       engineImplemented: true,
-      pours: accepted === undefined ? undefined : { accepted },
-    },
+      schemaMajor: 1,
+      schemaMinor: 0,
+      schemaVersion: "1.0",
+      engines: {},
+      // A deployment predating the pours capability omits the block entirely — the
+      // generated type marks it required because current services always send it, so
+      // the "unknown" case is modelled with a cast rather than a fictional shape.
+      ...(accepted === undefined
+        ? {}
+        : { pours: { accepted, routeAware: accepted, producerDefault: "off" } }),
+    } as VersionResponse["capabilities"],
   };
 }
 

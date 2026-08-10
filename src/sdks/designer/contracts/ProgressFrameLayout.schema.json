@@ -1,0 +1,40 @@
+{
+  "properties": {
+    "type": {
+      "enum": [
+        "layout.accepted",
+        "layout.candidate.started",
+        "layout.candidate.stage",
+        "layout.candidate.finished",
+        "layout.progress",
+        "layout.candidate.selected",
+        "layout.completed",
+        "layout.failed",
+        "layout.cancelled"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "jobId": {
+      "title": "Jobid",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "data": {
+      "additionalProperties": true,
+      "default": {},
+      "title": "Data",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "jobId",
+    "seq"
+  ],
+  "title": "ProgressFrame",
+  "type": "object"
+}

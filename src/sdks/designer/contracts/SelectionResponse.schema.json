@@ -1,0 +1,24 @@
+{
+  "description": "202 body of ``POST /v1/layout/{jobId}/selection`` \u2014 advisory label, never mutates\nthe result.",
+  "properties": {
+    "jobId": {
+      "title": "Jobid",
+      "type": "string"
+    },
+    "candidateId": {
+      "title": "Candidateid",
+      "type": "string"
+    },
+    "recorded": {
+      "title": "Recorded",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "jobId",
+    "candidateId",
+    "recorded"
+  ],
+  "title": "SelectionResponse",
+  "type": "object"
+}

@@ -1,0 +1,46 @@
+{
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "error",
+        "warning",
+        "info"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Path"
+    },
+    "context": {
+      "additionalProperties": true,
+      "default": {},
+      "title": "Context",
+      "type": "object"
+    }
+  },
+  "required": [
+    "code",
+    "severity",
+    "message"
+  ],
+  "title": "Diagnostic",
+  "type": "object"
+}
