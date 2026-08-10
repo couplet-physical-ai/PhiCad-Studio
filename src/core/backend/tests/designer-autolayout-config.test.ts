@@ -1,51 +1,79 @@
-// Pure-logic unit tests for the Auto-Layout config → request mapping
-// (frontend module, no React/DOM) — run under Bun with the backend suite per
-// the repo convention for pure frontend logic.
+// Pure-logic unit tests for the Auto Layout config → request mapping and the migration off
+// the old stage-toggle model (frontend module, no React/DOM — run under Bun with the
+// backend suite per the repo convention for pure frontend logic).
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_AUTOLAYOUT_CONFIG,
   applyPreset,
-  toPlaceRequest,
+  migrateConfig,
+  toLayoutRequest,
   toRouteRequest,
 } from "../../../modules/designer/frontend/pcb/autolayout/config";
 
 describe("autolayout config → request mapping", () => {
   test("balanced default → engine defaults; serializePours 'auto' omitted", () => {
-    const { placeOptions } = toPlaceRequest(DEFAULT_AUTOLAYOUT_CONFIG);
+    const { placeOptions, routeOptions, serializePours } = toLayoutRequest(
+      DEFAULT_AUTOLAYOUT_CONFIG,
+    );
     expect(placeOptions.restarts).toBeUndefined();
     expect(placeOptions.maxMoves).toBeUndefined();
     expect(placeOptions.targetUtilization).toBe(0.7);
-
-    const route = toRouteRequest(DEFAULT_AUTOLAYOUT_CONFIG);
-    expect(route.options.portfolio).toBe(4);
-    expect("maxExpansions" in route.options).toBe(false);
+    expect(routeOptions.portfolio).toBe(4);
     // "auto" ⇒ the key is dropped so the backend negotiates the capability.
-    expect("serializePours" in route).toBe(false);
+    expect(serializePours).toBeUndefined();
     // undefined maxViasPerNet ⇒ omitted (not sent as an explicit null).
-    expect("maxViasPerNet" in route.options).toBe(false);
+    expect("maxViasPerNet" in routeOptions).toBe(false);
   });
 
-  test("fast preset → portfolio 1 + low place budgets; route budget inherited", () => {
-    const { placeOptions } = toPlaceRequest(
-      applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "fast"),
-    );
-    expect(placeOptions.restarts).toBe(2);
-    expect(placeOptions.maxMoves).toBe(3000);
-
-    const route = toRouteRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "fast"));
-    expect(route.options.portfolio).toBe(1);
-    // Route budget fields are never pinned — the server default governs.
-    expect("maxExpansions" in route.options).toBe(false);
-    expect("budgetMode" in route.options).toBe(false);
+  test("route budget fields are NEVER pinned — the server default governs", () => {
+    // This is the reason engine improvements reach shipped desktops without a release.
+    for (const preset of ["fast", "balanced", "quality"] as const) {
+      const { routeOptions } = toLayoutRequest(
+        applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, preset),
+      );
+      expect("maxExpansions" in routeOptions).toBe(false);
+      expect("budgetMode" in routeOptions).toBe(false);
+      expect("jobBudget" in routeOptions).toBe(false);
+    }
   });
 
-  test("quality preset → portfolio 8 + higher place budgets; route budget inherited", () => {
-    const q = applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "quality");
-    expect(toPlaceRequest(q).placeOptions.restarts).toBe(8);
-    const route = toRouteRequest(q);
-    expect(route.options.portfolio).toBe(8);
-    expect("maxExpansions" in route.options).toBe(false);
-    expect("budgetMode" in route.options).toBe(false);
+  test("effort tiers map to portfolio + place budgets", () => {
+    const fast = toLayoutRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "fast"));
+    expect(fast.routeOptions.portfolio).toBe(1);
+    expect(fast.placeOptions.restarts).toBe(2);
+    expect(fast.placeOptions.maxMoves).toBe(3000);
+
+    const quality = toLayoutRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "quality"));
+    expect(quality.routeOptions.portfolio).toBe(8);
+    expect(quality.placeOptions.restarts).toBe(8);
+  });
+
+  test("priority presets bias only the weights their name promises", () => {
+    expect(
+      toLayoutRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "preserve")).placeOptions
+        .weights,
+    ).toEqual({ displacement: 1 });
+    expect(
+      toLayoutRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "routability")).placeOptions
+        .weights,
+    ).toEqual({ congestion: 1 });
+    // Balanced defers entirely to the engine — no invented numbers.
+    expect(
+      toLayoutRequest(applyPreset(DEFAULT_AUTOLAYOUT_CONFIG, "balanced")).placeOptions
+        .weights,
+    ).toBeUndefined();
+  });
+
+  test("subset placement requires an actual selection", () => {
+    const scoped = { ...DEFAULT_AUTOLAYOUT_CONFIG, scope: "selected" as const };
+    const withSelection = toLayoutRequest(scoped, ["U1", "U2"]);
+    expect(withSelection.placeOptions.mode).toBe("subset");
+    expect(withSelection.placeOptions.selectedIds).toEqual(["U1", "U2"]);
+
+    // An empty selection must NOT silently become a whole-board re-placement.
+    const withoutSelection = toLayoutRequest(scoped, []);
+    expect(withoutSelection.placeOptions.mode).toBeUndefined();
+    expect(withoutSelection.placeOptions.selectedIds).toBeUndefined();
   });
 
   test("explicit serializePours + maxViasPerNet are forwarded", () => {
@@ -73,7 +101,7 @@ describe("autolayout config → request mapping", () => {
         targetUtilization: 0.9,
       },
     };
-    const { placeOptions } = toPlaceRequest(cfg);
+    const { placeOptions } = toLayoutRequest(cfg);
     expect(placeOptions.allowRotate).toBe(false);
     expect(placeOptions.allowFlip).toBe(false);
     expect(placeOptions.moveConnectors).toBe(true);
@@ -81,18 +109,45 @@ describe("autolayout config → request mapping", () => {
     expect(placeOptions.targetUtilization).toBe(0.9);
   });
 
-  test("applyPreset resets knobs to engine defaults but keeps stage toggles", () => {
-    const custom = {
-      ...DEFAULT_AUTOLAYOUT_CONFIG,
+  test("Route Board sends routing only — never a placement block", () => {
+    const route = toRouteRequest(DEFAULT_AUTOLAYOUT_CONFIG);
+    expect(route.options.portfolio).toBe(4);
+    expect("placeOptions" in route).toBe(false);
+  });
+});
+
+describe("config migration off the stage-toggle model", () => {
+  test("a legacy both-stages config becomes a normal layout config", () => {
+    const { config, routeOnly } = migrateConfig({
+      runPlace: true,
+      runRoute: true,
+      preset: "balanced",
+      effort: "balanced",
+      place: { targetUtilization: 0.8 },
+      route: { allowVias: false },
+    });
+    expect(routeOnly).toBe(false);
+    expect(config.scope).toBe("all");
+    expect(config.preset).toBe("balanced");
+    expect(config.place.targetUtilization).toBe(0.8);
+    expect(config.route.allowVias).toBe(false);
+  });
+
+  test("runPlace:false, runRoute:true is a ROUTE BOARD config, not a layout one", () => {
+    // Carrying it forward as a layout config would silently start moving components on a
+    // board whose owner explicitly asked for routing only.
+    const { routeOnly } = migrateConfig({
       runPlace: false,
       runRoute: true,
-      preset: "custom" as const,
-      place: { ...DEFAULT_AUTOLAYOUT_CONFIG.place, targetUtilization: 0.95 },
-    };
-    const balanced = applyPreset(custom, "balanced");
-    expect(balanced.runPlace).toBe(false);
-    expect(balanced.runRoute).toBe(true);
-    expect(balanced.preset).toBe("balanced");
-    expect(balanced.place.targetUtilization).toBe(0.7);
+      preset: "quality",
+    });
+    expect(routeOnly).toBe(true);
+  });
+
+  test("never throws on junk or on an older/partial blob", () => {
+    expect(migrateConfig(null).config).toEqual(DEFAULT_AUTOLAYOUT_CONFIG);
+    expect(migrateConfig("nonsense").config).toEqual(DEFAULT_AUTOLAYOUT_CONFIG);
+    expect(migrateConfig({}).config.preset).toBe("balanced");
+    expect(migrateConfig({ preset: "quality" }).config.effort).toBe("quality");
   });
 });

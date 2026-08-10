@@ -416,10 +416,29 @@ export interface AutoLayoutRouteConfig {
  * frontend `DEFAULT_AUTOLAYOUT_CONFIG`.
  */
 export interface AutoLayoutConfig {
-  runPlace: boolean;
-  runRoute: boolean;
-  preset: "fast" | "balanced" | "quality" | "custom";
+  /**
+   * LEGACY stage toggles. Full Auto Layout is one composite cloud job — there are no
+   * desktop-sequenced stages to switch off — so these are read only by the config
+   * migration, which maps `runPlace:false, runRoute:true` onto a Route Board run rather
+   * than onto a layout run. Kept optional so an older persisted blob still parses.
+   */
+  runPlace?: boolean;
+  runRoute?: boolean;
+  /**
+   * Product intent for the run. `preserve` biases toward the user's existing layout;
+   * `custom` means the Advanced knobs were touched.
+   */
+  preset:
+    | "fast"
+    | "balanced"
+    | "quality"
+    | "routability"
+    | "compact"
+    | "preserve"
+    | "custom";
   effort: "fast" | "balanced" | "quality";
+  /** Which components the placer may move. `selected` requires a non-empty selection. */
+  scope?: "all" | "selected";
   place: AutoLayoutPlaceConfig;
   route: AutoLayoutRouteConfig;
 }

@@ -131,6 +131,23 @@ export function createDesignerApi(params: {
       return data.designs;
     },
 
+    /**
+     * Tell the backend which design the UI has focused. External drivers (the
+     * MCP server) read this as their default target — see
+     * `src/modules/designer/backend/active-design.ts`. Fire-and-forget: a
+     * failure here must never disturb tab switching.
+     */
+    async setActiveDesign(designId: string | null): Promise<void> {
+      await fetchData<{ designId: string | null }>(
+        buildModuleUrl(backendURL, moduleId, "/active-design"),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ designId }),
+        },
+      );
+    },
+
     async createDesign(name?: string): Promise<DesignerDesignSummary> {
       const data = await fetchData<{ design: DesignerDesignSummary }>(
         buildModuleUrl(backendURL, moduleId, "/designs"),

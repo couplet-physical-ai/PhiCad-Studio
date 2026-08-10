@@ -152,7 +152,10 @@ function deps(overrides: Partial<Parameters<typeof applyCandidate>[0]> = {}) {
   };
 }
 
-async function expectCode(promise: Promise<unknown>, code: string) {
+async function expectCode(
+  promise: Promise<unknown>,
+  code: AutoLayoutError["code"],
+) {
   try {
     await promise;
     throw new Error(`expected ${code}`);

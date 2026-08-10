@@ -46,6 +46,7 @@ import { PcbCanvas } from "./pcb/PcbCanvas";
 import { Board3DCanvas } from "./three-d/Board3DCanvas";
 import { DesignerChatDock } from "../../assistant/frontend";
 import { useDesignerTabsStore } from "./stores/designer-tabs-store";
+import { useActiveDesignSync } from "./hooks/useActiveDesignSync";
 import type {
   DesignerPlacedPart,
   LibraryComponent,
@@ -295,7 +296,7 @@ function DesignerSpaceInner({
   designId,
 }: ModuleSpaceProps): ReactElement {
   const { addToast } = useToast();
-  const { session, user, tier, enabled: cloudEnabled } = useAuth();
+  const { session, user, enabled: cloudEnabled } = useAuth();
   const projectSyncEnabled = useCloudPrefs((s) => s.projectSyncEnabled);
   // Per-feature cloud gates (dev-only by default — see @/feature-flags).
   const syncFeatureEnabled = useFeatureFlag("cloud.sync");
@@ -336,14 +337,19 @@ function DesignerSpaceInner({
       };
     };
   }, [cloudEnabled, session]);
-  // A valid login is enough (self-contained snapshot, stateless service) —
-  // project sync is NOT required. Pro-tier gated (UX): cloud-auto-layout enforces
-  // tier=pro server-side; this hides the control for non-pro users.
-  const autoLayoutEnabled =
-    cloudEnabled &&
-    Boolean(session) &&
-    tier === "pro" &&
-    autoLayoutFeatureEnabled;
+  // TWO gates, deliberately separate.
+  //
+  // `autoLayoutEnabled` decides whether the feature is VISIBLE: the flag is on and the
+  // desktop knows where the cloud is. `autoLayoutSignedIn` decides whether it can RUN.
+  // Collapsing them (as this did) means a signed-out user sees no Auto Layout button at
+  // all and concludes OpenPCB has no such feature; now they see it, and the dialog asks
+  // them to sign in without issuing a request.
+  //
+  // The tier check is gone. Auto Layout requires an authenticated OpenPCB Cloud session,
+  // not a Pro subscription — the service dropped its Pro gate, and entitlement is separate
+  // product policy from authentication. Copilot's tier rules are untouched.
+  const autoLayoutEnabled = cloudEnabled && autoLayoutFeatureEnabled;
+  const autoLayoutSignedIn = Boolean(session);
   const { state, actions } = useDesignerWorkspace({
     backendURL,
     moduleId,
@@ -428,6 +434,10 @@ function DesignerSpaceInner({
   const setActiveTab = useDesignerTabsStore((s) => s.setActive);
   const pruneMissing = useDesignerTabsStore((s) => s.pruneMissing);
   const navigateToModule = useNavigationStore((s) => s.navigateToModule);
+
+  // Mirror the focused tab to the backend so external MCP clients can default
+  // to "the design the user is looking at".
+  useActiveDesignSync(cloudBadgeApi, activeDesignId);
 
   const [leftWidth, setLeftWidth] = useState(300);
   const [chatOpen, setChatOpen] = useState(() =>
@@ -1175,6 +1185,7 @@ function DesignerSpaceInner({
                   gridVisible={gridVisible}
                   cloudHeaders={autoLayoutCloudHeaders}
                   autoLayoutEnabled={autoLayoutEnabled}
+                  autoLayoutSignedIn={autoLayoutSignedIn}
                   dispatchCommand={actions.dispatchCommand}
                   notifyExternalRevisionBump={
                     actions.notifyExternalRevisionBump
