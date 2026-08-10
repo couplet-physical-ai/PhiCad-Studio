@@ -1,6 +1,8 @@
 import type {
+  BomProjection,
   CreateDesignerDesignInput,
   DesignerCommandEnvelope,
+  GerberExportOptions,
   DesignerDesignRecord,
   DesignerDesignSummary,
   DesignerDispatchResult,
@@ -111,6 +113,9 @@ export type {
   DesignerPcbAddTraceViaCommand,
   DesignerPcbAddViaCommand,
   DesignerPcbCommitRouteCommand,
+  DesignerPcbApplyAutolayoutCandidateCommand,
+  DesignerPcbCandidatePlacementOperation,
+  DesignerPcbCandidateRouteOperation,
   DesignerPcbDeleteTraceCommand,
   DesignerPcbDeleteViaCommand,
   DesignerPcbFlipPlacementCommand,
@@ -219,6 +224,13 @@ export interface DesignerSDK {
     input?: CreateDesignerDesignInput,
   ): Promise<DesignerDesignSummary>;
   listDesigns(): Promise<DesignerDesignSummary[]>;
+  /**
+   * The design the designer UI currently has focused, or `null` when nothing
+   * is open. Pushed by the frontend tab store and held in memory — callers
+   * driving the design from outside the UI (MCP) use it as their default
+   * target. `null` is a normal answer, not an error.
+   */
+  getActiveDesignId(): string | null;
   getDesign(designId: string): Promise<DesignerDesignRecord | null>;
   updateDesign(
     designId: string,
@@ -304,6 +316,25 @@ export interface DesignerSDK {
    * cloud-copilot at run start). Null when the design has no PCB projection.
    */
   buildBoardSnapshot(designId: string): Promise<DesignerBoardSnapshotBuild | null>;
+  /** BOM projection (grouped lines + summary). Null when the design is unknown. */
+  getBomProjection(designId: string): Promise<BomProjection | null>;
+  /**
+   * Manufacturing export manifest: bundle name, preflight warnings, and one
+   * entry per artifact with its byte size — deliberately WITHOUT file text, so
+   * cross-module callers can report on an export without pulling megabytes of
+   * Gerber through the tool layer. Null when the design has no PCB projection.
+   */
+  getManufacturingExportSummary(
+    designId: string,
+    options?: GerberExportOptions,
+  ): Promise<DesignerExportSummary | null>;
+}
+
+/** Result of DesignerSDK.getManufacturingExportSummary. */
+export interface DesignerExportSummary {
+  bundleName: string;
+  warnings: string[];
+  files: Array<{ kind: string; fileName: string; bytes: number }>;
 }
 
 /** Cloud link summary surfaced through the SDK (subset of designer_cloud_link). */

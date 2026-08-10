@@ -96,6 +96,7 @@ import {
   loadPcbOverlayShapeById,
   loadPcbOverlayTextById,
   loadPcbPlacementById,
+  upsertPcbPlacement,
   loadPcbTraceById,
   loadPcbViaById,
   movePcbPlacement,
@@ -112,6 +113,10 @@ import {
   updatePcbDesignRules,
   updatePcbVisibleLayers,
 } from "./pcb/pcb-store";
+import {
+  planCandidatePlacements,
+  type CandidatePlacementOp,
+} from "./pcb/autolayout-candidate-plan";
 import {
   validatePath as validateTracePath,
   sanitizePath as sanitizeTracePath,
@@ -772,6 +777,81 @@ export function executeDesignerCommand({
     for (const via of vias) insertPcbVia(tx, designId, via, timestamp);
     // Single-id result contract (see pcb_add_trace_via): downstream consumers
     // derive created copper from history patches, not this id.
+    return okResult(
+      bumpRevision(tx, designId, revision, timestamp),
+      traces[0]?.id ?? vias[0]?.id ?? null,
+    );
+  }
+
+  if (command.type === "pcb_apply_autolayout_candidate") {
+    // ATOMIC by construction: plan everything, write nothing until the whole candidate is
+    // known good. See ./pcb/autolayout-candidate-plan.ts for why validating through the
+    // mutating placement helpers would silently reintroduce partial applies.
+    if (
+      command.placementOperations.length === 0 &&
+      command.routeOperations.length === 0
+    ) {
+      return invalidPcbTrace(
+        "pcb_apply_autolayout_candidate requires at least one operation",
+      );
+    }
+    const board = ensurePcbBoardSettings(tx, designId, timestamp);
+
+    // 1. placements — composed in operation order onto an in-memory working copy
+    const placementOps: CandidatePlacementOp[] = command.placementOperations.map(
+      (op) => ({ kind: op.type, op }),
+    );
+    const planned = planCandidatePlacements(placementOps, (placementId) =>
+      loadPcbPlacementById(tx, designId, placementId),
+    );
+    if (!planned.ok) {
+      // A missing placement is an expected runtime outcome — the board changed under a
+      // candidate that the staleness digest did not catch (e.g. a component deleted
+      // between digest check and dispatch), so it gets a normal error result.
+      if (planned.error.reason === "unknown_placement") {
+        return pcbPlacementNotFound(planned.error.placementId);
+      }
+      // Everything else (non-cardinal rotation, non-finite position) is rejected by the
+      // route parser before dispatch, so reaching here means a caller bypassed it.
+      // THROWING is deliberate: it aborts the SQLite transaction, where returning an
+      // error result would commit whatever this command had already written. Nothing has
+      // been written yet at this point, but the invariant should not depend on that.
+      throw new Error(
+        `pcb_apply_autolayout_candidate: ${planned.error.reason} — ${planned.error.detail}`,
+      );
+    }
+
+    // 2. copper — built (not inserted) against the same board settings
+    const traces: PcbTrace[] = [];
+    const vias: PcbVia[] = [];
+    for (const op of command.routeOperations) {
+      if (op.type === "pcb_add_trace") {
+        const built = buildPcbTraceForInsert(op, board);
+        if ("error" in built) return built.error;
+        traces.push(built.trace);
+      } else if (op.type === "pcb_add_via") {
+        const built = buildPcbViaForInsert(op, board);
+        if ("error" in built) return built.error;
+        vias.push(built.via);
+      } else {
+        const builtTrace = buildPcbTraceForInsert(op.trace, board);
+        if ("error" in builtTrace) return builtTrace.error;
+        const builtVia = buildPcbViaForInsert(op.via, board);
+        if ("error" in builtVia) return builtVia.error;
+        traces.push(builtTrace.trace);
+        vias.push(builtVia.via);
+      }
+    }
+
+    // 3. write phase — first mutation of the whole command happens here
+    for (const placement of planned.placements) {
+      upsertPcbPlacement(tx, designId, placement, timestamp);
+    }
+    for (const trace of traces) insertPcbTrace(tx, designId, trace, timestamp);
+    for (const via of vias) insertPcbVia(tx, designId, via, timestamp);
+
+    // Single-id result contract (see pcb_commit_route): consumers derive created copper
+    // from history patches, not from this id.
     return okResult(
       bumpRevision(tx, designId, revision, timestamp),
       traces[0]?.id ?? vias[0]?.id ?? null,

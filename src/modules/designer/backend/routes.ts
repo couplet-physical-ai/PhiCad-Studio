@@ -9,6 +9,11 @@ import {
   ValidationError,
 } from "../../../core/contracts/errors";
 import { isFeatureEnabled } from "../../../core/contracts/feature-flags/backend";
+import {
+  clearActiveDesignIfMatches,
+  getActiveDesignState,
+  setActiveDesignId,
+} from "./active-design";
 import { inspectDxf } from "./import/dxf/to-outline";
 import { DxfImportError } from "./import/dxf/parse-dxf";
 import { buildExportBundle } from "./export";
@@ -40,6 +45,7 @@ import type {
   DesignerMovePrimitiveCommand,
   DesignerPcbAddTraceCommand,
   DesignerPcbAddTraceViaCommand,
+  DesignerPcbApplyAutolayoutCandidateCommand,
   DesignerPcbCommitRouteCommand,
   DesignerPcbAddViaCommand,
   DesignerPcbDeleteTraceCommand,
@@ -1441,6 +1447,124 @@ function parsePcbCommitRouteCommand(
   return { type: "pcb_commit_route", traces, vias };
 }
 
+/**
+ * Auto Layout candidate apply. Every nested field is parsed explicitly: an unparsed field
+ * is silently DROPPED over HTTP with no error (the repo-wide rule; it already bit
+ * pcb_add_trace_via's via-span fields), and here a dropped field means an operation that
+ * quietly does less than the candidate promised.
+ *
+ * Malformed operations are rejected HERE, as a 400 — not deep in the executor, where the
+ * only honest response to an impossible payload is to abort the transaction.
+ */
+function parsePcbApplyAutolayoutCandidateCommand(
+  raw: Record<string, unknown>,
+): DesignerPcbApplyAutolayoutCandidateCommand {
+  const jobId = asString(raw.jobId);
+  const candidateId = asString(raw.candidateId);
+  const snapshotDigest = asString(raw.snapshotDigest);
+  if (!jobId) throw new ValidationError("command.jobId must be a string");
+  if (!candidateId) {
+    throw new ValidationError("command.candidateId must be a string");
+  }
+  if (!snapshotDigest) {
+    throw new ValidationError("command.snapshotDigest must be a string");
+  }
+
+  const rawPlacements = Array.isArray(raw.placementOperations)
+    ? raw.placementOperations
+    : null;
+  const rawRoutes = Array.isArray(raw.routeOperations) ? raw.routeOperations : null;
+  if (!rawPlacements || !rawRoutes) {
+    throw new ValidationError(
+      "command.placementOperations and command.routeOperations must be arrays",
+    );
+  }
+  if (rawPlacements.length === 0 && rawRoutes.length === 0) {
+    throw new ValidationError(
+      "pcb_apply_autolayout_candidate requires at least one operation",
+    );
+  }
+  if (
+    rawPlacements.length > COMMIT_ROUTE_MAX_ITEMS ||
+    rawRoutes.length > COMMIT_ROUTE_MAX_ITEMS
+  ) {
+    throw new ValidationError(
+      `pcb_apply_autolayout_candidate accepts at most ${COMMIT_ROUTE_MAX_ITEMS} placement and ${COMMIT_ROUTE_MAX_ITEMS} route operations`,
+    );
+  }
+
+  const placementOperations = rawPlacements.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new ValidationError(
+        `command.placementOperations[${index}] must be an object`,
+      );
+    }
+    switch (asString(record.type)) {
+      case "pcb_move_placement":
+        return parsePcbMovePlacementCommand(record);
+      case "pcb_rotate_placement":
+        return parsePcbRotatePlacementCommand(record);
+      case "pcb_flip_placement":
+        return parsePcbFlipPlacementCommand(record);
+      default:
+        throw new ValidationError(
+          `command.placementOperations[${index}].type must be pcb_move_placement, pcb_rotate_placement or pcb_flip_placement`,
+        );
+    }
+  });
+
+  const routeOperations = rawRoutes.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new ValidationError(
+        `command.routeOperations[${index}] must be an object`,
+      );
+    }
+    switch (asString(record.type)) {
+      case "pcb_add_trace":
+        return parsePcbAddTraceCommand(record);
+      case "pcb_add_via":
+        return parsePcbAddViaCommand(record);
+      case "pcb_add_trace_via":
+        return parsePcbAddTraceViaCommand(record);
+      default:
+        throw new ValidationError(
+          `command.routeOperations[${index}].type must be pcb_add_trace, pcb_add_via or pcb_add_trace_via`,
+        );
+    }
+  });
+
+  // Provenance is recorded, never acted on — parsed leniently but explicitly, so an
+  // unknown field cannot ride into the command log.
+  const provenanceRecord = asRecord(raw.provenance) ?? {};
+  const engineVersionsRecord = asRecord(provenanceRecord.engineVersions);
+  const engineVersions = engineVersionsRecord
+    ? Object.fromEntries(
+        Object.entries(engineVersionsRecord).flatMap(([key, value]) => {
+          const version = asString(value);
+          return version ? [[key, version] as const] : [];
+        }),
+      )
+    : undefined;
+  const objectiveVersion = asString(provenanceRecord.objectiveVersion) ?? undefined;
+  const cloudSnapshotHash = asString(provenanceRecord.cloudSnapshotHash) ?? undefined;
+
+  return {
+    type: "pcb_apply_autolayout_candidate",
+    jobId,
+    candidateId,
+    snapshotDigest,
+    placementOperations,
+    routeOperations,
+    provenance: {
+      ...(engineVersions ? { engineVersions } : {}),
+      ...(objectiveVersion ? { objectiveVersion } : {}),
+      ...(cloudSnapshotHash ? { cloudSnapshotHash } : {}),
+    },
+  };
+}
+
 function parsePcbDeleteTraceCommand(
   raw: Record<string, unknown>,
 ): DesignerPcbDeleteTraceCommand {
@@ -2196,6 +2320,9 @@ function parseCommandEnvelope(body: unknown): DesignerCommandEnvelope {
     case "pcb_commit_route":
       command = parsePcbCommitRouteCommand(commandRecord);
       break;
+    case "pcb_apply_autolayout_candidate":
+      command = parsePcbApplyAutolayoutCandidateCommand(commandRecord);
+      break;
     case "pcb_delete_trace":
       command = parsePcbDeleteTraceCommand(commandRecord);
       break;
@@ -2367,7 +2494,31 @@ export function registerRoutes(
   router.delete("/designs/:designId", async ({ params }) => {
     const designId = params.getOrThrow("designId");
     await store.deleteDesign(designId);
+    clearActiveDesignIfMatches(designId);
     return new Response(null, { status: 204 });
+  });
+
+  // Which design the designer UI currently has focused. Pushed by the frontend
+  // tab store; read by external drivers (MCP) that have no tab state of their
+  // own. In-memory — see ./active-design.ts.
+  router.get("/active-design", () => success(getActiveDesignState()));
+
+  router.put("/active-design", async ({ req }) => {
+    const body = await parseJsonBody<unknown>(req);
+    if (typeof body !== "object" || body === null) {
+      throw new ValidationError("Body must be an object");
+    }
+    const { designId } = body as { designId?: unknown };
+    if (designId === null || designId === undefined) {
+      return success(setActiveDesignId(null));
+    }
+    if (typeof designId !== "string" || designId.trim().length === 0) {
+      throw new ValidationError("designId must be a non-empty string or null");
+    }
+    // Validate before storing so a reader never resolves a dangling id.
+    const design = await store.getDesign(designId);
+    if (!design) throw new NotFoundError(`Design '${designId}' not found`);
+    return success(setActiveDesignId(designId));
   });
 
   router.get("/designs/:designId/projection/schematic", async ({ params }) => {

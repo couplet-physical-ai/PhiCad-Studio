@@ -1511,6 +1511,58 @@ export interface DesignerPcbCommitRouteCommand {
   vias: Array<Omit<DesignerPcbAddViaCommand, "type">>;
 }
 
+/**
+ * A placement op inside an Auto Layout candidate (the 3-op union the placer emits).
+ * The `type` discriminator is KEPT — the ops arrive interleaved in one ordered list, and
+ * a component may be moved AND rotated AND flipped, so order and kind both matter.
+ */
+export type DesignerPcbCandidatePlacementOperation =
+  | DesignerPcbMovePlacementCommand
+  | DesignerPcbRotatePlacementCommand
+  | DesignerPcbFlipPlacementCommand;
+
+/** A copper op inside an Auto Layout candidate (the 3-op union the router emits). */
+export type DesignerPcbCandidateRouteOperation =
+  | DesignerPcbAddTraceCommand
+  | DesignerPcbAddViaCommand
+  | DesignerPcbAddTraceViaCommand;
+
+/**
+ * Atomic application of ONE cloud Auto Layout candidate: every placement move/rotate/flip
+ * AND every trace/via of that candidate land as one command → one revision → one undo
+ * entry.
+ *
+ * This exists because the previous cloud apply path dispatched one envelope per operation:
+ * a 40-op candidate produced 40 revisions and 40 undo entries, and a failure at op 30 left
+ * the board half-laid-out with no way back but 29 undos. Grouping cannot fix that after the
+ * fact — the earlier commands have already committed. Only a single command can.
+ *
+ * The handler PLANS everything first (validating against an in-memory transform map) and
+ * writes nothing until every operation is known good, because executor branches return
+ * error RESULTS rather than throwing: a mutation before a late error would be committed
+ * with the error.
+ *
+ * `snapshotDigest` is the desktop's content digest of the board the candidate was computed
+ * for (see backend/pcb/board-content-digest.ts) — NOT the revision, which view-state
+ * commands bump. The apply route rejects a stale candidate before dispatching.
+ */
+export interface DesignerPcbApplyAutolayoutCandidateCommand {
+  type: "pcb_apply_autolayout_candidate";
+  jobId: string;
+  candidateId: string;
+  snapshotDigest: string;
+  /** Applied in order — one component may be moved AND rotated AND flipped. */
+  placementOperations: DesignerPcbCandidatePlacementOperation[];
+  routeOperations: DesignerPcbCandidateRouteOperation[];
+  /** Recorded for history/debugging. Bounded on purpose — never the whole cloud result. */
+  provenance: {
+    engineVersions?: Record<string, string>;
+    objectiveVersion?: string;
+    /** The service's own snapshot hash, kept as provenance only. */
+    cloudSnapshotHash?: string;
+  };
+}
+
 export interface DesignerPcbDeleteTraceCommand {
   type: "pcb_delete_trace";
   traceId: string;
@@ -1747,6 +1799,7 @@ export type DesignerCommand =
   | DesignerPcbAddViaCommand
   | DesignerPcbAddTraceViaCommand
   | DesignerPcbCommitRouteCommand
+  | DesignerPcbApplyAutolayoutCandidateCommand
   | DesignerPcbDeleteTraceCommand
   | DesignerPcbDeleteViaCommand
   | DesignerPcbUpdateTraceGeometryCommand
