@@ -15,11 +15,22 @@ import type {
   PlaceOperation,
 } from "../../../../../../sdks/designer/cloud-autolayout";
 import type { PcbPlacedPart } from "../../../../../../sdks/designer";
-import type { AutoroutePreviewTrace } from "../../PcbScene";
 import {
   buildProposedTransforms,
   type ProposedTransform,
 } from "../../usePcbPlacePreview";
+
+/**
+ * Ghost trace, structurally identical to `AutoroutePreviewTrace` in PcbScene.tsx and
+ * assignable to it. Declared here rather than imported because this module is pure logic
+ * compiled by the backend tsconfig (its tests run under Bun), which does not enable JSX —
+ * importing a type out of a `.tsx` would drag the whole scene into that project.
+ */
+export interface CandidatePreviewTrace {
+  pointsNm: readonly { x: number; y: number }[];
+  layer: string;
+  widthMm: number;
+}
 
 export interface CandidatePreviewVia {
   centerMm: { x: number; y: number };
@@ -31,7 +42,7 @@ export interface AutoLayoutCandidatePreview {
   /** Ghost poses, keyed by placement id. Empty for an input-preserved candidate. */
   placementOverrides: Map<string, ProposedTransform>;
   /** Candidate copper, in the shape the scene's existing trace-ghost layer consumes. */
-  traces: AutoroutePreviewTrace[];
+  traces: CandidatePreviewTrace[];
   /**
    * Candidate vias. The scene has no via-ghost layer yet, so these are currently surfaced
    * as a count in the results UI rather than drawn — an honest gap, not a silent one.
@@ -62,7 +73,7 @@ export function buildCandidatePreview(
     ? buildProposedTransforms(placements, placeOps)
     : new Map<string, ProposedTransform>();
 
-  const traces: AutoroutePreviewTrace[] = [];
+  const traces: CandidatePreviewTrace[] = [];
   const vias: CandidatePreviewVia[] = [];
   for (const op of candidate.routeEnvelope?.operations ?? []) {
     const payload = op.payload;

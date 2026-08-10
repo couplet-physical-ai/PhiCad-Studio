@@ -3,6 +3,8 @@ import type { CoreBackendModuleContext } from "../../../core/contracts/modules/b
 import { MODULE_SDK_TOKENS } from "../../../sdks";
 import type { DesignerSDK } from "../../../sdks/designer";
 import type { LibrarySDK } from "../../../sdks/library";
+import { getActiveDesignId } from "./active-design";
+import { buildExportBundle } from "./export";
 import { pushCloudSnapshot, readLinkPublic } from "./cloud-sync";
 import { buildBoardSnapshot as buildBoardSnapshotFromProjection } from "./pcb/board-snapshot";
 import { runDrc } from "./drc/drc-engine";
@@ -39,6 +41,7 @@ export function buildDesignerSdk(ctx: CoreBackendModuleContext): DesignerSDK {
   return {
     createDesign: (input) => store.createDesign(input),
     listDesigns: () => store.listDesigns(),
+    getActiveDesignId: () => getActiveDesignId(),
     getDesign: (designId) => store.getDesign(designId),
     updateDesign: (designId, input) => store.updateDesign(designId, input),
     getSchematicProjection: (designId) =>
@@ -108,6 +111,25 @@ export function buildDesignerSdk(ctx: CoreBackendModuleContext): DesignerSDK {
       const projection = await store.getPcbProjection(designId);
       if (!projection) return null;
       return buildBoardSnapshotFromProjection(projection);
+    },
+    getBomProjection: (designId) => store.getBomProjection(designId),
+    getManufacturingExportSummary: async (designId, options) => {
+      const pcb = await store.getPcbProjection(designId);
+      if (!pcb) return null;
+      const schematic = await store.getSchematicProjection(designId);
+      const overrides = await store.listBomOverrides(designId);
+      const bundle = buildExportBundle(pcb, schematic, options ?? {}, overrides);
+      // Sizes only — the artifact text stays here. Callers wanting the bytes
+      // use the HTTP export route, which streams a ZIP.
+      return {
+        bundleName: bundle.bundleName,
+        warnings: bundle.warnings,
+        files: bundle.artifacts.map((artifact) => ({
+          kind: artifact.kind,
+          fileName: artifact.fileName,
+          bytes: artifact.text.length,
+        })),
+      };
     },
   };
 }

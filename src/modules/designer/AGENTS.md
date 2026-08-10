@@ -28,7 +28,8 @@ code.
 | Dataset capture             | `backend/capture/`                    |
 | Schematic canvas            | `frontend/components/SchematicCanvas.tsx` |
 | PCB canvas                  | `frontend/pcb/PcbCanvas.tsx`          |
-| Auto-layout dialog + config | `frontend/pcb/PcbAutoLayoutDialog.tsx`, `frontend/pcb/autolayout/config.ts` |
+| Auto Layout (dialog, run state, preview) | `frontend/pcb/autolayout/` |
+| Auto Layout backend (client, apply, routes) | `backend/autolayout/` |
 
 ## KEY ABSTRACTIONS
 
@@ -128,19 +129,28 @@ an import-whitelist change or a library re-query.
 
 ## AUTO-LAYOUT INTEGRATION
 
-- **Route apply is per-op cherry-pick; place apply is an all-or-nothing batch.** Route renders a
-  checkbox per operation and applies the selected subset through the normal command path with
-  per-op failure isolation. Place offers a single Accept/Reject over an interactive preview and
-  applies the whole diff. Only the **route** apply registers capture copper.
-- **Progress is polling-only.** Both dialogs poll status. `streamUrl` / `progressStream` are
-  received and discarded, and status responses carry no percentage — so the UI can only show a
-  static "working" state. Numeric metrics appear only in the completed result envelope.
-- **0 of 15 `PlaceWeights` are exposed.** Nine are not even declared on the hand-side type, and the
-  six that are declared are never set by the auto-layout config mapper. Treat "the weights are
-  wired" as false.
-- **`selectedIds` + a place-subset mode is the cheapest auto-place UX win.** The selection state
-  (`selectedPartIds`) already exists in the workspace store; only the `PlaceOptions` field and the
-  dialog wiring are missing.
+- **Three workflows, not one.** *Auto Layout* is one composite cloud job (`/v1/layout`) that
+  returns complete candidates; *Route Board* (`/v1/route`) routes the board as placed; *Auto Place*
+  (`/v1/place`) optimizes placement only. The old desktop-sequenced place→apply→route flow is gone
+  — it committed the placement before routing began, so a failure left a half-laid-out board.
+- **Apply semantics differ by workflow, deliberately.** A layout candidate applies ATOMICALLY
+  (`pcb_apply_autolayout_candidate`: plan everything, write nothing until all of it validates, one
+  revision, one undo). Route Board stays per-op cherry-pick; Auto Place stays an all-or-nothing
+  diff over its interactive ghost.
+- **Never validate through the mutating placement helpers.** `movePcbPlacement` / `rotate` / `flip`
+  upsert on call, and executor branches return error RESULTS rather than throwing — so validating
+  by calling them commits earlier writes when a later op fails. The pure planner
+  (`backend/pcb/autolayout-candidate-plan.ts`) exists for exactly this reason.
+- **Staleness is a content digest, not the revision.** `pcb_set_view_state` bumps the revision, so
+  revision equality would invalidate a candidate on a pan or a layer toggle. See
+  `backend/pcb/board-content-digest.ts` — and add new persisted board data to its projection.
+- **The renderer never sends candidate operations.** Apply carries `{jobId, candidateId,
+  snapshotDigest, applyRequestId}`; the backend re-fetches the candidate from the service.
+- **Transport types are GENERATED** from the service's emitted schemas
+  (`src/sdks/designer/cloud-autolayout`); `autoroute.ts` / `autoplace.ts` are aliases. Do not
+  hand-write a cloud shape — that is what produced the six-gap drift this replaced.
+- **Capabilities are negotiated as booleans.** Read `/v1/version` `engines.*.features`; never
+  compare engine version strings.
 
 ## HEADLESS PATHS
 
