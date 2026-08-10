@@ -31,6 +31,10 @@ import { flattenCutout, flattenOutline } from "./outline-geometry";
 import { placementPads } from "./pad-geometry";
 import { freePadOutlineWorldMm, padOutlineWorldMm } from "./pad-outline";
 import { buildSnapshotPourIslands } from "./board-snapshot-pours";
+import {
+  placementCourtyardWorldMm,
+  type RawFootprintLookup,
+} from "./courtyard";
 
 const STACKUP_ORDER: SnapshotCopperLayerId[] = [
   "F.Cu",
@@ -132,6 +136,13 @@ export interface BuildSnapshotOptions {
   placeOptions?: PlaceOptions;
   /** Serialize copper-pour islands into the snapshot. Default-off until service deploy flips. */
   serializePours?: boolean;
+  /**
+   * Optional raw-footprint lookup used to recover courtyard geometry for KiCad-imported
+   * footprints, whose render model has it stripped at import (see ./courtyard.ts). Omit
+   * for a projection-only build: courtyards then come from generated/drawn footprints
+   * only, and the service falls back to its pad-hull proxy for the rest.
+   */
+  lookupRawFootprint?: RawFootprintLookup;
 }
 
 export interface BuildSnapshotResult {
@@ -299,8 +310,11 @@ export function buildBoardSnapshot(
     );
   }
 
+  let courtyardCount = 0;
   const placements: SnapshotPlacement[] = projection.placements.map((p) => {
     const mountType = normalizeMountType(p.footprint.mountType);
+    const courtyard = placementCourtyardWorldMm(p, opts.lookupRawFootprint);
+    if (courtyard) courtyardCount += 1;
     return {
       id: p.id,
       reference: p.reference,
@@ -313,8 +327,19 @@ export function buildBoardSnapshot(
       // AUTHORITATIVE mount-type hint for cloud-auto-place's flip-eligibility/THT logic
       // (falls back to its own refdes heuristic when omitted — see snapshot.py Placement).
       ...(mountType ? { mountType } : {}),
+      // Real courtyard when the footprint has one; absent otherwise, so the service uses
+      // its pad-hull proxy rather than a courtyard we invented.
+      ...(courtyard ? { courtyardPolygon: courtyard } : {}),
     };
   });
+  // Only meaningful for a placement run: the router never reads courtyards, so warning on
+  // a route-only snapshot would be noise on every board.
+  if (opts.placeOptions && projection.placements.length > 0 && courtyardCount === 0) {
+    warnings.push(
+      "No footprint courtyards available — cloud placement approximates each component " +
+        "from its pad hull. KiCad-imported footprints drop courtyard layers at import.",
+    );
+  }
 
   const pours = opts.serializePours ? buildSnapshotPourIslands(projection) : [];
   // Not "the router can't use pours" (Phase 5 pour-aware routing ships) — this call
