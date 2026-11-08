@@ -101,6 +101,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
 });
 
 contextBridge.exposeInMainWorld("updater", {
+  policy: (): Promise<{
+    networkChecksEnabled: boolean;
+    optInEnv: string;
+  }> => ipcRenderer.invoke("updater:policy"),
   check: (): Promise<void> => ipcRenderer.invoke("updater:check"),
   download: (): Promise<void> => ipcRenderer.invoke("updater:download"),
   install: (): Promise<void> => ipcRenderer.invoke("updater:install"),

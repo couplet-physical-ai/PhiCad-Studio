@@ -1,6 +1,6 @@
 {
   "id": "assistant",
-  "label": "Assistant",
+  "label": "MCP server",
   "version": "0.2.0",
   "apiVersion": 2,
   "namespace": "space.assistant",
@@ -8,11 +8,11 @@
   "enabled": true,
   "availability": "all",
   "sidebar": {
-    "label": "Assistant",
+    "label": "MCP server",
     "icon": "Bot",
     "order": 30,
     "group": "ai",
-    "hidden": false
+    "hidden": true
   },
   "runtime": {
     "backendEntry": "module.backend.ts",

@@ -15,6 +15,20 @@ import { expect, test, type Page } from "@playwright/test";
  * hiding the feature entirely.
  */
 
+// The Auto Layout entry points are only rendered when the frontend knows where
+// OpenPCB Cloud is (readCloudConfig().enabled needs VITE_SUPABASE_URL,
+// VITE_SUPABASE_ANON_KEY and VITE_CLOUD_API_URL at build time — the dev server
+// reads them from .env / .env.e2e, see playwright.config.ts). PhiCad-Studio
+// ships no cloud configuration, and CI has none, so without it every
+// test below would fail on a hidden button rather than on the behaviour it
+// checks. Skip with the reason instead, the same way cloud-sync.spec.ts does.
+const cloudEnv = ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY", "VITE_CLOUD_API_URL"];
+const missingCloudEnv = cloudEnv.filter((k) => !process.env[k]);
+test.skip(
+  missingCloudEnv.length > 0,
+  `OpenPCB Cloud not configured (missing ${missingCloudEnv.join(", ")})`,
+);
+
 const AUTOLAYOUT_ROUTE = "**/api/modules/designer/designs/*/autolayout";
 const AUTOLAYOUT_JOB_ROUTE = "**/api/modules/designer/designs/*/autolayout/*";
 const APPLY_ROUTE = "**/api/modules/designer/designs/*/autolayout/apply";

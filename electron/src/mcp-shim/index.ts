@@ -1,16 +1,15 @@
 /**
  * `openpcb-mcp` — stdio ⇄ Streamable HTTP bridge.
  *
- * Claude Desktop (and any client that only speaks stdio) cannot reach the
- * Streamable HTTP endpoint the backend serves, so this process sits between
- * them. It is a dumb pipe at the transport level: whatever arrives on stdin is
+ * MCP clients can use stdio while Studio's backend serves
+ * Streamable HTTP, so this process sits between them. It is a dumb pipe at the transport level: whatever arrives on stdin is
  * forwarded to the HTTP transport and vice versa. Session semantics
  * (`Mcp-Session-Id`, resumption) are entirely the HTTP transport's business,
  * and stdio has none, so there is nothing to translate.
  *
  * The app must already be running — see `discoverPortfile`. There is no
  * headless fallback on purpose: two writers on one SQLite file is a worse
- * failure mode than a clear "start OpenPCB" message.
+ * failure mode than a clear "start PhiCad-Studio" message.
  */
 
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -35,7 +34,9 @@ const CLIENT_NAME = "openpcb-mcp-shim";
 /** Electron's `app.getPath("userData")` locations, reproduced without Electron. */
 function userDataDirs(): string[] {
   const home = homedir();
-  const names = ["OpenPCB", "openpcb-electron"];
+  // New branded location first; historical names stay readable so upgrades do
+  // not strand a running app's protected per-launch portfile.
+  const names = ["PhiCad-Studio", "OpenPCB", "openpcb-electron"];
   switch (platform()) {
     case "darwin":
       return names.map((n) => join(home, "Library", "Application Support", n));
@@ -95,7 +96,7 @@ function discoverPortfile(): Portfile {
     }
     if (parsed.version !== SUPPORTED_PORTFILE_VERSION) {
       fail(
-        `portfile at ${path} is version ${parsed.version}, this shim understands ${SUPPORTED_PORTFILE_VERSION}. Update OpenPCB or your MCP client config.`,
+        `portfile at ${path} is version ${parsed.version}, this shim understands ${SUPPORTED_PORTFILE_VERSION}. Update PhiCad-Studio or your MCP client configuration.`,
       );
     }
     // A file left by a crashed run points at a dead port; treating it as live
@@ -104,7 +105,7 @@ function discoverPortfile(): Portfile {
     return parsed;
   }
   fail(
-    `OpenPCB is not running (no live portfile found). Start OpenPCB, then retry.\nLooked in:\n  ${checked.join("\n  ")}`,
+    `PhiCad-Studio is not running (no live portfile found). Start Studio, then retry.\nLooked in:\n  ${checked.join("\n  ")}`,
   );
 }
 
@@ -134,7 +135,9 @@ async function main(): Promise<void> {
 
   http.onmessage = (message) => {
     void stdio.send(message).catch((error: unknown) => {
-      process.stderr.write(`openpcb-mcp: stdout write failed: ${String(error)}\n`);
+      process.stderr.write(
+        `openpcb-mcp: stdout write failed: ${String(error)}\n`,
+      );
       shutdown(1);
     });
   };

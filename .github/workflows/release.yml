@@ -414,7 +414,7 @@ jobs:
           printf '  %s\n' "${files[@]}"
           # Auto-append CoreLibrary bundle info so the release notes are
           # auditable without digging into workflow logs.
-          notes="Unsigned beta builds (electron-builder). macOS arm64/x64 dmg+zip, Windows x64 NSIS+portable, Linux x64 AppImage/deb/rpm. Auto-update via electron-updater consumes the attached latest*.yml feeds.
+          notes="Unsigned beta builds (electron-builder). macOS arm64/x64 dmg+zip, Windows x64 NSIS+portable, Linux x64 AppImage/deb/rpm. Runtime update checks are disabled by default; an operator must explicitly launch with PHICAD_STUDIO_ENABLE_UPDATES=1 to opt in to the attached latest*.yml feeds.
 
           macOS Gatekeeper and Windows SmartScreen will warn on first launch — these builds are not Developer ID signed or notarized. **Verify your download against \`SHA256SUMS.txt\`** (attached): \`sha256sum -c SHA256SUMS.txt --ignore-missing\` on Linux/Windows, \`shasum -a 256 -c SHA256SUMS.txt --ignore-missing\` on macOS.
 

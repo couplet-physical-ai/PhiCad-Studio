@@ -1,10 +1,9 @@
 <div align="center">
-  <img src="electron/icon.png" alt="OpenPCB" width="120" />
-  <h1>OpenPCB</h1>
-  <p><strong>Modular, open desktop PCB design suite — schematic capture, PCB layout, design rule checking, manufacturing output and a unified component library in one app.</strong></p>
+  <h1>PhiCad-Studio</h1>
+  <p><strong>OpenPCB-based visual PCB workspace for schematic capture, PCB layout, design review, and manufacturing export.</strong></p>
 
   <p>
-    <a href="https://github.com/OpenPCB-app/OpenPCB/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/OpenPCB-app/OpenPCB?include_prereleases&label=release" /></a>
+    <img alt="status" src="https://img.shields.io/badge/status-experimental-orange" />
     <img alt="license" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" />
     <img alt="platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" />
   </p>
@@ -12,117 +11,130 @@
 
 ---
 
-OpenPCB takes a board from idea to fabrication in one workspace: draw the schematic, lay out the
-PCB, check it against real manufacturing rules, and export the files your fab house asks for. No
-separate tools for capture, layout and library management, no account, no cloud service in the
-loop — it runs on your machine and your designs stay there.
+Created at [Exowatt](https://exowatt.com). Published under the vendor-neutral
+[couplet-physical-ai](https://github.com/couplet-physical-ai) organization.
 
-It is free and open source, dual-licensed AGPL-3.0-or-later and commercially.
+**Built on [OpenPCB](https://github.com/OpenPCB-app/OpenPCB).** PhiCad-Studio preserves OpenPCB's
+local ECS, command history, DRC, library snapshots, and manufacturing export, and adds a bounded,
+offline Circuit JSON preview on top. Fork source, history, the upstream source link, original
+copyright notices, [`LICENSE`](LICENSE), and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+retain their AGPL-3.0-or-later terms.
 
-> **Status: public beta.** The schematic editor, the component library and the
-> manufacturing export path are usable for real boards. PCB layout and DRC are shipped and actively
-> hardening. Expect rough edges, and read the [known issues](#known-issues-on-first-launch) before
-> your first launch.
+Studio takes a board from idea to fabrication in one local workspace: draw the schematic, lay out
+the PCB, check it against manufacturing rules, and export the files your fab house asks for.
 
-## Download
+## Status
 
-Grab the latest build from [**Releases**](https://github.com/OpenPCB-app/OpenPCB/releases/latest).
+**Experimental.** This OpenPCB fork carries generic improvements as a patch on upstream history.
+A release workflow is present, but no releases or downloadable artifacts have been published yet;
+run it from source (below). No support commitment.
 
-| Platform | File                          | Notes                                    |
-| -------- | ----------------------------- | ---------------------------------------- |
-| macOS    | `.dmg` / `.zip` (arm64 + x64) | Unsigned — see the install guide          |
-| Windows  | `Setup.exe` (NSIS installer)  | Unsigned — SmartScreen warns on first run |
-| Linux    | `.AppImage` / `.deb` / `.rpm` | AppImage needs `chmod +x`                 |
+## What this fork adds over upstream OpenPCB
 
-Every release attaches `SHA256SUMS.txt`. Verify your download before running it:
+- **Circuit JSON preview** (`src/shared/tscircuit-runtime/`): a lazy, offline, sandboxed worker
+  that validates externally supplied [Circuit JSON](https://github.com/tscircuit/tscircuit) and
+  renders a read-only build preview. It never writes to the native design, never evaluates code,
+  and makes no network request. This is preview-only: native DRC, layout, and manufacturing export
+  remain OpenPCB's own, unmodified authority.
+- A handful of upstream-style fixes and hardening carried over from the private fork history (see
+  `git log` for the individual patch commits on top of the upstream merge base).
+
+## Install and run
+
+Node.js 22+ and [Bun](https://bun.sh) are required; this is a source checkout, not a packaged app.
 
 ```bash
-shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+npm ci
+npm run dev           # backend (Bun) + frontend (Vite), browser mode
+# or
+npm run build && npm run dev:electron   # desktop shell
 ```
 
-Beta builds are **not code-signed**, so macOS Gatekeeper and Windows SmartScreen will both object
-the first time. [`electron/README-BETA-INSTALL.md`](electron/README-BETA-INSTALL.md) has the
-per-platform steps, including checksum verification.
+See [`DEVELOPER.md`](DEVELOPER.md) for the full command list, environment variables, and module
+layout (most of it is unmodified upstream OpenPCB documentation).
 
-## What it does
+## What the OpenPCB foundation provides
 
 **Schematic capture.** Place symbols, route wires on a Manhattan grid, add net labels and
-junctions. Nets are extracted from geometry rather than hand-maintained, ERC runs over the result,
-and everything is undoable — every edit goes through a command with an inverse patch, so undo and
-redo survive an app restart.
+junctions. Nets are extracted from geometry, ERC runs over the result, and edits go through
+commands with inverse patches so undo and redo survive restart.
 
-**PCB layout.** Route traces in Manhattan and 45° modes with live snapping, place vias with a
-layer switch, see an MST ratsnest of what is still unconnected, and draw a board outline —
-including custom board shapes with dimensioned sketching. Placements sync automatically from the
-schematic, so the layout always reflects the current netlist. Length tuning, bundle routing and
-walkaround are present but still behind development flags while they finish manual QA.
+**PCB layout.** Route traces in Manhattan and 45° modes, place vias with a layer switch, inspect
+the ratsnest, and draw a board outline. Placements synchronize from the schematic so layout
+reflects the native netlist.
 
-**Design rule checking.** DRC runs live while you work and as a batch check, with fabricator
-profiles, net-class-aware clearance resolution, IPC-2221B-derived electrical checks, signal
-integrity checks for differential pairs, length matching, and stable violation identities so a
-waiver you grant stays granted. Violations carry the geometry that produced them, not just a
-message.
+**Design rule checking.** Native DRC runs live and as a batch check with fabricator profiles,
+net-class-aware clearances, electrical checks, and stable violation identities.
 
-**Manufacturing export.** Gerber X2, Excellon drill, bill of materials and pick-and-place, bundled
-into a single ZIP ready to upload. Silkscreen text is rasterized into the Gerber output rather than
-dropped, and the export path handles 2- and 4-layer stackups.
+**Manufacturing export.** Gerber X2, Excellon drill, bill of materials, and pick-and-place can be
+bundled into a ZIP. Only the native design is fabrication-authoritative; the Circuit JSON preview
+can never enable or claim this export.
 
-**Component library.** A bundled library of more than two hundred parts ships with the app —
-symbols, footprints and 3D models, signed and integrity-checked at build time. You can add your
-own: import KiCad `.kicad_sym` and `.kicad_mod` files, generate footprints from IPC-7351B presets,
-draw them by hand in the built-in editors, or upload STEP models that are converted to GLB for the
-3D board preview. Parts carry the metadata you actually need downstream — subcategory, datasheet
-links, keywords and manufacturer part numbers.
+**Component library and 3D.** The built-in OpenPCB library includes symbols, footprints, and 3D
+models (`resources/core-library/` — an upstream OpenPCB asset, kept with upstream attribution).
+Studio retains KiCad library import, IPC-7351B footprint generation, built-in editors, and
+STEP-to-GLB preview.
 
-**Documentation alongside your designs.** The Knowledge module keeps project notes, datasheets and
-reference material in the same app as the board: a page tree with a rich-text editor, PDFs stored
-as pages, and text or markdown import.
+**Cross-platform desktop.** macOS (arm64 and x64), Windows x64, and Linux x64, via Electron.
+Historical internal identifiers such as the `openpcb://` deep-link scheme and app-data keys remain
+for compatibility with upstream OpenPCB installs.
 
-**AI assistant.** Optional, and pointed at whichever provider you choose — OpenAI, or a local
-Ollama or LM Studio endpoint. It can read your design and it can change it: non-destructive edits
-apply directly, while destructive ones are held for your explicit approval. It is off until you
-configure a provider, and no design data leaves your machine unless you point it at a hosted model.
+## MCP / AI agent connection
 
-**A fast canvas.** One React Three Fiber renderer is shared by every editor, with demand rendering
-and integer-nanometre geometry throughout — pan and zoom stay smooth on large boards, and the same
-coordinates that draw the screen drive DRC and export.
+Packaged and dev builds include an `openpcb-mcp` stdio shim and an in-process Streamable HTTP MCP
+server (`src/modules/assistant/backend/mcp/`), both from upstream OpenPCB's own assistant module.
+Settings → **MCP client** → **MCP server** lets you enable it (off by default) and copy a ready-made client config
+for any MCP client. The shim reads a mode-`0600`, per-launch portfile and forwards an ephemeral
+bearer token; it does not read or store model-provider credentials. See
+[`docs/mcp-setup.md`](docs/mcp-setup.md) for setup steps.
 
-**Cross-platform desktop.** macOS (arm64 and x64), Windows x64, Linux x64. Auto-update is live on
-Windows and Linux.
+Settings → **MCP client** exposes only this protected bridge; there is no in-app model chat or
+OpenAI-compatible endpoint configuration in the panel. Connect your own MCP client and manage its
+model credentials outside Studio.
 
-## Known issues on first launch
+## Known limitations
 
-- **Builds are unsigned.** macOS reports that the developer cannot be verified; Windows SmartScreen
-  shows a blue warning. Both are expected for this beta and both have a documented workaround in
-  the [install guide](electron/README-BETA-INSTALL.md). Verify `SHA256SUMS.txt` — that is the real
-  integrity check while signing is deferred.
-- **macOS does not auto-update.** Squirrel.Mac rejects an ad-hoc signature, so the app falls back
-  to a notify-only check that links to the latest release. Windows and Linux update in place.
-- **The Linux AppImage needs `chmod +x`** before it will run, and its desktop and protocol
-  integration depends on your desktop environment. The `.deb` and `.rpm` packages use the system
-  registration and are more reliable there.
-- **The board panel still shows a fixed "2-layer" label.** The export path handles 4-layer boards
-  and the underlying model goes further, but the layer-count picker is not built yet.
+- Circuit JSON validation is structural/build-preview only: copper, pours, keepouts, slots,
+  cutouts, courtyards, layer-stack semantics, and connectivity are reported as blockers for native
+  materialization rather than silently discarded. There is no write path from the preview into the
+  native design.
+- The bundled `resources/core-library/openpcb-core-library-0.1.0-beta.1.opclib` has no signature
+  recognized by this build's trust check; a from-source run still works, but packaged-build
+  signature verification (an upstream OpenPCB feature) will show `no-signature` until OpenPCB
+  itself ships a signed archive.
+- Builds here are from source only; this fork does not currently publish signed, packaged
+  releases.
 
-## License
+## License and attribution
 
-OpenPCB is dual-licensed:
+Distributed under **AGPL-3.0-or-later**; see [`LICENSE`](LICENSE) for the full text. OpenPCB and
+its contributors retain their copyright and upstream history — this repository is a fork, not a
+derivative identity, and does not use OpenPCB's name or logo as its own branding. Network users
+interacting with a modified, served build of this AGPL software are entitled to corresponding
+source for that exact build; this repository **is** that source.
 
-- **AGPL-3.0-or-later** for community and open-source use. See [`LICENSE`](LICENSE) for the full
-  text.
-- **A commercial license** for organizations that cannot meet AGPL's source-disclosure obligations.
-  Contact `licensing@openpcb.app`.
+Circuit JSON preview dependencies and their licenses are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Documentation
 
-| Document                             | For                                                             |
-| ------------------------------------ | --------------------------------------------------------------- |
-| [`ROADMAP.md`](ROADMAP.md)           | What is shipped, what is next, what is out of scope              |
-| [`DEVELOPER.md`](DEVELOPER.md)       | Architecture, running from source, commands, module system       |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Quick start, pre-PR checklist, conventions                       |
-| [`SECURITY.md`](SECURITY.md)         | Reporting a vulnerability                                        |
+| Document | For |
+| --- | --- |
+| [`DEVELOPER.md`](DEVELOPER.md) | Upstream architecture and command reference |
+| [`docs/designer/`](docs/designer/) | Schematic/PCB implementation notes (mostly upstream) |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
 
-Bug reports and feature requests go to
-[GitHub issues](https://github.com/OpenPCB-app/OpenPCB/issues). For architecture-shaping changes,
-open an issue before the pull request. By contributing you agree to license your contributions
-under AGPL-3.0-or-later.
+For upstream OpenPCB behavior, see [OpenPCB-app/OpenPCB](https://github.com/OpenPCB-app/OpenPCB).
+
+## Contributing
+
+See [CONTRIBUTING](https://github.com/couplet-physical-ai/.github/blob/main/CONTRIBUTING.md). Contributions
+require DCO sign-off (`git commit -s`); no CLA is required.
+
+## Security
+
+Please report vulnerabilities privately using
+[GitHub private vulnerability reporting](https://github.com/couplet-physical-ai/PhiCad-Studio/security/advisories/new),
+or contact software@exowatt.com. See the
+[security policy](https://github.com/couplet-physical-ai/.github/blob/main/SECURITY.md); do not open a public
+issue.

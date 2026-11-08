@@ -18,13 +18,8 @@ export function CloudValueCard() {
   return (
     <section className="rounded-control border border-border bg-surface-panel px-4 py-[14px]">
       <div className="flex items-center gap-2">
-        <Cloud
-          className="h-[18px] w-[18px] text-selection"
-          strokeWidth={1.8}
-        />
-        <h3 className="text-sm font-medium text-text-strong">
-          OpenPCB Cloud
-        </h3>
+        <Cloud className="h-[18px] w-[18px] text-selection" strokeWidth={1.8} />
+        <h3 className="text-sm font-medium text-text-strong">Studio Cloud</h3>
         <span className="ml-auto rounded-full bg-selection-soft px-2 py-0.5 text-xs font-medium text-selection">
           Paid
         </span>

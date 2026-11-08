@@ -17,7 +17,10 @@ import { ModuleRuntime } from "../modules/module-loader";
 import { ModuleRouterRegistry } from "../router/module-registry";
 import { getDb } from "../../../modules/library/backend/queries";
 import { releases } from "../../../modules/library/backend/schema";
-import { importOpclib } from "../../../modules/library/backend/sync/opclib-importer";
+import {
+  assertTrustedCoreLibrary,
+  importOpclib,
+} from "../../../modules/library/backend/sync/opclib-importer";
 import { readOpclibFromBytes } from "../../../modules/library/backend/sync/opclib-reader";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
@@ -170,6 +173,25 @@ describe("opclib signature verification at import time", () => {
       .where(eq(releases.sourceId, "test.signed"))
       .get();
     expect(row?.signatureValid).toBe(0);
+  });
+
+  test("rejects a non-core package at the bundled CoreLibrary boundary", () => {
+    const { bytes } = buildPackage({});
+    const pkg = readOpclibFromBytes(bytes);
+
+    expect(() => assertTrustedCoreLibrary(pkg)).toThrow(
+      /CORE_LIBRARY_TRUST_BLOCKED: bundled CoreLibrary source id is test\.signed; expected openpcb\.core/,
+    );
+  });
+
+  test("marks an unsigned bundled CoreLibrary as a startup trust blocker", () => {
+    const { bytes } = buildPackage({});
+    const pkg = readOpclibFromBytes(bytes);
+    pkg.manifest.library.id = "openpcb.core";
+
+    expect(() => assertTrustedCoreLibrary(pkg)).toThrow(
+      /CORE_LIBRARY_TRUST_BLOCKED: bundled CoreLibrary signature verification failed.*reason=no-signature/,
+    );
   });
 
   test("rejects unsigned package when requireSignature=true", async () => {

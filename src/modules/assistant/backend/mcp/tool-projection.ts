@@ -30,9 +30,7 @@ import type { McpSession, McpSessionRegistry } from "./session";
  */
 
 /** Tools that are destructive rather than merely mutating. */
-const DESTRUCTIVE_TOOLS = new Set([
-  "designer_propose_schematic_deletions",
-]);
+const DESTRUCTIVE_TOOLS = new Set(["designer_propose_schematic_deletions"]);
 
 /**
  * Tools that operate on a design and therefore accept `designId`. Detected from
@@ -147,7 +145,7 @@ export function registerUseDesignTool(
     "designer_use_design",
     {
       description:
-        "Pin this MCP session to a design so later calls do not need designId. The pin beats the design the user has focused in the OpenPCB UI; pass null to drop it and follow the UI again. Call designer_list_designs first to get an id.",
+        "Pin this MCP session to a design so later calls do not need designId. The pin beats the design focused in PhiCad-Studio; pass null to drop it and follow the UI again. Call designer_list_designs first to get an id.",
       inputSchema: fromJsonSchema<{ designId?: string | null }>({
         type: "object",
         properties: {
@@ -172,7 +170,7 @@ export function registerUseDesignTool(
           content: [
             {
               type: "text" as const,
-              text: "Pin cleared; following the design focused in OpenPCB.",
+              text: "Pin cleared; following the design focused in Studio.",
             },
           ],
           structuredContent: { pinnedDesignId: null },

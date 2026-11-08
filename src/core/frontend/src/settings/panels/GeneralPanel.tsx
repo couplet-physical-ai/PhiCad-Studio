@@ -3,7 +3,7 @@ import { FolderOpen, RefreshCw } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@shared/frontend/ui/button";
 
-const REPO_URL = "https://github.com/andrejvysny/OpenPCB";
+const REPO_URL = "https://github.com/couplet-physical-ai/PhiCad-Studio";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -24,6 +24,8 @@ function DesktopOnlyNote({ children }: { children: ReactNode }) {
 
 function statusLabel(status: UpdaterStatus | null): string {
   switch (status?.state) {
+    case "disabled":
+      return status.reason;
     case "checking":
       return "Checking for updates…";
     case "current":
@@ -46,9 +48,22 @@ function UpdatesSection() {
   const [status, setStatus] = useState<UpdaterStatus | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
   const [checking, setChecking] = useState(false);
+  const [policy, setPolicy] = useState<{
+    networkChecksEnabled: boolean;
+    optInEnv: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!updater) return;
+    void updater
+      .policy()
+      .then(setPolicy)
+      .catch(() =>
+        setPolicy({
+          networkChecksEnabled: false,
+          optInEnv: "PHICAD_STUDIO_ENABLE_UPDATES",
+        }),
+      );
     updater.onStatus((next) => {
       setStatus(next);
       setChecking(next.state === "checking");
@@ -61,7 +76,7 @@ function UpdatesSection() {
     return (
       <Section title="Updates">
         <DesktopOnlyNote>
-          Updates are managed by the OpenPCB desktop app.
+          Updates are managed by the PhiCad-Studio desktop app.
         </DesktopOnlyNote>
       </Section>
     );
@@ -76,9 +91,11 @@ function UpdatesSection() {
     <Section title="Updates">
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm text-text-secondary">
-          {percent !== null && status?.state !== "downloaded"
-            ? `Downloading… ${Math.round(percent)}%`
-            : statusLabel(status)}
+          {policy && !policy.networkChecksEnabled
+            ? `Runtime update checks are disabled by default. Set ${policy.optInEnv}=1 before launch to opt in.`
+            : percent !== null && status?.state !== "downloaded"
+              ? `Downloading… ${Math.round(percent)}%`
+              : statusLabel(status)}
         </p>
         <Button
           variant="secondary"
@@ -90,7 +107,7 @@ function UpdatesSection() {
             />
           }
           onClick={check}
-          disabled={checking}
+          disabled={checking || policy?.networkChecksEnabled !== true}
           className="cursor-pointer"
         >
           Check for updates
@@ -131,7 +148,8 @@ function UpdatesSection() {
       ) : null}
 
       <p className="text-xs text-text-tertiary">
-        Updates are downloaded from{" "}
+        Studio makes no runtime update request unless locally opted in. Releases
+        remain available from{" "}
         <a
           href={`${REPO_URL}/releases`}
           target="_blank"
@@ -195,9 +213,7 @@ function FilesSection() {
             className="flex items-center justify-between gap-3"
           >
             <div className="min-w-0">
-              <p className="text-sm text-text">
-                {row.label}
-              </p>
+              <p className="text-sm text-text">{row.label}</p>
               <p
                 className="truncate font-mono text-xs text-text-tertiary"
                 title={row.path}
@@ -226,9 +242,7 @@ export function GeneralPanel() {
   return (
     <div className="space-y-8 pb-24">
       <div className="space-y-1">
-        <h2 className="text-base font-semibold text-text-strong">
-          General
-        </h2>
+        <h2 className="text-base font-semibold text-text-strong">General</h2>
         <p className="text-sm text-text-secondary">
           Appearance, updates, and local files.
         </p>

@@ -78,6 +78,7 @@ declare global {
 
   // Mirrors UpdaterState in electron/src/main/updater.ts.
   type UpdaterStatus =
+    | { state: "disabled"; reason: string }
     | { state: "checking" }
     | { state: "current" }
     | { state: "available"; version: string; notes: string | null }
@@ -92,6 +93,10 @@ declare global {
   }
 
   interface ElectronUpdater {
+    policy(): Promise<{
+      networkChecksEnabled: boolean;
+      optInEnv: string;
+    }>;
     check(): Promise<void>;
     download(): Promise<void>;
     install(): Promise<void>;

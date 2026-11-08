@@ -14,6 +14,11 @@ import {
   removeMcpPortfile,
   writeMcpPortfile,
 } from "./mcp-portfile.js";
+import { isCoreLibraryTrustError } from "../../../src/shared/core-library-trust";
+import {
+  enforcePackagedCoreLibraryTrust,
+  coreLibrarySignatureRequired,
+} from "./product-policy.js";
 
 const log = electronLog.scope("backend");
 
@@ -64,6 +69,14 @@ function configureBackendEnvironment(): void {
     ? "production"
     : "development";
   process.env.OPENPCB_SENTRY_RELEASE = `openpcb@${app.getVersion()}`;
+  // Product builds never inherit a permissive CoreLibrary trust setting. Dev
+  // keeps upstream compatibility and can opt into strict verification.
+  enforcePackagedCoreLibraryTrust(app.isPackaged);
+  log.info(
+    `CoreLibrary signature policy: ${
+      coreLibrarySignatureRequired(app.isPackaged) ? "required" : "development-warning"
+    }`,
+  );
   // B11: the backend runs in-process here, so it must honour the same single
   // consent decision as Electron main and the renderer. Without this it would
   // fall back to "no opt-in recorded" and stay off, which is the safe default.
@@ -142,7 +155,14 @@ async function startRuntimeWithRequiredModules(): Promise<StartedBackendRuntime>
   try {
     assertRequiredModulesLoaded(runtime.snapshot);
     return runtime;
-  } catch {
+  } catch (error) {
+    // Trust failures are product blockers, not schema drift. Never delete user
+    // data and retry around a CoreLibrary verification failure.
+    if (isCoreLibraryTrustError(error)) {
+      await closeCurrentRuntime();
+      throw error;
+    }
+
     // Pre-1.0 desktop builds are allowed to discard local data. This recovers
     // stale development databases after schema resets instead of surfacing
     // misleading module 404s to the renderer.

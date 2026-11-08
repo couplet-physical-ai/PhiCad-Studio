@@ -23,6 +23,7 @@
  *      the embedded `.opclib` from it.
  *
  * Validation (mirrors the runtime import invariants in opclib-importer.ts):
+ *   - a valid Ed25519 signature resolving to a committed `resources/keys/*.pub`
  *   - `library.id === "openpcb.core"`
  *   - `components.length >= OPENPCB_CORELIB_MIN_COMPONENTS` (default 10)
  *   - 3D completeness: every footprint's referenced 3D model exists and ships a
@@ -44,10 +45,15 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { strFromU8, unzipSync } from "fflate";
+import {
+  verifyManifest,
+  type OpclibManifest,
+} from "@openpcb/opclib-pack";
 
 const MIN_COMPONENTS = Number(
   process.env.OPENPCB_CORELIB_MIN_COMPONENTS ?? "10",
 );
+const TRUSTED_KEYS_DIR = path.resolve(import.meta.dir, "..", "resources", "keys");
 
 function fail(msg: string): never {
   console.error(`[verify-packaged] FAIL: ${msg}`);
@@ -169,7 +175,22 @@ function validateOpclibBytes(opclibBytes: Uint8Array, label: string): string {
   });
   const manifestBytes = inner["library.json"];
   if (!manifestBytes) fail(`library.json missing from ${label}`);
-  const manifest = JSON.parse(strFromU8(manifestBytes));
+  const manifest = JSON.parse(strFromU8(manifestBytes)) as OpclibManifest;
+
+  const verdict = verifyManifest(manifest, {
+    resolveKey: (keyId) => {
+      if (!/^[A-Za-z0-9._-]+$/.test(keyId)) return undefined;
+      const keyPath = path.join(TRUSTED_KEYS_DIR, `${keyId}.pub`);
+      return existsSync(keyPath) ? readFileSync(keyPath, "utf8") : undefined;
+    },
+  });
+  if (!verdict.valid) {
+    fail(
+      `${label}: CoreLibrary trust blocker: signature verification failed ` +
+        `(reason=${verdict.reason ?? "unknown"}, keyId=${verdict.keyId ?? "none"}). ` +
+        `Refusing to mark this package as releasable.`,
+    );
+  }
 
   if (manifest.library?.id !== "openpcb.core") {
     fail(

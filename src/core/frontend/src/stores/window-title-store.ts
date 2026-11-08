@@ -11,7 +11,7 @@ interface WindowTitleState {
 
 /**
  * Window-title context. Screens push what they are showing (e.g. the active
- * design name); `TitleBar` renders `OpenPCB — {subtitle}` and mirrors the same
+ * design name); `TitleBar` renders `PhiCad-Studio — {subtitle}` and mirrors the same
  * value onto `document.title`.
  */
 export const useWindowTitleStore = create<WindowTitleState>((set) => ({

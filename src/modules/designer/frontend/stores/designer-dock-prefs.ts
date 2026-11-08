@@ -7,11 +7,17 @@
  * `dock-open` / `dock-width` / `dock-tab`.
  *
  * The legacy keys are read once (never written again) so a returning user keeps
- * roughly the layout they left: a user who had the chat dock open lands on the
- * Assistant tab, and the inspector's width seeds the dock width.
+ * roughly the layout they left. `assistant` remains a readable value solely for
+ * preference compatibility; V1 exposes an external MCP client instead of an
+ * embedded agent and falls back to the first available dock tab.
  */
 
-export type DockTab = "properties" | "drc" | "erc" | "assistant";
+export type DockTab =
+  | "properties"
+  | "drc"
+  | "erc"
+  | "assistant"
+  | "build-preview";
 
 export const DOCK_OPEN_KEY = "openpcb:designer:dock-open";
 export const DOCK_WIDTH_KEY = "openpcb:designer:dock-width";
@@ -73,7 +79,8 @@ function isDockTab(value: string | null): value is DockTab {
     value === "properties" ||
     value === "drc" ||
     value === "erc" ||
-    value === "assistant"
+    value === "assistant" ||
+    value === "build-preview"
   );
 }
 
@@ -124,8 +131,8 @@ export function readDockPrefs(
     readNumber(get(LEGACY_CHAT_WIDTH_KEY));
 
   return {
-    // The chat dock was opt-in; having it open means the user wanted the
-    // assistant, so land on that tab.
+    // Preserve the historical value; the designer resolves it to the first
+    // available V1 tab without rewriting a user's stored preference eagerly.
     tab: chatOpen === true ? "assistant" : DEFAULT_DOCK_TAB,
     open: chatOpen === true ? true : (inspectorOpen ?? DEFAULT_DOCK_OPEN),
     width: legacyWidth === null ? DEFAULT_DOCK_WIDTH : clampWidth(legacyWidth),

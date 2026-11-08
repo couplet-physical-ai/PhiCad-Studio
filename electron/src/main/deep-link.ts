@@ -8,7 +8,10 @@ const SCHEME = "openpcb";
 let pendingUrl: string | null = null;
 let targetWindow: (() => BrowserWindow | null) | null = null;
 
-export function initDeepLink(getWindow: () => BrowserWindow | null): void {
+export function initDeepLink(
+  getWindow: () => BrowserWindow | null,
+  onSecondInstanceArgv?: (argv: readonly string[]) => void,
+): boolean {
   targetWindow = getWindow;
 
   // OS-level scheme registration. On dev/macOS this needs the bundle id;
@@ -32,10 +35,14 @@ export function initDeepLink(getWindow: () => BrowserWindow | null): void {
   // Windows / Linux: deep-link arrives as argv on a second app instance.
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
+    log.warn(
+      "[single-instance] another Studio process owns the lock; forwarding argv and exiting without a window",
+    );
     app.quit();
-    return;
+    return false;
   }
   app.on("second-instance", (_event, argv) => {
+    onSecondInstanceArgv?.(argv);
     const url = argv.find((a) => a.startsWith(`${SCHEME}://`));
     if (url) deliver(url);
     // also bring the window forward
@@ -49,6 +56,7 @@ export function initDeepLink(getWindow: () => BrowserWindow | null): void {
   // Catch a deep link present on cold-start (Windows/Linux).
   const initial = process.argv.find((a) => a.startsWith(`${SCHEME}://`));
   if (initial) pendingUrl = initial;
+  return true;
 }
 
 function deliver(url: string): void {

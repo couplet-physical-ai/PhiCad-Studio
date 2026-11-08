@@ -1,0 +1,15 @@
+{
+  "name": "tscircuit-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.ts",
+    "./protocol": "./protocol.ts"
+  },
+  "dependencies": {
+    "circuit-json": "0.0.489",
+    "zod": "3.25.76"
+  }
+}

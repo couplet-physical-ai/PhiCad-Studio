@@ -1,0 +1,17 @@
+PhiCad-Studio
+Copyright 2026 Exowatt, Inc.
+
+This repository is a fork of OpenPCB (https://github.com/OpenPCB-app/OpenPCB),
+licensed under the GNU Affero General Public License v3.0 or later
+(AGPL-3.0-or-later). Upstream copyright and license notices are preserved in
+LICENSE and throughout the OpenPCB-derived source. This NOTICE does not
+replace or supersede OpenPCB's own notices.
+
+Exowatt's own contributions on top of the OpenPCB base (see git history for
+the individual patch commits applied on top of the upstream merge base) were
+created at Exowatt, Inc. (https://exowatt.com) and remain licensed under the
+same AGPL-3.0-or-later terms as the rest of this repository, per the terms
+of that license.
+
+Third-party dependencies added for the Circuit JSON preview feature (MIT/ISC)
+are listed with their licenses in THIRD_PARTY_NOTICES.md.

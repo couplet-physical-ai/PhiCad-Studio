@@ -59,34 +59,15 @@ export function LeftSidebar({ onSettingsClick }: LeftSidebarProps) {
   return (
     <TooltipProvider delayDuration={300}>
       <aside className="flex w-20 flex-col items-center justify-between border-r border-border bg-surface-rail py-2.5">
-        <div className="w-10 h-10">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <rect
-              x="3"
-              y="3"
-              width="18"
-              height="18"
-              rx="3"
-              stroke="currentColor"
-              strokeWidth="2"
-            ></rect>
-            <line
-              x1="8"
-              y1="8"
-              x2="16"
-              y2="16"
-              stroke="currentColor"
-              strokeWidth="1.5"
-            ></line>
-            <circle cx="8" cy="8" r="1.5" fill="currentColor"></circle>
-            <circle cx="16" cy="8" r="1.5" fill="currentColor"></circle>
-            <circle cx="8" cy="16" r="1.5" fill="currentColor"></circle>
-            <circle cx="16" cy="16" r="1.5" fill="currentColor"></circle>
-          </svg>
+        <div
+          className="flex h-10 w-10 items-center justify-center"
+          title="PhiCad-Studio — built on OpenPCB"
+        >
+          <img
+            src="/brand/phicad-studio-icon.svg"
+            alt="PhiCad Studio"
+            className="h-9 w-9 object-contain"
+          />
         </div>
 
         <nav className="flex flex-1 flex-col items-center justify-start pt-6">
@@ -141,7 +122,7 @@ export function LeftSidebar({ onSettingsClick }: LeftSidebarProps) {
           ) : null}
           <Tooltip label="Report a bug or request a feature" side="right">
             <a
-              href="https://github.com/andrejvysny/OpenPCB/issues/new"
+              href="https://github.com/couplet-physical-ai/PhiCad-Studio/issues/new"
               target="_blank"
               rel="noreferrer"
               aria-label="Report a bug or request a feature"

@@ -1,14 +1,19 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
 import { log as electronLog } from "./logger.js";
+import {
+  STUDIO_UPDATE_OPT_IN_ENV,
+  studioUpdateNetworkEnabled,
+} from "./product-policy.js";
 
 const log = electronLog.scope("updater");
-const REPO_OWNER = "OpenPCB-app";
-const REPO_NAME = "OpenPCB";
+const REPO_OWNER = "couplet-physical-ai";
+const REPO_NAME = "PhiCad-Studio";
 const RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 const GITHUB_API_LATEST = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 
 type UpdaterState =
+  | { state: "disabled"; reason: string }
   | { state: "checking" }
   | { state: "current" }
   | { state: "available"; version: string; notes: string | null }
@@ -57,6 +62,27 @@ function normaliseReleaseNotes(
 }
 
 export function initUpdater(): void {
+  const networkEnabled = studioUpdateNetworkEnabled(app.isPackaged);
+  ipcMain.handle("updater:policy", () => ({
+    networkChecksEnabled: networkEnabled,
+    optInEnv: STUDIO_UPDATE_OPT_IN_ENV,
+  }));
+  ipcMain.handle("updater:open-releases", () =>
+    shell.openExternal(RELEASES_URL),
+  );
+
+  if (!networkEnabled) {
+    const disabled = {
+      state: "disabled",
+      reason: `Runtime update checks are disabled; set ${STUDIO_UPDATE_OPT_IN_ENV}=1 before launching packaged Studio to opt in.`,
+    } satisfies UpdaterState;
+    log.info(disabled.reason);
+    ipcMain.handle("updater:check", () => send("updater:status", disabled));
+    ipcMain.handle("updater:download", () => undefined);
+    ipcMain.handle("updater:install", () => undefined);
+    return;
+  }
+
   autoUpdater.logger = log;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -135,10 +161,6 @@ export function initUpdater(): void {
     if (!canAutoUpdate()) return;
     autoUpdater.quitAndInstall(false, true);
   });
-
-  ipcMain.handle("updater:open-releases", () =>
-    shell.openExternal(RELEASES_URL),
-  );
 
   // Initial check: 10s after startup so the app settles first.
   setTimeout(() => {

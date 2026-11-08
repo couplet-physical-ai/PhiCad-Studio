@@ -44,7 +44,12 @@ async function writeModule(
     "utf8",
   );
   await cp(
-    path.resolve(import.meta.dir, "../../../modules", moduleId, "backend/migrations"),
+    path.resolve(
+      import.meta.dir,
+      "../../../modules",
+      moduleId,
+      "backend/migrations",
+    ),
     path.join(moduleDir, "backend", "migrations"),
     { recursive: true },
   );
@@ -161,21 +166,21 @@ async function readRpc(response: Response): Promise<Record<string, unknown>> {
   if (!contentType.includes("text/event-stream")) {
     return JSON.parse(text) as Record<string, unknown>;
   }
-  const dataLine = text
-    .split("\n")
-    .find((line) => line.startsWith("data:"));
+  const dataLine = text.split("\n").find((line) => line.startsWith("data:"));
   if (!dataLine) throw new Error(`No SSE data frame in: ${text}`);
   return JSON.parse(dataLine.slice(5).trim()) as Record<string, unknown>;
 }
 
 beforeEach(() => {
   process.env.OPENPCB_MCP_TOKEN = TOKEN;
-  // The route is gated on the mcp.server dev flag; NODE_ENV is not
-  // "production" under bun test, so it is on. Assert rather than assume.
+  // The V1 bridge ships in every build but keeps its explicit user setting,
+  // loopback/origin guard, and per-launch bearer token as the real boundary.
   delete process.env.OPENPCB_FEATURE_MCP_SERVER;
+  delete process.env.PHICAD_TEST_MODEL_API_KEY;
 });
 
 afterEach(async () => {
+  delete process.env.PHICAD_TEST_MODEL_API_KEY;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) await rm(dir, { recursive: true, force: true });
@@ -218,6 +223,8 @@ describe("assistant MCP endpoint", () => {
   });
 
   test("initializes and lists read tools, hiding writes by default", async () => {
+    const secretMarker = "unit-test-model-secret-must-not-cross";
+    process.env.PHICAD_TEST_MODEL_API_KEY = secretMarker;
     const server = await boot();
     getAssistantService().updateSettings({ mcpEnabled: true });
 
@@ -225,6 +232,14 @@ describe("assistant MCP endpoint", () => {
     expect(initResponse.status).toBe(200);
     const initBody = await readRpc(initResponse);
     expect(initBody.error).toBeUndefined();
+    const initializeResult = initBody.result as {
+      serverInfo: { name: string };
+      instructions: string;
+    };
+    expect(initializeResult.serverInfo.name).toBe("phicad-studio");
+    expect(initializeResult.instructions).toContain(
+      "openpcb://studio/capabilities",
+    );
 
     const sessionId = initResponse.headers.get("mcp-session-id") ?? undefined;
 
@@ -255,6 +270,49 @@ describe("assistant MCP endpoint", () => {
     // Writes are off by default, so they must not be advertised at all.
     expect(tools).not.toContain("designer_propose_schematic_wires");
     expect(tools).not.toContain("designer_propose_schematic_deletions");
+
+    const resourcesBody = await readRpc(
+      await server.fetch(
+        rpc({ jsonrpc: "2.0", id: 3, method: "resources/list" }, { sessionId }),
+      ),
+    );
+    const resources = (
+      resourcesBody.result as { resources: Array<{ uri: string }> }
+    ).resources;
+    expect(resources.map((resource) => resource.uri)).toContain(
+      "openpcb://studio/capabilities",
+    );
+
+    const capabilityBody = await readRpc(
+      await server.fetch(
+        rpc(
+          {
+            jsonrpc: "2.0",
+            id: 4,
+            method: "resources/read",
+            params: { uri: "openpcb://studio/capabilities" },
+          },
+          { sessionId },
+        ),
+      ),
+    );
+    const capabilityText = (
+      capabilityBody.result as { contents: Array<{ text: string }> }
+    ).contents[0]?.text;
+    const capabilities = JSON.parse(capabilityText ?? "{}") as {
+      product?: string;
+      authority?: {
+        mode?: string;
+        codeLinked?: { status?: string; applyEnabled?: boolean };
+      };
+      circuitEngine?: { circuitJsonValidationPreview?: boolean };
+    };
+    expect(capabilities.product).toBe("PhiCad-Studio");
+    expect(capabilities.authority?.mode).toBe("native");
+    expect(capabilities.authority?.codeLinked?.status).toBe("preview-only");
+    expect(capabilities.authority?.codeLinked?.applyEnabled).toBe(false);
+    expect(capabilities.circuitEngine?.circuitJsonValidationPreview).toBe(true);
+    expect(capabilityText).not.toContain(secretMarker);
   });
 
   test("advertises write tools once mcpAllowWrites is granted", async () => {

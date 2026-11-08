@@ -60,7 +60,7 @@ function jsonRpcError(status: number, code: number, message: string): Response {
       headers: {
         "content-type": "application/json",
         ...(status === 401
-          ? { "www-authenticate": 'Bearer realm="OpenPCB MCP"' }
+          ? { "www-authenticate": 'Bearer realm="PhiCad-Studio MCP"' }
           : {}),
       },
     },
@@ -98,15 +98,18 @@ export class McpEndpoint {
         ? this.requestClients.get(ctx.requestInfo)
         : undefined;
       const settings = this.deps.getSettings();
-      return buildMcpServer(identity ?? { key: "unknown-client", name: "unknown-client" }, {
-        ctx: this.deps.ctx,
-        appVersion: this.deps.appVersion,
-        registry: this.deps.getRegistry(settings.mcpAllowWrites),
-        sessions: this.deps.sessions,
-        contextResolver: this.deps.contextResolver,
-        contextSizePreference: settings.contextSizePreference,
-        allowWrites: settings.mcpAllowWrites,
-      });
+      return buildMcpServer(
+        identity ?? { key: "unknown-client", name: "unknown-client" },
+        {
+          ctx: this.deps.ctx,
+          appVersion: this.deps.appVersion,
+          registry: this.deps.getRegistry(settings.mcpAllowWrites),
+          sessions: this.deps.sessions,
+          contextResolver: this.deps.contextResolver,
+          contextSizePreference: settings.contextSizePreference,
+          allowWrites: settings.mcpAllowWrites,
+        },
+      );
     });
     return this.handler;
   }
@@ -118,7 +121,7 @@ export class McpEndpoint {
       return jsonRpcError(
         503,
         -32000,
-        "OpenPCB's MCP server is disabled. Enable it in Settings → Assistant → MCP.",
+        "PhiCad-Studio's MCP server is disabled. Enable it in Settings → MCP client → MCP server.",
       );
     }
 

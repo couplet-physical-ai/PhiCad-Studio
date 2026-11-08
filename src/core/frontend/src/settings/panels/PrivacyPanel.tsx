@@ -43,13 +43,11 @@ export function PrivacyPanel() {
   return (
     <div className="space-y-8 pb-24">
       <div className="space-y-1">
-        <h2 className="text-base font-semibold text-text-strong">
-          Privacy
-        </h2>
+        <h2 className="text-base font-semibold text-text-strong">Privacy</h2>
         <p className="text-sm text-text-secondary">
-          Control what OpenPCB sends outside your machine. OpenPCB runs fully
-          offline by default — no project data, no schematics, and no design
-          files ever leave your computer.
+          Control what PhiCad-Studio sends outside your machine. Studio
+          runs fully offline by default — no project data, no schematics, and no
+          design files ever leave your computer.
         </p>
       </div>
 
@@ -63,7 +61,7 @@ export function PrivacyPanel() {
               Crash and error reporting
             </label>
             <p className="text-xs text-text-secondary">
-              Send anonymous crash reports and uncaught errors to the OpenPCB
+              Send anonymous crash reports and uncaught errors to the Studio
               team via Sentry. Helps us find and fix bugs faster. No project
               files, schematic content, or personally identifying information is
               included.
@@ -90,7 +88,7 @@ export function PrivacyPanel() {
 
         {touched && available ? (
           <p className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-900 dark:bg-blue-900/30 dark:text-blue-200">
-            Restart OpenPCB to apply this change.
+            Restart PhiCad-Studio to apply this change.
           </p>
         ) : null}
 
@@ -104,7 +102,7 @@ export function PrivacyPanel() {
       <p className="text-xs text-text-tertiary">
         See{" "}
         <a
-          href="https://github.com/OpenPCB-app/OpenPCB/blob/main/SECURITY.md"
+          href="https://github.com/couplet-physical-ai/PhiCad-Studio/blob/master/SECURITY.md"
           target="_blank"
           rel="noreferrer"
           className="underline hover:text-text-strong"

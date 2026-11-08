@@ -69,8 +69,8 @@ export const ALL_MODULE_MANIFESTS: GeneratedModuleManifest[] = [
     },
     {
         id: "assistant",
-        label: "Assistant",
-        sidebarLabel: "Assistant",
+        label: "MCP server",
+        sidebarLabel: "MCP server",
         namespace: "space.assistant",
         version: "0.2.0",
         moduleEntry: "src/modules/assistant/module.frontend.ts",
@@ -80,7 +80,7 @@ export const ALL_MODULE_MANIFESTS: GeneratedModuleManifest[] = [
         coreCapabilities: ["projects","contentEditor","toolRegistry"],
         dependsOn: [{"id":"tasks","minVersion":"0.1.0","optional":false}],
         exports: {"services":[],"widgets":[]},
-        registerAsSpaceInTopBar: true,
+        registerAsSpaceInTopBar: false,
         defaultPinned: true,
         resolvedDependencies: [{"id":"tasks","minVersion":"0.1.0","optional":false,"version":"0.1.0","missing":false,"satisfied":true}],
         loadOrder: 1

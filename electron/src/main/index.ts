@@ -2,6 +2,7 @@
 // before any window opens or any child process spawns. electron-log is
 // initialized first so the rest of bootstrap is captured to disk.
 import { app, BrowserWindow, ipcMain, session, shell } from "electron";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { initLogger, log } from "./logger.js";
 import { initCrashReporter } from "./crash.js";
@@ -15,6 +16,7 @@ import {
 } from "./backend-server.js";
 import { initUpdater } from "./updater.js";
 import { initDeepLink, flushPending } from "./deep-link.js";
+import { isCoreLibraryTrustError } from "../../../src/shared/core-library-trust";
 import {
   getSecureItem,
   setSecureItem,
@@ -22,6 +24,35 @@ import {
 } from "./secure-storage.js";
 import { getTelemetryOptIn, setTelemetryOptIn } from "./preferences.js";
 
+/**
+ * productName changes must not strand the historical OpenPCB database,
+ * preferences, or encrypted provider store. Use the branded directory for a
+ * new install, but adopt an existing legacy directory before any subsystem
+ * asks Electron for userData.
+ */
+function preserveCompatibleUserDataPath(): void {
+  const current = app.getPath("userData");
+  const markers = [
+    "openpcb.sqlite",
+    "preferences.json",
+    "secure-store.json",
+    "mcp.json",
+  ];
+  const hasState = (dir: string) =>
+    markers.some((marker) => existsSync(join(dir, marker)));
+  if (hasState(current)) return;
+
+  const appData = app.getPath("appData");
+  for (const legacyName of ["OpenPCB", "openpcb-electron"]) {
+    const legacy = join(appData, legacyName);
+    if (legacy !== current && hasState(legacy)) {
+      app.setPath("userData", legacy);
+      return;
+    }
+  }
+}
+
+preserveCompatibleUserDataPath();
 initLogger();
 initCrashReporter();
 const sentryEnabled = initSentry();
@@ -43,14 +74,15 @@ if (process.env.OPENPCB_DEBUG === "1" || !app.isPackaged) {
 }
 
 log.info(
-  `[boot] OpenPCB ${app.getVersion()} | packaged=${app.isPackaged} | sentry=${sentryEnabled} | platform=${process.platform}-${process.arch}`,
+  `[boot] PhiCad-Studio ${app.getVersion()} (built on OpenPCB) | packaged=${app.isPackaged} | sentry=${sentryEnabled} | platform=${process.platform}-${process.arch}`,
 );
 
-registerDiagnosticsIpc();
-initUpdater();
-initDeepLink(() => mainWindow);
-
 let mainWindow: BrowserWindow | null = null;
+
+registerDiagnosticsIpc();
+const ownsSingleInstance = initDeepLink(() => mainWindow);
+// A rejected second instance must not leave a delayed updater timer behind.
+if (ownsSingleInstance) initUpdater();
 
 function installSecurityPolicy(): void {
   session.defaultSession.setPermissionRequestHandler(
@@ -66,11 +98,11 @@ function installSecurityPolicy(): void {
       "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http://127.0.0.1:*",
       "style-src 'self' 'unsafe-inline' http://127.0.0.1:*",
       "img-src 'self' data: blob: http://127.0.0.1:*",
-      "font-src 'self' data: http://127.0.0.1:* https://cdn.jsdelivr.net",
+      "font-src 'self' data: http://127.0.0.1:*",
       // Dev: embedded backend (127.0.0.1), local devstack cloud (localhost:8000
       // Supabase / :3000 cloud-api / :5173 dashboard), and prod cloud domains so
       // a dev build can also point at prod.
-      "connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* https://*.cloud.openpcb.app wss://*.cloud.openpcb.app https://cdn.jsdelivr.net",
+      "connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* https://*.cloud.openpcb.app wss://*.cloud.openpcb.app",
       "worker-src 'self' blob: http://127.0.0.1:*",
       "media-src 'self' blob:",
       "object-src 'none'",
@@ -82,10 +114,10 @@ function installSecurityPolicy(): void {
       "script-src 'self' blob:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
-      "font-src 'self' data: https://cdn.jsdelivr.net",
+      "font-src 'self' data:",
       // Prod: embedded backend (127.0.0.1) + OpenPCB Cloud (Supabase, cloud-api,
       // realtime) under the *.cloud.openpcb.app wildcard.
-      "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://*.cloud.openpcb.app wss://*.cloud.openpcb.app https://cdn.jsdelivr.net",
+      "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://*.cloud.openpcb.app wss://*.cloud.openpcb.app",
       "worker-src 'self' blob:",
       "media-src 'self' blob:",
       "object-src 'none'",
@@ -134,7 +166,7 @@ function createWindow(): void {
     minHeight: 720,
     // Capture: size the web content exactly and allow off-screen-large windows.
     ...(CAPTURE ? { useContentSize: true, enableLargerThanScreen: true } : {}),
-    title: "OpenPCB",
+    title: "PhiCad-Studio",
     // Dark --surface-app: avoids a white flash before React paints (a brief
     // dark frame is far less jarring than white on a dark-default app).
     backgroundColor: "#0f1520",
@@ -246,26 +278,56 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"]/g, (char) => entities[char] ?? char);
 }
 
-function loadStartupError(window: BrowserWindow, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
+async function loadPackagedStartup(window: BrowserWindow): Promise<void> {
   const html = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>OpenPCB startup failed</title>
+    <title>Starting PhiCad-Studio</title>
     <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 48px; color: #111827; }
+      body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 48px; color: #e5e7eb; background: #0f1520; }
+      p { color: #9ca3af; }
+    </style>
+  </head>
+  <body>
+    <h1>Starting PhiCad-Studio…</h1>
+    <p>Checking the packaged CoreLibrary trust boundary before opening the workspace.</p>
+  </body>
+</html>`;
+  await window.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+  );
+}
+
+function loadStartupError(window: BrowserWindow, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const trustBlocked = isCoreLibraryTrustError(err);
+  const heading = trustBlocked
+    ? "CoreLibrary trust check blocked startup"
+    : "PhiCad-Studio could not start";
+  const explanation = trustBlocked
+    ? "Studio did not import or use the bundled CoreLibrary because its signature could not be verified. No trust bypass was applied."
+    : "The desktop backend failed to start, so the frontend cannot render.";
+  const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>PhiCad-Studio startup failed</title>
+    <style>
+      body { box-sizing: border-box; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 48px; color: #111827; background: #f9fafb; }
       pre { white-space: pre-wrap; background: #f3f4f6; padding: 16px; border-radius: 8px; }
     </style>
   </head>
   <body>
-    <h1>OpenPCB could not start</h1>
-    <p>The desktop backend failed to start, so the frontend cannot render.</p>
+    <h1>${heading}</h1>
+    <p>${explanation}</p>
     <pre>${escapeHtml(message)}</pre>
-    <p style="margin-top:24px;font-size:13px;color:#6b7280">Logs: ${escapeHtml(app.getPath("logs"))}</p>
+    <p style="margin-top:24px;font-size:13px;color:#6b7280">See the local application log directory for full startup diagnostics.</p>
   </body>
 </html>`;
-  window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  void window.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+  );
 }
 
 ipcMain.handle("get-backend-url", () => {
@@ -317,13 +379,22 @@ ipcMain.handle(
 app.whenReady().then(async () => {
   installSecurityPolicy();
 
+  // Packaged startup previously waited for the complete backend before creating
+  // any window. Show a local, script-free trust-check page first so a blocked
+  // CoreLibrary has visible readiness and a truthful error within the launcher
+  // smoke deadline.
+  if (app.isPackaged) {
+    createWindow();
+    if (mainWindow) await loadPackagedStartup(mainWindow);
+  }
+
   try {
     const result = await startBackendServer();
     log.info(`[electron] Backend ready: port=${result.port}`);
   } catch (err) {
     log.error("[electron] Failed to start backend:", err);
     if (sentryEnabled) Sentry.captureException(err);
-    createWindow();
+    if (!mainWindow) createWindow();
     if (mainWindow) {
       loadStartupError(mainWindow, err);
     }
@@ -332,7 +403,7 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     try {
-      createWindow();
+      if (!mainWindow) createWindow();
       const result = getBackendPayload();
       if (!result) {
         throw new Error("Backend payload unavailable after startup");

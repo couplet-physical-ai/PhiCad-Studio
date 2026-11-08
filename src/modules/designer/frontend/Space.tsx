@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { Bot, HardDrive, PanelRight } from "lucide-react";
+import { Braces, HardDrive, PanelRight, ShieldCheck } from "lucide-react";
 import { useNavigationStore } from "@/stores/navigation-store";
 import { useWindowTitleStore } from "@/stores/window-title-store";
 import { useAuth } from "@/cloud/AuthProvider";
@@ -32,6 +32,7 @@ import { DesignerErcView } from "./components/DesignerErcView";
 import { DesignerStatusBar } from "./components/DesignerStatusBar";
 import { DesignerSidebar } from "./components/DesignerSidebar";
 import { DesignerRightDock } from "./components/DesignerRightDock";
+import { CircuitJsonPreviewPanel } from "./components/CircuitJsonPreviewPanel";
 import { useDrcStore } from "./pcb/drc/drc-store";
 import { usePcbViewStore } from "./pcb/pcb-view-store";
 import { setPcbCursorPoint } from "./pcb/pcb-cursor-store";
@@ -59,7 +60,6 @@ import { useDesignerWorkspace } from "./hooks/useDesignerWorkspace";
 import { useDesignerComments } from "./hooks/useDesignerComments";
 import { PcbCanvas } from "./pcb/PcbCanvas";
 import { Board3DCanvas } from "./three-d/Board3DCanvas";
-import { DesignerChatDock } from "../../assistant/frontend";
 import { useDesignerTabsStore } from "./stores/designer-tabs-store";
 import { useActiveDesignSync } from "./hooks/useActiveDesignSync";
 import type {
@@ -299,6 +299,7 @@ function DesignerSpaceInner({
   const presenceFeatureEnabled = useFeatureFlag("cloud.presence");
   const commentsFeatureEnabled = useFeatureFlag("cloud.comments");
   const designBrowserFeatureEnabled = useFeatureFlag("cloud.designBrowser");
+  const tscircuitPreviewEnabled = useFeatureFlag("designer.tscircuitPreview");
   // No cloud headers (→ no command mirroring, no linking) unless cloud is
   // configured AND the user has project sync turned on.
   const cloudHeaders = useMemo(() => {
@@ -791,9 +792,7 @@ function DesignerSpaceInner({
       }
     }
     if (state.selectedPartId) {
-      const part = projection?.parts.find(
-        (p) => p.id === state.selectedPartId,
-      );
+      const part = projection?.parts.find((p) => p.id === state.selectedPartId);
       if (part) {
         return part.value
           ? `${part.reference} · ${part.value}`
@@ -967,9 +966,12 @@ function DesignerSpaceInner({
             id: "drc",
             label: "DRC",
             badge: drcIssueCount > 0 ? drcIssueCount : undefined,
-            badgeClassName: drcIssueCount > 0 ? "text-status-danger" : undefined,
+            badgeClassName:
+              drcIssueCount > 0 ? "text-status-danger" : undefined,
           },
-          { id: "assistant", label: "Assistant" },
+          ...(tscircuitPreviewEnabled
+            ? ([{ id: "build-preview", label: "Build Preview" }] as const)
+            : []),
         ];
       case "schem":
         return [
@@ -982,14 +984,25 @@ function DesignerSpaceInner({
             badge: ercReport && ercCount > 0 ? ercCount : undefined,
             badgeClassName: ercCount > 0 ? "text-status-danger" : undefined,
           },
-          { id: "assistant", label: "Assistant" },
+          ...(tscircuitPreviewEnabled
+            ? ([{ id: "build-preview", label: "Build Preview" }] as const)
+            : []),
         ];
       case "3d":
-        return [{ id: "assistant", label: "Assistant" }];
+        return tscircuitPreviewEnabled
+          ? [{ id: "build-preview", label: "Build Preview" }]
+          : [];
       default:
         return [];
     }
-  }, [drcIssueCount, ercCount, ercReport, noTabsOpen, state.activeView]);
+  }, [
+    drcIssueCount,
+    ercCount,
+    ercReport,
+    noTabsOpen,
+    state.activeView,
+    tscircuitPreviewEnabled,
+  ]);
 
   // The persisted tab may not exist in this view (e.g. DRC while on 3D).
   const activeDockTab: DockTab =
@@ -1044,10 +1057,8 @@ function DesignerSpaceInner({
     clearErc();
   }, [clearErc, state.selectedDesignId]);
 
-  // Selecting on the PCB canvas surfaces the Properties tab. A closed dock is
-  // opened (the retired floating inspector appeared unconditionally, and free
-  // holes/pads/text have no other editor), but an Assistant conversation is
-  // never interrupted — unmounting the chat would drop its draft and run state.
+  // Selecting on the PCB canvas surfaces the Properties tab. Keep an explicit
+  // build preview open so a selection cannot discard pasted, unpersisted JSON.
   const pcbSelectionPrevRef = useRef(pcbSelectionCount);
   useEffect(() => {
     const previous = pcbSelectionPrevRef.current;
@@ -1056,7 +1067,7 @@ function DesignerSpaceInner({
     if (!dockOpen) {
       setDockOpen(true);
       setDockTab("properties");
-    } else if (dockTab !== "assistant") {
+    } else if (dockTab !== "build-preview") {
       setDockTab("properties");
     }
   }, [dockOpen, dockTab, pcbSelectionCount]);
@@ -1065,22 +1076,22 @@ function DesignerSpaceInner({
     writeDockPrefs({ open: dockOpen, width: dockWidth, tab: dockTab });
   }, [dockOpen, dockWidth, dockTab]);
 
-  /** Open the right dock on the Assistant tab (⌘/Ctrl+I and the header button). */
-  const openAssistantDock = useCallback(() => {
+  /** Open the isolated, read-only Circuit JSON preview. */
+  const openBuildPreviewDock = useCallback(() => {
+    if (!tscircuitPreviewEnabled) return;
     setDockOpen(true);
-    setDockTab("assistant");
-  }, []);
+    setDockTab("build-preview");
+  }, [tscircuitPreviewEnabled]);
 
-  // Cmd/Ctrl+I opens the dock on Assistant (was: toggle chat dock);
-  // Cmd/Ctrl+. toggles the dock (was: toggle inspector dock).
+  // Cmd/Ctrl+I opens Build Preview; Cmd/Ctrl+. togggles the active dock.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableShortcutTarget(event.target)) return;
       if (!(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
-      if (key === "i") {
+      if (key === "i" && tscircuitPreviewEnabled) {
         event.preventDefault();
-        openAssistantDock();
+        openBuildPreviewDock();
       } else if (event.key === ".") {
         event.preventDefault();
         setDockOpen((value) => !value);
@@ -1088,7 +1099,7 @@ function DesignerSpaceInner({
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [openAssistantDock]);
+  }, [openBuildPreviewDock, tscircuitPreviewEnabled]);
 
   const startDockResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1096,9 +1107,7 @@ function DesignerSpaceInner({
     const startWidth = dockWidth;
     const onMove = (moveEvent: PointerEvent) => {
       const delta = startX - moveEvent.clientX;
-      setDockWidth(
-        clamp(startWidth + delta, MIN_DOCK_WIDTH, MAX_DOCK_WIDTH),
-      );
+      setDockWidth(clamp(startWidth + delta, MIN_DOCK_WIDTH, MAX_DOCK_WIDTH));
     };
     const stop = () => {
       window.removeEventListener("pointermove", onMove);
@@ -1109,29 +1118,6 @@ function DesignerSpaceInner({
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
   };
-
-  const handleAssistantDesignChanged = useCallback(
-    (change?: {
-      kind: "applied" | "rejected" | "tool";
-      designId?: string;
-      revision?: number;
-    }) => {
-      if (change?.revision !== undefined) {
-        actions.notifyExternalRevisionBump(change.revision);
-      }
-
-      void (async () => {
-        await actions.refreshDesigns();
-        if (!change?.designId || change.designId === state.selectedDesignId) {
-          await Promise.all([
-            actions.refreshProjection(),
-            actions.refreshHistory(),
-          ]);
-        }
-      })();
-    },
-    [actions, state.selectedDesignId],
-  );
 
   const canvasContent = () => {
     if (noTabsOpen) {
@@ -1269,13 +1255,19 @@ function DesignerSpaceInner({
             <span aria-hidden="true" className="h-4 w-px bg-divider" />
             <button
               type="button"
-              onClick={openAssistantDock}
-              disabled={dockTabs.length === 0}
-              title="Open the assistant (⌘/Ctrl+I)"
+              onClick={openBuildPreviewDock}
+              disabled={!tscircuitPreviewEnabled || dockTabs.length === 0}
+              title="Authority: Native design is editable and authoritative. Code-linked mode is preview-only in V1."
               className="inline-flex h-6 cursor-pointer items-center gap-1.5 px-2 text-xs text-text-tertiary transition-colors hover:text-text-strong disabled:cursor-default disabled:opacity-50 disabled:hover:text-text-tertiary"
             >
-              <Bot aria-hidden="true" className="h-3.5 w-3.5" />
-              Assistant
+              <ShieldCheck
+                aria-hidden="true"
+                className="h-3.5 w-3.5 text-status-success"
+              />
+              Native
+              <span className="text-text-disabled">·</span>
+              <Braces aria-hidden="true" className="h-3.5 w-3.5" />
+              Code preview
             </button>
             <IconButton
               label="Toggle side panel"
@@ -1561,18 +1553,8 @@ function DesignerSpaceInner({
                 onClose={() => setDockOpen(false)}
               />
             ) : null}
-            {activeDockTab === "assistant" ? (
-              <DesignerChatDock
-                backendURL={backendURL}
-                designId={state.selectedDesignId}
-                designName={activeDesign?.name ?? null}
-                designRevision={activeDesign?.revision ?? null}
-                onClose={() => setDockOpen(false)}
-                onOpenFull={(chatId) =>
-                  navigateToModule("assistant", undefined, { chatId })
-                }
-                onDesignChanged={handleAssistantDesignChanged}
-              />
+            {activeDockTab === "build-preview" ? (
+              <CircuitJsonPreviewPanel onClose={() => setDockOpen(false)} />
             ) : null}
           </DesignerRightDock>
         ) : null}

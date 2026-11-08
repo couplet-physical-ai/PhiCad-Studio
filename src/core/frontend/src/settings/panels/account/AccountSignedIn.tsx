@@ -21,11 +21,9 @@ export function AccountSignedIn({ session }: { session: AccountSession }) {
   return (
     <div className="space-y-4">
       <header>
-        <h2 className="text-lg font-medium text-text-strong">
-          Account
-        </h2>
+        <h2 className="text-lg font-medium text-text-strong">Account</h2>
         <p className="mt-1 text-sm text-text-tertiary">
-          Signed in to OpenPCB Cloud.
+          Signed in to Studio Cloud.
         </p>
       </header>
 
@@ -33,9 +31,7 @@ export function AccountSignedIn({ session }: { session: AccountSession }) {
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="truncate text-sm text-text-strong">
-              <span className="text-text-tertiary">
-                Signed in as{" "}
-              </span>
+              <span className="text-text-tertiary">Signed in as </span>
               <span className="font-medium">{session.email}</span>
             </p>
             <p className="mt-1 flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-300">
@@ -61,7 +57,7 @@ export function AccountSignedIn({ session }: { session: AccountSession }) {
                 Sync projects to cloud
               </p>
               <p className="mt-1 text-xs text-text-tertiary">
-                When on, your designs sync to your OpenPCB Cloud workspace. Turn
+                When on, your designs sync to your Studio cloud workspace. Turn
                 off to keep all project data on this machine.
               </p>
             </div>
@@ -73,9 +69,7 @@ export function AccountSignedIn({ session }: { session: AccountSession }) {
               onClick={() => setProjectSyncEnabled(!projectSyncEnabled)}
               className={cn(
                 "relative mt-0.5 h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors",
-                projectSyncEnabled
-                  ? "bg-primary"
-                  : "bg-surface-control",
+                projectSyncEnabled ? "bg-primary" : "bg-surface-control",
               )}
             >
               <span

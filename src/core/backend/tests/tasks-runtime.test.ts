@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resetSharedSqliteForTesting } from "../db/sqlite-client";
 import { DiagnosticsStore } from "../diagnostics/diagnostics-store";
 import { createHttpServer } from "../http/create-http-server";
 import { ModuleRuntime } from "../modules/module-loader";
@@ -9,10 +10,24 @@ import { ModuleRouterRegistry } from "../router/module-registry";
 
 const tempDirs: string[] = [];
 
+// The real tasks module's migration. The synthetic module written below has to
+// ship it too: the module loader applies <moduleDir>/backend/migrations before
+// onActivate, and without it the tasks_task table only exists if an earlier
+// test file happened to leave a fully migrated database behind at the default
+// OPENPCB_DB_PATH — which is exactly the order-dependent failure this used to
+// have on CI.
+const TASKS_MIGRATIONS_DIR = path.resolve(
+  import.meta.dir,
+  "../../../modules/tasks/backend/migrations",
+);
+
 async function createWorkspace(): Promise<string> {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "openpcb-tasks-"));
   tempDirs.push(workspace);
   await mkdir(path.join(workspace, "modules"), { recursive: true });
+  // Isolated database per boot, like the other module-runtime tests.
+  resetSharedSqliteForTesting();
+  process.env.OPENPCB_DB_PATH = path.join(workspace, "openpcb.sqlite");
   return workspace;
 }
 
@@ -34,6 +49,12 @@ async function writeModule(
     backendEntrySource,
     "utf8",
   );
+  const migrationsDir = path.join(moduleDir, "backend", "migrations");
+  await mkdir(migrationsDir, { recursive: true });
+  await copyFile(
+    path.join(TASKS_MIGRATIONS_DIR, "0000_init.sql"),
+    path.join(migrationsDir, "0000_init.sql"),
+  );
 }
 
 function baseManifest(moduleId: string): Record<string, unknown> {
@@ -51,6 +72,8 @@ function baseManifest(moduleId: string): Record<string, unknown> {
 }
 
 afterEach(async () => {
+  resetSharedSqliteForTesting();
+  delete process.env.OPENPCB_DB_PATH;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (!dir) continue;

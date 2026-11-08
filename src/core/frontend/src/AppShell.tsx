@@ -11,7 +11,7 @@ import { openContextMenu } from "@shared/frontend/context-menu";
 function LoadingScreen() {
   return (
     <div className="flex h-full w-full items-center justify-center bg-surface-app text-sm text-text-secondary">
-      Initializing OpenPCB...
+      Initializing PhiCad-Studio...
     </div>
   );
 }
@@ -65,7 +65,7 @@ export function AppShell() {
             openContextMenu({
               scope: "app",
               position: { x: event.clientX, y: event.clientY },
-              title: "OpenPCB",
+              title: "PhiCad-Studio",
               groups: [
                 {
                   id: "app",

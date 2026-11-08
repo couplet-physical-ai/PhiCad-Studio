@@ -27,7 +27,7 @@ export function registerPrompts(server: McpServer): void {
   server.registerPrompt(
     "openpcb-build-circuit",
     {
-      title: "Build a circuit in OpenPCB",
+      title: "Build a circuit in PhiCad-Studio",
       description:
         "Resolve a BOM from the installed library, create/choose a design, place the parts and wire them — in one pass.",
       argsSchema: fromJsonSchema<{ spec: string }>({
@@ -45,7 +45,7 @@ export function registerPrompts(server: McpServer): void {
     ({ spec }) =>
       userText(
         [
-          `Build this circuit in OpenPCB: ${spec}`,
+          `Build this circuit in PhiCad-Studio using native-authority tools: ${spec}`,
           "",
           "Follow these rules:",
           CORE_TOOL_INSTRUCTIONS,
@@ -66,7 +66,7 @@ export function registerPrompts(server: McpServer): void {
     () =>
       userText(
         [
-          "Review the schematic currently open in OpenPCB.",
+          "Review the schematic currently open in PhiCad-Studio.",
           "",
           "1. Call designer_get_design_summary, then designer_get_schematic_connectivity.",
           "2. Call designer_run_erc.",
@@ -89,14 +89,14 @@ export function registerPrompts(server: McpServer): void {
     () =>
       userText(
         [
-          "Triage the DRC state of the board currently open in OpenPCB.",
+          "Triage the native DRC state of the board currently open in PhiCad-Studio.",
           "",
           "1. Call designer_get_pcb_state for the board setup and net classes.",
           "2. Call designer_run_drc.",
           "3. Group violations by root cause rather than listing them one by one — e.g. 'clearance too tight for the default net class', 'unrouted power net', 'annular ring below fab minimum'. Order by severity.",
           "4. For each group, say what would fix it and whether the fix is a rule change or a layout change.",
           "",
-          "OpenPCB is the authoritative DRC engine — never compute clearances yourself, and re-run designer_run_drc after any change.",
+          "Studio's native OpenPCB DRC is authoritative for this workspace — never compute clearances yourself, and re-run designer_run_drc after any change. Do not represent it as independent PhiCad-Verify.",
         ].join("\n"),
       ),
   );
@@ -111,7 +111,7 @@ export function registerPrompts(server: McpServer): void {
     () =>
       userText(
         [
-          "Check the bill of materials of the design currently open in OpenPCB.",
+          "Check the bill of materials of the native design currently open in PhiCad-Studio.",
           "",
           "1. Call designer_get_bom.",
           "2. Flag: rows with no MPN, parts marked DNP that still look required, duplicate reference designators, values that do not match the component's package or rating, and any row the projection warned about.",

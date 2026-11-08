@@ -3,7 +3,12 @@ import type { CoreBackendModuleContext } from "../../../../core/contracts/module
 import { getDb } from "../queries";
 import { releases, sources } from "../schema";
 import { readOpclibFromPath } from "./opclib-reader";
-import { backfillModelRefOverrides, importOpclib } from "./opclib-importer";
+import {
+  assertTrustedCoreLibrary,
+  backfillModelRefOverrides,
+  importOpclib,
+} from "./opclib-importer";
+import { coreLibraryTrustError } from "../../../../shared/core-library-trust";
 import { locateBundledOpclib } from "./package-locator";
 import type { ImportResult, OpclibPackage } from "./types";
 
@@ -39,6 +44,13 @@ export async function bootstrapCoreLibrary(
   const installed = listCoreReleases(ctx);
   const alreadyInstalled = installed.length > 0;
   const bundledPath = await locateBundledOpclib();
+  const requireSignature = process.env.OPENPCB_REQUIRE_SIGNED_OPCLIB === "1";
+
+  if (requireSignature && !bundledPath) {
+    throw coreLibraryTrustError(
+      "strict CoreLibrary mode requires a signed bundled .opclib, but none was found",
+    );
+  }
 
   if (alreadyInstalled && !bundledPath) {
     return {
@@ -68,11 +80,25 @@ export async function bootstrapCoreLibrary(
   try {
     pkg = await readOpclibFromPath(bundledPath);
   } catch (error) {
+    if (requireSignature) {
+      throw coreLibraryTrustError(
+        `bundled CoreLibrary could not be validated: ${(error as Error).message}`,
+      );
+    }
     ctx.logger.error("core-library: bundled .opclib unreadable; falling back", {
       bundledPath,
       error: (error as Error).message,
     });
     return { imported: null, alreadyInstalled, bundledPath, userLocalSeeded };
+  }
+  // Verify on every strict boot, including when the exact package is already
+  // installed. Otherwise a database seeded before enforcement could bypass
+  // the current packaged archive/key trust decision.
+  if (requireSignature) {
+    assertTrustedCoreLibrary(pkg);
+    ctx.logger.info(
+      `core-library: packaged trust verified (source=${pkg.manifest.library.id}@${pkg.manifest.library.version})`,
+    );
   }
   const shouldImport = shouldImportBundledRelease(installed, pkg);
   if (!shouldImport) {

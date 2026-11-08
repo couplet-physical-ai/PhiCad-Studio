@@ -46,7 +46,9 @@ export function TitleBar(): React.ReactElement | null {
   // Mirror the same context onto the document title — the web runtime has no
   // custom title bar, and Electron's taskbar/window list reads it too.
   React.useEffect(() => {
-    document.title = subtitle ? `${subtitle} — OpenPCB` : "OpenPCB";
+    document.title = subtitle
+      ? `${subtitle} — PhiCad-Studio`
+      : "PhiCad-Studio";
   }, [subtitle]);
 
   if (runtime !== "electron") return null;
@@ -66,7 +68,9 @@ export function TitleBar(): React.ReactElement | null {
       className="flex shrink-0 select-none items-center justify-center border-b border-border bg-surface-rail"
     >
       <span className="truncate px-2 text-xs font-medium tracking-wide text-text-tertiary">
-        {subtitle ? `OpenPCB — ${subtitle}` : "OpenPCB"}
+        {subtitle
+          ? `PhiCad-Studio — ${subtitle}`
+          : "PhiCad-Studio"}
       </span>
     </div>
   );

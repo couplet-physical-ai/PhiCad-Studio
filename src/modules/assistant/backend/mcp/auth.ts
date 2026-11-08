@@ -47,7 +47,7 @@ export function checkMcpAuth(req: Request): McpAuthFailure | null {
     return {
       code: "server_misconfigured",
       message:
-        "MCP server has no token configured (OPENPCB_MCP_TOKEN is unset). Restart OpenPCB.",
+        "MCP server has no token configured (OPENPCB_MCP_TOKEN is unset). Restart PhiCad-Studio.",
     };
   }
   const presented = readBearer(req);
@@ -55,7 +55,7 @@ export function checkMcpAuth(req: Request): McpAuthFailure | null {
     return {
       code: "unauthorized",
       message:
-        "Missing bearer token. Read it from the OpenPCB MCP portfile (mcp.json) and send it as 'Authorization: Bearer <token>'.",
+        "Missing bearer token. Use the packaged Studio stdio bridge, or read the protected MCP portfile (mcp.json) and send 'Authorization: Bearer <token>'.",
     };
   }
   if (!constantTimeEquals(presented, expected)) {

@@ -7,8 +7,8 @@ import type { AssistantSettings } from "../../../../../sdks/assistant";
  *
  * Two independent switches, both default off: the server itself, and whether
  * write tools are advertised to it. They are separate because enabling the
- * server is about reachability (read your designs from Claude Code) while
- * enabling writes hands an external process a scripted path to mutate them.
+ * server is about reachability (let an external MCP client discover Studio)
+ * while enabling writes hands that process a scripted path to mutate designs.
  *
  * `settings-store.ts` also forces writes off whenever the server is off, so the
  * disabled state here matches what the backend will actually persist.
@@ -27,29 +27,20 @@ function buildSnippets(config: McpConfig | null): Snippet[] {
 
   if (config.shimAvailable && config.shimPath) {
     snippets.push({
-      id: "claude-code-stdio",
-      label: "Claude Code",
-      hint: "Run this in your terminal.",
-      value: `claude mcp add openpcb -- "${config.shimPath}"`,
-    });
-    snippets.push({
-      id: "claude-desktop",
-      label: "Claude Desktop",
-      hint: "Merge into claude_desktop_config.json, then restart Claude Desktop.",
+      id: "mcp-stdio",
+      label: "MCP client (stdio)",
+      hint: "Add this server to your MCP client configuration, then restart the client if needed.",
       value: JSON.stringify(
-        { mcpServers: { openpcb: { command: config.shimPath } } },
+        {
+          mcpServers: {
+            "phicad-studio": {
+              command: config.shimPath,
+            },
+          },
+        },
         null,
         2,
       ),
-    });
-  }
-
-  if (config.url) {
-    snippets.push({
-      id: "http",
-      label: "HTTP (Claude Code, Codex)",
-      hint: "The port changes on every app restart — re-copy after restarting OpenPCB.",
-      value: `claude mcp add --transport http openpcb ${config.url} --header "Authorization: Bearer ${config.token}"`,
     });
   }
 
@@ -109,8 +100,8 @@ export function McpSection({ settings, onSave }: Props) {
       </div>
 
       <p className="mb-2 text-xs text-text-tertiary">
-        Lets Claude Code, Claude Desktop and Codex read and edit the design you
-        have open. OpenPCB must be running.
+        Lets an external MCP client discover Studio and inspect the design you
+        have open. Studio must be running.
       </p>
 
       <label className="flex items-center gap-2 text-xs text-text-secondary">
@@ -125,9 +116,7 @@ export function McpSection({ settings, onSave }: Props) {
 
       <label
         className={`mt-2 flex items-center gap-2 text-xs ${
-          enabled
-            ? "text-text-secondary"
-            : "text-text-disabled"
+          enabled ? "text-text-secondary" : "text-text-disabled"
         }`}
       >
         <input
@@ -137,7 +126,7 @@ export function McpSection({ settings, onSave }: Props) {
           onChange={(e) => onSave({ mcpAllowWrites: e.target.checked })}
           className="h-3.5 w-3.5"
         />
-        Allow writes from MCP clients
+        Allow writes from connected MCP clients
         <span className="rounded bg-amber-100 px-1.5 text-[9px] text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
           Caution
         </span>
@@ -146,8 +135,8 @@ export function McpSection({ settings, onSave }: Props) {
       {enabled && (
         <p className="mt-1.5 text-[11px] text-text-tertiary">
           {allowWrites
-            ? "Place, wire and edit tools are advertised. Non-destructive edits apply immediately and are undoable; deletions wait for your approval in the chat panel."
-            : "Read-only. Connected clients can inspect designs, run ERC/DRC and read the BOM, but cannot change anything."}
+            ? "Native place, wire and edit tools are advertised. Successful edits use Studio's command history and remain undoable; protected destructive operations keep their approval contract."
+            : "Read-only. Connected MCP clients can inspect designs, authority and preview capabilities, run ERC/DRC, and read the BOM, but cannot change anything."}
         </p>
       )}
 
@@ -179,8 +168,9 @@ export function McpSection({ settings, onSave }: Props) {
 
       {enabled && config && !config.shimAvailable && (
         <p className="mt-2 text-[11px] text-text-tertiary">
-          The stdio bridge ships with packaged builds only, so the Claude
-          Desktop snippet is unavailable in development.
+          The protected stdio bridge ships with packaged builds only. In a
+          development build, use the authenticated loopback endpoint for smoke
+          testing; never persist its per-launch token.
         </p>
       )}
     </section>

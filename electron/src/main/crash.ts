@@ -14,14 +14,14 @@ export function initCrashReporter(): string {
   // uploads them via the Sentry envelope endpoint with full breadcrumbs and
   // context. We therefore disable Electron's own uploader.
   crashReporter.start({
-    productName: "OpenPCB",
-    companyName: "OpenPCB",
+    productName: "PhiCad-Studio",
+    companyName: "PhiCad-Studio",
     submitURL: "",
     uploadToServer: false,
     compress: true,
     ignoreSystemCrashHandler: false,
     globalExtra: {
-      _productName: "OpenPCB",
+      _productName: "PhiCad-Studio",
       appVersion: app.getVersion(),
     },
   });

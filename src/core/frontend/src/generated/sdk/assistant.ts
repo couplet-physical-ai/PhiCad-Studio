@@ -21,7 +21,7 @@ export const HTTP_BASE_PATH = "/api/modules/assistant" as const;
 export const WS_BASE_PATH = "/ws/modules/assistant" as const;
 
 /**
- * HTTP SDK for Assistant
+ * HTTP SDK for MCP server
  * Use this to call HTTP endpoints exposed by this module.
  */
 export interface AssistantSDKHttpClient {
@@ -71,7 +71,7 @@ export function createHttpClient(baseUrl?: string): AssistantSDKHttpClient {
 // =============================================================================
 
 /**
- * Full SDK for Assistant
+ * Full SDK for MCP server
  * Provides access to all module capabilities.
  */
 export interface AssistantSDK {

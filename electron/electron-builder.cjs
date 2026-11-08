@@ -45,12 +45,12 @@ const versionToken = process.env.RELEASE_NAME || "${version}";
 /** @type {import("electron-builder").Configuration} */
 module.exports = {
   appId: "com.openpcb.electron",
-  productName: "OpenPCB",
-  copyright: "© OpenPCB",
+  productName: "PhiCad-Studio",
+  copyright: "© OpenPCB contributors",
 
   protocols: [
     {
-      name: "OpenPCB",
+      name: "PhiCad-Studio",
       schemes: ["openpcb"],
     },
   ],
@@ -58,11 +58,13 @@ module.exports = {
   // electron is hoisted to the repo-root node_modules by npm workspaces, so
   // electron-builder can't infer the version from electron/node_modules.
   // Read it from the hoisted install at config-load time.
-  electronVersion: require(require("node:path").resolve(
-    __dirname,
-    "..",
-    "node_modules/electron/package.json",
-  )).version,
+  electronVersion: require(
+    require("node:path").resolve(
+      __dirname,
+      "..",
+      "node_modules/electron/package.json",
+    ),
+  ).version,
 
   directories: {
     buildResources: ".",
@@ -137,17 +139,33 @@ module.exports = {
         "!**/tests/**",
       ],
     },
+    // Keep AGPL terms, upstream/source links, and direct dependency notices in
+    // the installed artifact rather than relying on a live website.
+    {
+      from: path.relative(__dirname, path.join(repoRoot, "LICENSE")),
+      to: "LICENSE",
+    },
+    {
+      from: path.relative(
+        __dirname,
+        path.join(repoRoot, "THIRD_PARTY_NOTICES.md"),
+      ),
+      to: "THIRD_PARTY_NOTICES.md",
+    },
+    {
+      from: path.relative(__dirname, path.join(repoRoot, "README.md")),
+      to: "README.md",
+    },
   ],
 
   // -------- macOS --------
   // Targets listed without arch so CLI `--arm64` / `--x64` filters per matrix
   // job; otherwise electron-builder builds both archs in each job and the
   // upload step collides on duplicate filenames.
-  // Bundle the dark-mode icon for both appearances for now (no runtime
-  // light/dark swap yet). Light set stays as icon.{icns,ico,png} for later.
+  // Use the OpenPCB-derived rounded icon for every packaged platform.
   mac: {
     category: "public.app-category.developer-tools",
-    icon: "icon-dark.icns",
+    icon: "icon.png",
     target: ["dmg", "zip"],
     identity: null,
     gatekeeperAssess: false,
@@ -161,7 +179,7 @@ module.exports = {
 
   // -------- Windows --------
   win: {
-    icon: "icon-dark.ico",
+    icon: "icon.png",
     target: ["nsis", "portable"],
     artifactName: `\${productName}-${versionToken}-\${arch}.\${ext}`,
   },
@@ -171,7 +189,7 @@ module.exports = {
     allowToChangeInstallationDirectory: true,
     allowElevation: true,
     deleteAppDataOnUninstall: false,
-    shortcutName: "OpenPCB",
+    shortcutName: "PhiCad-Studio",
     artifactName: `\${productName}-Setup-${versionToken}.\${ext}`,
   },
   portable: {
@@ -180,19 +198,18 @@ module.exports = {
 
   // -------- Linux --------
   linux: {
-    icon: "icon-dark.png",
-    // Drives the binary name in /usr/bin and the AppImage executable; keeps
-    // mac/win bundles named "OpenPCB" while linux gets lowercase "openpcb".
+    icon: "icon.png",
+    // Keep the historical executable name for app-data/deep-link compatibility.
     executableName: "openpcb",
     category: "Development",
-    maintainer: "OpenPCB",
-    vendor: "OpenPCB",
-    synopsis: "PCB Design Suite",
-    description: "OpenPCB desktop application",
+    maintainer: "PhiCad-Studio contributors (built on OpenPCB)",
+    vendor: "PhiCad-Studio",
+    synopsis: "OpenPCB-based visual PCB workspace",
+    description: "PhiCad-Studio — OpenPCB-based visual PCB workspace",
     target: ["AppImage", "deb", "rpm"],
     desktop: {
       entry: {
-        Name: "OpenPCB",
+        Name: "PhiCad-Studio",
         GenericName: "PCB Design Suite",
         Categories: "Development;Electronics;",
         MimeType: "x-scheme-handler/openpcb;",
@@ -221,8 +238,8 @@ module.exports = {
   // knows where to look.
   publish: {
     provider: "github",
-    owner: "OpenPCB-app",
-    repo: "OpenPCB",
+    owner: "couplet-physical-ai",
+    repo: "PhiCad-Studio",
     vPrefixedTagName: true,
     releaseType: "prerelease",
     publishAutoUpdate: true,

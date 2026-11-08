@@ -15,6 +15,57 @@ import type { CoreBackendModuleContext } from "../../../../core/contracts/module
  */
 
 const SCHEME = "openpcb://";
+const STUDIO_CAPABILITIES_URI = `${SCHEME}studio/capabilities`;
+
+const STUDIO_CAPABILITIES = {
+  product: "PhiCad-Studio",
+  description: "OpenPCB-based visual PCB workspace",
+  builtOn: {
+    project: "OpenPCB",
+    upstream: "https://github.com/OpenPCB-app/OpenPCB",
+    license: "AGPL-3.0-or-later",
+  },
+  aiHarness: {
+    name: "external MCP client",
+    location: "external",
+    embeddedModel: false,
+    modelCredentialsAcceptedByStudio: false,
+  },
+  authority: {
+    mode: "native",
+    native: {
+      editable: true,
+      ownsPersistence: true,
+      ownsUndoHistory: true,
+      ownsManufacturingExport: true,
+    },
+    codeLinked: {
+      status: "preview-only",
+      persistence: false,
+      nativeMaterialization: false,
+      applyEnabled: false,
+      applyBlocker:
+        "No verified atomic Circuit JSON-to-library/provenance Designer command exists for the V1 subset.",
+    },
+  },
+  circuitEngine: {
+    name: "Circuit Engine (Circuit JSON preview)",
+    protocolVersion: "1.0.0",
+    runtime: {
+      "circuit-json": "0.0.489",
+      zod: "3.25.76",
+    },
+    circuitJsonValidationPreview: true,
+    codeEvaluation: false,
+    network: "blocked",
+    persistence: "none",
+  },
+  transport: {
+    authentication: "per-launch bearer token",
+    preferredForAgents: "packaged stdio bridge",
+    inheritedSecrets: false,
+  },
+} as const;
 
 type ResourceKind = "schematic" | "pcb" | "bom" | "erc" | "drc";
 
@@ -67,6 +118,26 @@ export function registerResources(
   ctx: CoreBackendModuleContext,
 ): void {
   server.registerResource(
+    "phicad-studio-capabilities",
+    STUDIO_CAPABILITIES_URI,
+    {
+      title: "PhiCad-Studio capabilities and authority",
+      description:
+        "Stable product, AI-harness, authority-mode, and Circuit JSON preview contract for whatever MCP client is connected.",
+      mimeType: "application/json",
+    },
+    async (uri: URL) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(STUDIO_CAPABILITIES),
+        },
+      ],
+    }),
+  );
+
+  server.registerResource(
     "openpcb-design",
     // One template covers every design × kind pair. `list` enumerates the
     // concrete URIs so a client can browse them without guessing ids.
@@ -88,7 +159,7 @@ export function registerResources(
       },
     }),
     {
-      title: "OpenPCB design data",
+      title: "PhiCad-Studio native design data",
       description: `Read-only JSON views of a design. kind is one of: ${Object.keys(
         KIND_LABELS,
       ).join(", ")}. Use designer_list_designs for valid designIds.`,

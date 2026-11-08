@@ -2370,7 +2370,17 @@ export function PcbCanvas(props: PcbCanvasProps): ReactElement {
     const targetLayer: PcbCopperLayerId =
       nextSide === "bottom" ? "B.Cu" : "F.Cu";
     if (activeCopperLayer !== targetLayer) {
-      void workspace.setActiveLayer(targetLayer);
+      // setViewSide only schedules a debounced `pcb_set_view_state`, while
+      // setActiveLayer dispatches at once. Left alone they race: both carry
+      // the same baseRevision, and whichever lands second is rejected with
+      // REVISION_CONFLICT — the flush swallows that, so on a slow machine the
+      // flip silently never reaches the backend and the next projection
+      // refresh reverts the view (seen as tests/e2e/pcb-layer-flip flakes on
+      // CI). Flush the view write first so the layer sync builds on it.
+      void usePcbViewStore
+        .getState()
+        .flush()
+        .then(() => workspace.setActiveLayer(targetLayer));
     }
   }, [activeCopperLayer, routeState, workspace]);
 

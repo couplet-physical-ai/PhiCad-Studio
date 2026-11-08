@@ -3,7 +3,6 @@ import { useAuth } from "@/cloud/AuthProvider";
 import { useSession } from "./account/useSession";
 import { AccountSignedIn } from "./account/AccountSignedIn";
 import { CloudValueCard } from "./account/CloudValueCard";
-import { AiCloudTeaser } from "./account/AiCloudTeaser";
 
 function SignInCard() {
   const { enabled, beginCloudLogin, loginError } = useAuth();
@@ -26,7 +25,7 @@ function SignInCard() {
             onClick={() => void beginCloudLogin()}
             className="h-9 w-full cursor-pointer rounded-control bg-primary text-sm font-medium text-primary-foreground transition-colors hover:opacity-90"
           >
-            Sign in to OpenPCB Cloud
+            Sign in to Studio Cloud
           </button>
           {loginError ? (
             <p
@@ -54,8 +53,8 @@ export function AccountPanel() {
       <header>
         <h2 className="text-lg font-medium text-text-strong">Account</h2>
         <p className="mt-1 text-sm text-text-tertiary">
-          Sign in for OpenPCB Cloud. The desktop app stays free and works
-          offline without an account.
+          Sign in for optional Studio cloud compatibility. The desktop app stays
+          free and works offline without an account.
         </p>
       </header>
 
@@ -71,8 +70,6 @@ export function AccountPanel() {
         <SignInCard />
         <CloudValueCard />
       </div>
-
-      <AiCloudTeaser />
     </div>
   );
 }

@@ -1,9 +1,9 @@
 {
   "name": "openpcb-electron",
   "version": "0.1.1-beta",
-  "description": "OpenPCB desktop application",
-  "author": "OpenPCB",
-  "homepage": "https://github.com/OpenPCB-app/OpenPCB",
+  "description": "PhiCad-Studio — OpenPCB-based visual PCB workspace",
+  "author": "OpenPCB contributors",
+  "homepage": "https://github.com/couplet-physical-ai/PhiCad-Studio",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "main": "dist/main/index.js",

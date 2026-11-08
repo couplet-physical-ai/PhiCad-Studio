@@ -75,6 +75,13 @@ export default defineConfig([
     bundle: true,
     // No electron import here — it must run as plain Node.
     external: [],
+    // tsup still externalizes every package.json dependency (zod, ajv,
+    // ajv-formats via the MCP SDK) unless told otherwise, and the packaged
+    // shim lives in resources/mcp/ with no node_modules beside it. The
+    // 0.1.1-beta Linux package failed at startup with
+    // "Cannot find module zod/v4" for exactly this reason. Bundle the
+    // whole graph: the shim has no native dependencies.
+    noExternal: [/.*/],
     define,
   },
   {

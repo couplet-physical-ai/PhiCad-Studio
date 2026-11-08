@@ -11,7 +11,9 @@ import { registerPrompts } from "./prompts";
 import { MODULE_SDK_TOKENS, type DesignerSDK } from "../../../../sdks";
 import type { CoreBackendModuleContext } from "../../../../core/contracts/modules/backend-module";
 
-export const MCP_SERVER_NAME = "openpcb";
+export const MCP_SERVER_NAME = "phicad-studio";
+
+const MCP_SERVER_INSTRUCTIONS = `PhiCad-Studio is an OpenPCB-based visual PCB workspace. This server does not host a model; a separate MCP client (such as a code editor or desktop agent) is the AI harness. Local OpenPCB editing/history is the native design authority. Circuit JSON and the isolated Circuit Engine are validation/build-preview only in V1: never claim they persisted a design or produced fabrication-authoritative output. Read openpcb://studio/capabilities before choosing a workflow. The endpoint is protected by a per-launch token and the packaged stdio bridge; writes are advertised only when the user explicitly enables them.`;
 
 export interface BuildMcpServerDeps {
   ctx: CoreBackendModuleContext;
@@ -34,10 +36,13 @@ export function buildMcpServer(
   identity: { key: string; name: string },
   deps: BuildMcpServerDeps,
 ): McpServer {
-  const server = new McpServer({
-    name: MCP_SERVER_NAME,
-    version: deps.appVersion,
-  });
+  const server = new McpServer(
+    {
+      name: MCP_SERVER_NAME,
+      version: deps.appVersion,
+    },
+    { instructions: MCP_SERVER_INSTRUCTIONS },
+  );
 
   const session = deps.sessions.acquire(identity);
 
@@ -49,14 +54,21 @@ export function buildMcpServer(
     allowWrites: deps.allowWrites,
   });
 
-  registerUseDesignTool(server, session, { sessions: deps.sessions }, async () => {
-    const designer = deps.ctx.sdk.get<DesignerSDK>(MODULE_SDK_TOKENS.DESIGNER);
-    if (!designer) return [];
-    return (await designer.listDesigns()).map((d) => ({
-      id: d.id,
-      name: d.name,
-    }));
-  });
+  registerUseDesignTool(
+    server,
+    session,
+    { sessions: deps.sessions },
+    async () => {
+      const designer = deps.ctx.sdk.get<DesignerSDK>(
+        MODULE_SDK_TOKENS.DESIGNER,
+      );
+      if (!designer) return [];
+      return (await designer.listDesigns()).map((d) => ({
+        id: d.id,
+        name: d.name,
+      }));
+    },
+  );
 
   registerResources(server, deps.ctx);
   registerPrompts(server);

@@ -118,10 +118,15 @@ export const FEATURE_FLAGS = {
     description:
       "Bundle routing: collect same-side pads, route one centerline, commit N parallel lanes atomically (diff pairs auto-detected by _P/_N and +/- net-name suffixes).",
   },
-  "mcp.server": {
-    availability: "dev",
+  "designer.tscircuitPreview": {
+    availability: "all",
     description:
-      "MCP server (Streamable HTTP at /api/modules/assistant/mcp + bundled stdio shim) exposing the assistant tool registry to external agents. Graduate to 'all' after a bake cycle — it opens a scripted write path into designs.",
+      "Lazy, offline Circuit Engine worker for read-only Circuit JSON validation and build preview; native ECS/history remains authoritative.",
+  },
+  "mcp.server": {
+    availability: "all",
+    description:
+      "Protected MCP bridge (Streamable HTTP plus bundled stdio shim) for external MCP client discovery and design tooling; writes remain separately opt-in.",
   },
   "dataset.capture": {
     availability: "prod",

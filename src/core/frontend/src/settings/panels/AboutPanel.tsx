@@ -5,9 +5,10 @@ import { Button } from "@shared/frontend/ui/button";
 import { useBootstrap } from "../../providers/BootstrapProvider";
 import { useNavigationStore } from "../../stores/navigation-store";
 
-const REPO_URL = "https://github.com/andrejvysny/OpenPCB";
+const REPO_URL = "https://github.com/couplet-physical-ai/PhiCad-Studio";
+const UPSTREAM_URL = "https://github.com/OpenPCB-app/OpenPCB";
 const TAGLINE =
-  "Modular, open desktop PCB design suite — schematic capture, PCB layout, and a unified component library in one app.";
+  "OpenPCB-based visual PCB workspace for schematic capture, PCB layout, design review, and manufacturing export.";
 
 const OS_LABELS: Record<string, string> = {
   darwin: "macOS",
@@ -15,46 +16,10 @@ const OS_LABELS: Record<string, string> = {
   linux: "Linux",
 };
 
-function OpenPcbMark() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="h-full w-full"
-      aria-hidden="true"
-    >
-      <rect
-        x="3"
-        y="3"
-        width="18"
-        height="18"
-        rx="3"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <line
-        x1="8"
-        y1="8"
-        x2="16"
-        y2="16"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      <circle cx="8" cy="8" r="1.5" fill="currentColor" />
-      <circle cx="16" cy="8" r="1.5" fill="currentColor" />
-      <circle cx="8" cy="16" r="1.5" fill="currentColor" />
-      <circle cx="16" cy="16" r="1.5" fill="currentColor" />
-    </svg>
-  );
-}
-
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-3 rounded-control border border-border bg-surface-panel p-5">
-      <h3 className="text-sm font-semibold text-text-strong">
-        {title}
-      </h3>
+      <h3 className="text-sm font-semibold text-text-strong">{title}</h3>
       {children}
     </section>
   );
@@ -64,9 +29,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-4 text-sm">
       <dt className="text-text-tertiary">{label}</dt>
-      <dd className="font-mono text-xs text-text">
-        {value}
-      </dd>
+      <dd className="font-mono text-xs text-text">{value}</dd>
     </div>
   );
 }
@@ -137,19 +100,21 @@ export function AboutPanel() {
   return (
     <div className="space-y-8 pb-24">
       <div className="flex items-start gap-4">
-        <div className="h-12 w-12 flex-shrink-0 text-text-strong">
-          <OpenPcbMark />
+        <div className="h-12 w-12 flex-shrink-0">
+          <img
+            src="/brand/phicad-studio-icon.svg"
+            alt="PhiCad Studio"
+            className="h-full w-full object-contain"
+          />
         </div>
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-semibold text-text-strong">
-              OpenPCB
+              PhiCad-Studio
             </h2>
             {channel ? <Pill tone="accent">{channel}</Pill> : null}
           </div>
-          <p className="text-sm text-text-secondary">
-            {TAGLINE}
-          </p>
+          <p className="text-sm text-text-secondary">{TAGLINE}</p>
           <p className="text-xs text-text-tertiary">
             {version ? `Version ${version}` : "Development build (browser)"}
           </p>
@@ -168,9 +133,7 @@ export function AboutPanel() {
 
       <Section title="Modules">
         {modules.length === 0 ? (
-          <p className="text-sm text-text-tertiary">
-            Module list unavailable.
-          </p>
+          <p className="text-sm text-text-tertiary">Module list unavailable.</p>
         ) : (
           <ul className="space-y-2">
             {modules.map((module) => (
@@ -212,9 +175,9 @@ export function AboutPanel() {
         </Button>
       </Section>
 
-      <Section title="About & legal">
-        <p className="text-sm text-text-secondary">
-          Licensed under{" "}
+      <Section title="Built on OpenPCB · source & legal">
+        <p className="text-sm leading-6 text-text-secondary">
+          PhiCad-Studio is built on OpenPCB and remains licensed under{" "}
           <a
             href={`${REPO_URL}/blob/master/LICENSE`}
             target="_blank"
@@ -223,17 +186,15 @@ export function AboutPanel() {
           >
             AGPL-3.0-or-later
           </a>
-          . Commercial licensing available at{" "}
-          <a
-            href="mailto:licensing@openpcb.app"
-            className="underline underline-offset-2 hover:text-text-strong"
-          >
-            licensing@openpcb.app
-          </a>
-          .
+          . Complete corresponding source, fork history, upstream attribution,
+          and third-party notices remain available with the application.
         </p>
         <div className="grid gap-2 sm:grid-cols-2">
-          <ExternalRow href={REPO_URL}>Repository</ExternalRow>
+          <ExternalRow href={REPO_URL}>Studio source repository</ExternalRow>
+          <ExternalRow href={UPSTREAM_URL}>OpenPCB upstream</ExternalRow>
+          <ExternalRow href={`${REPO_URL}/blob/master/THIRD_PARTY_NOTICES.md`}>
+            Third-party notices
+          </ExternalRow>
           <ExternalRow href={`${REPO_URL}/issues/new?labels=bug`}>
             Report a bug
           </ExternalRow>
@@ -245,7 +206,7 @@ export function AboutPanel() {
           </ExternalRow>
         </div>
         <p className="text-xs text-text-tertiary">
-          © OpenPCB · Manage data sharing in{" "}
+          © OpenPCB contributors · Manage data sharing in{" "}
           <button
             type="button"
             onClick={() => setSettingsTab("privacy")}

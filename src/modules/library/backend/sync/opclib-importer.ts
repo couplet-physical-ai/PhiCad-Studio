@@ -14,6 +14,7 @@ import {
 import { writeGlb, writeSourceStep } from "../services/footprint-model-store";
 import { readAssetBytes, readAssetJson, verifyManifest } from "./opclib-reader";
 import { makeResolver } from "./trusted-keys";
+import { coreLibraryTrustError } from "../../../../shared/core-library-trust";
 import type {
   ImportResult,
   InstallOrigin,
@@ -247,6 +248,22 @@ function collectModelDefects(pkg: OpclibPackage): string[] {
  * disk. GLB filesystem writes happen before the DB transaction; the DB
  * portion is fully synchronous within `db.transaction`.
  */
+export function assertTrustedCoreLibrary(pkg: OpclibPackage): void {
+  const lib = pkg.manifest.library;
+  if (lib.id !== "openpcb.core") {
+    throw coreLibraryTrustError(
+      `bundled CoreLibrary source id is ${lib.id}; expected openpcb.core`,
+    );
+  }
+  const verdict = verifyManifest(pkg.manifest, { resolveKey: makeResolver() });
+  if (!verdict.valid) {
+    throw coreLibraryTrustError(
+      `bundled CoreLibrary signature verification failed ` +
+        `(reason=${verdict.reason ?? "unknown"}, source=${lib.id}@${lib.version})`,
+    );
+  }
+}
+
 export async function importOpclib(
   ctx: CoreBackendModuleContext,
   pkg: OpclibPackage,

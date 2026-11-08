@@ -41,7 +41,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
     ],
   },
   {
-    label: "Cloud & AI",
+    label: "Cloud & Integrations",
     items: [
       {
         id: "account",
@@ -51,7 +51,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
       },
       {
         id: "assistant",
-        label: "Assistant",
+        label: "MCP client",
         icon: Bot,
         requiresModule: "assistant",
       },

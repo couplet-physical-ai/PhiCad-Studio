@@ -115,6 +115,50 @@ test("viewSide persists across reload", async ({ page }) => {
     .toBe("bottom");
 });
 
+async function pcbActiveLayer(
+  page: import("@playwright/test").Page,
+  designId: string,
+): Promise<string> {
+  return page.evaluate(async (id) => {
+    const response = await fetch(
+      `/api/modules/designer/designs/${encodeURIComponent(id)}/projection/pcb`,
+    );
+    const body = (await response.json()) as {
+      data?: { projection?: { board?: { activeLayer?: unknown } } };
+    };
+    return String(body.data?.projection?.board?.activeLayer);
+  }, designId);
+}
+
+test("Shift+F survives a slow command round-trip (view write vs layer sync race)", async ({
+  page,
+}) => {
+  // Regression: the flip is an optimistic local change with a 200ms debounced
+  // pcb_set_view_state, while the follow-up pcb_set_active_layer dispatched at
+  // once. When the layer command took longer than the debounce, both writes
+  // carried the same baseRevision, the second was rejected with
+  // REVISION_CONFLICT (swallowed by the flush) and the flip never persisted.
+  // Delaying every command past the debounce makes that ordering deterministic.
+  await page.route("**/api/modules/designer/designs/*/commands", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    await route.continue();
+  });
+  await openPcb(page);
+  const designId = await activeDesignId(page);
+  await page.locator(CANVAS).click();
+  await page.keyboard.press("Shift+F");
+  await expect(page.locator(FLIP_BADGE)).toBeVisible();
+  await expect
+    .poll(() => pcbViewSide(page, designId), { timeout: 10_000 })
+    .toBe("bottom");
+  // And the layer sync still followed the flip.
+  await expect
+    .poll(() => pcbActiveLayer(page, designId), { timeout: 10_000 })
+    .toBe("B.Cu");
+  // The badge must not have been reverted by the refresh that followed.
+  await expect(page.locator(FLIP_BADGE)).toBeVisible();
+});
+
 test('"Flip part" is disabled when no placement is selected', async ({
   page,
 }) => {
