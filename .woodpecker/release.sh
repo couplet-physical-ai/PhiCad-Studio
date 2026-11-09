@@ -50,9 +50,9 @@ ctr() {
     with-env-variable --name=CI_COMMIT_TAG --value="${CI_COMMIT_TAG:-}" \
     with-env-variable --name=CI_COMMIT_BRANCH --value="${CI_COMMIT_BRANCH:-}" \
     with-env-variable --name=CORELIB_TAG --value="${CORELIB_TAG:-}" \
-    with-directory --path=/ci --directory=.woodpecker \
+    with-directory --path=/ci --source=.woodpecker \
     with-exec --args=bash,/ci/release.sh,deps,"$platform" \
-    with-directory --path=/src --directory=. --owner=node \
+    with-directory --path=/src --source=. --owner=node \
     --exclude=.git,node_modules,dist,.cache,.build,electron/out,test-results,playwright-report \
     with-workdir --path=/src \
     with-secret-variable --name=GH_TOKEN --secret=env://GH_TOKEN \
