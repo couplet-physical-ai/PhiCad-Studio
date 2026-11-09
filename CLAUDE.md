@@ -416,3 +416,7 @@ Selection guidance:
   auto-triggered).
 - Skills carry `references/` subdirectories with detailed specs (routing algorithms, hit-testing, net
   extraction, design rules), loaded automatically.
+
+## CI/CD
+
+This repo runs its CI on **Roadrunner** (Exowatt's Woodpecker + Dagger CI, `.woodpecker/ci.yaml`); it does not deploy from there. Releases (`.github/workflows/release.yml`, which includes the macOS builds) stay on GitHub Actions until Roadrunner has a macOS agent. Check builds with `gh rr status`, `gh rr watch`, `gh rr logs`, `gh rr rerun` (install: `gh extension install Northwind-Labs/gh-roadrunner && gh alias set rr roadrunner --clobber`) — `gh run` only sees GitHub Actions (releases only). Console: https://cicd.apps.example.com.
