@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -109,13 +109,33 @@ async function writeAsset(
   }
 
   await mkdir(path.dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, bytes, { flag: "wx" });
+  // Publish atomically: write a private temp file, then hard-link it into place.
+  // link() fails with EEXIST instead of overwriting, and the target only ever
+  // appears complete, so two concurrent writes of the same content-addressed
+  // asset (e.g. two footprints uploading an identical GLB at once) both
+  // succeed: the loser re-verifies the winner's file and reports it deduped.
+  const tempPath = `${absolutePath}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, bytes, { flag: "wx" });
+  let deduped = false;
+  try {
+    await link(tempPath, absolutePath);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+      throw error;
+    }
+    if ((await readExistingHash(absolutePath)) !== normalized) {
+      throw new Error(`Stored model hash mismatch at ${relativePath}`);
+    }
+    deduped = true;
+  } finally {
+    await rm(tempPath, { force: true });
+  }
   return {
     absolutePath,
     relativePath,
     sha256: normalized,
     byteSize: bytes.byteLength,
-    deduped: false,
+    deduped,
   };
 }
 

@@ -56,6 +56,24 @@ describe("library 3D model storage", () => {
     expect(await dedupeCheck(hash)).toBe(true);
   });
 
+  test("concurrent identical writes both succeed with one complete file", async () => {
+    const root = await isolateModelStore();
+    const bytes = new Uint8Array(256 * 1024).map((_, i) => i % 251);
+    const hash = sha256(bytes);
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => writeGlb(bytes, hash)),
+    );
+    const files = await readdir(path.join(root, "models", "glb"));
+
+    expect(new Set(results.map((r) => r.relativePath))).toEqual(
+      new Set([`models/glb/${hash}.glb`]),
+    );
+    expect(results.filter((r) => !r.deduped).length).toBeLessThanOrEqual(1);
+    expect(files).toEqual([`${hash}.glb`]);
+    expect(sha256(await readGlb(hash))).toBe(hash);
+  });
+
   test("rejects path traversal and non-hex hash input", async () => {
     await isolateModelStore();
     const bytes = new TextEncoder().encode("glb bytes");

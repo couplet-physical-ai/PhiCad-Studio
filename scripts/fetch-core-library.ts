@@ -41,6 +41,7 @@ import os from "node:os";
 import path from "node:path";
 import { unzipSync, strFromU8 } from "fflate";
 import { verifyManifest } from "@openpcb/opclib-pack";
+import { checkReleasedPublicKey } from "./lib/corelib-trust";
 
 const REPO = process.env.OPENPCB_CORELIB_REPO ?? "OpenPCB-app/CoreLibrary";
 const MIN_COMPONENTS = Number(
@@ -186,30 +187,19 @@ try {
       trustedKeys.set(keyId, readFileSync(path.join(KEYS_DIR, f)));
     }
   }
-  // If release publishes openpcb-core.pub, accept only if its PEM contents
-  // match a committed key. Normalize line endings (Windows checkouts can
-  // convert LF → CRLF on the committed file, breaking byte comparison).
+  // Released openpcb-core.pub: must match a committed key when the manifest is
+  // signed; skipped with a warning for unsigned releases (see lib/corelib-trust).
   const releasedPub = files.find((f) => f === "openpcb-core.pub");
-  if (releasedPub) {
-    const releasedKeyText = readFileSync(path.join(tmp, releasedPub), "utf8")
-      .replace(/\r\n/g, "\n")
-      .trim();
-    let matched = false;
-    for (const [, committed] of trustedKeys) {
-      const committedText = committed
-        .toString("utf8")
-        .replace(/\r\n/g, "\n")
-        .trim();
-      if (committedText === releasedKeyText) {
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) {
-      throw new Error(
-        "released openpcb-core.pub does not match any trusted key in resources/keys/ — refusing to trust",
-      );
-    }
+  const releasedKeyWarning = checkReleasedPublicKey({
+    tag,
+    signed: Boolean(manifest.signature),
+    releasedPubText: releasedPub
+      ? readFileSync(path.join(tmp, releasedPub), "utf8")
+      : null,
+    trustedKeys,
+  });
+  if (releasedKeyWarning) {
+    console.error(`[corelib:fetch] ${releasedKeyWarning}`);
   }
 
   // Signature is enforced when present. Unsigned releases are allowed for now
@@ -229,7 +219,7 @@ try {
     console.error(`[corelib:fetch] ed25519 ok (keyId=${verifiedKeyId})`);
   } else {
     console.error(
-      "[corelib:fetch] WARNING: manifest unsigned — relying on SHA256SUMS only. Configure OPCLIB_SIGNING_KEY on CoreLibrary repo to enforce signatures.",
+      `[corelib:fetch] WARNING: unsigned CoreLibrary release ${tag}: manifest unsigned — relying on SHA256SUMS only. Configure OPCLIB_SIGNING_KEY on CoreLibrary repo to enforce signatures.`,
     );
   }
 

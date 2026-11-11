@@ -103,10 +103,13 @@ function createStoredZip(
 }
 
 async function createKicadZipFixture(): Promise<Buffer> {
-  const uniqueStep = Buffer.concat([
-    await readFile(STEP_FIXTURE),
-    Buffer.from(`\n/* e2e ${crypto.randomUUID()} */\n`, "utf8"),
-  ]);
+  // Deterministic on purpose: 3d-preview.spec.ts and designer-3d.spec.ts import
+  // this same fixture into the same (reused) library footprint from parallel
+  // workers. A per-run random STEP gave each import a different source hash, so
+  // one spec's re-import replaced the other's pending source between its import
+  // and its GLB upload (400 "sourceStepSha256 requires a matching stored
+  // sourceStep"). Identical bytes keep the stored source hash stable.
+  const step = await readFile(STEP_FIXTURE);
   return createStoredZip([
     {
       name: "simple_capacitor.kicad_sym",
@@ -116,7 +119,7 @@ async function createKicadZipFixture(): Promise<Buffer> {
       name: "C_0603_1608Metric.kicad_mod",
       bytes: await readFile(FOOTPRINT_FIXTURE),
     },
-    { name: "minimal.step", bytes: uniqueStep },
+    { name: "minimal.step", bytes: step },
   ]);
 }
 
