@@ -64,7 +64,8 @@ jobs:
             lightningcss_package: win32-x64-msvc
             tailwindcss_oxide_package: win32-x64-msvc
           - name: Linux x64
-            os: ubuntu-latest
+            # Pinned: Playwright 1.60 cannot install chromium deps on ubuntu 26.04.
+            os: ubuntu-24.04
             platform: linux
             arch: x64
             rollup_package: linux-x64-gnu
