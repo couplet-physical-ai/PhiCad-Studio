@@ -19,7 +19,7 @@
     "make:linux": "node ../scripts/ensure-electron-native-deps.mjs && npm run build && electron-builder --linux --config electron-builder.cjs --publish never"
   },
   "dependencies": {
-    "@sentry/electron": "^7.0.0",
+    "@sentry/electron": "^8.4.0",
     "@sentry/node": "^10.53.1",
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
