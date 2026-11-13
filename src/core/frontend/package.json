@@ -38,7 +38,7 @@
     "clipper2-ts": "^2.0.1-17",
     "clsx": "^2.1.1",
     "lucide-react": "^0.462.0",
-    "markdown-it": "^14.3.0",
+    "markdown-it": "^15.0.3",
     "mermaid": "^11.15.0",
     "n8ao": "^1.10.1",
     "occt-import-js": "0.0.23",
