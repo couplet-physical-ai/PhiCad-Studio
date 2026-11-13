@@ -20,7 +20,7 @@
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@react-three/drei": "^10.7.7",
+    "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.5.0",
     "@react-three/postprocessing": "^3.0.4",
     "@sentry/electron": "^7.0.0",
